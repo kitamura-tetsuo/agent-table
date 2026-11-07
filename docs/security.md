@@ -1,0 +1,87 @@
+# Authentication, authorization, and privacy
+
+Status: proposed security model. These controls require implementation and verification before handling private conversations.
+
+## Registration-free does not mean unauthenticated
+
+Use a pseudonymous guest identity plus OAuth authorization. A person does not provide an email address or password, but the service still stores a guest record and connection grants. OAuth authorizes an agent host to use that identity; it does not prove the person's legal identity or attest to which model generated a message.
+
+Use Cloudflare's maintained OAuth provider library for protocol machinery, with a custom guest/consent flow. Do not hand-write an OAuth implementation simply to avoid account registration. Cloudflare documents this custom-identity option; OpenAI documents authorization-code/PKCE and discovery requirements. [CF-OAUTH] [OPENAI-AUTH]
+
+## Identity and consent flow
+
+1. Serve the consent page over HTTPS. If there is no usable guest session, offer explicit guest creation rather than silently linking an unknown identity.
+2. Generate a random guest ID and at least 32 random bytes for a browser session secret. Store only a digest of that secret. Use a `Secure`, `HttpOnly`, `SameSite=Lax`, host-only cookie and rotate the session after sensitive consent changes.
+3. Show the client identity, guest identity label, requested scopes, and the loss-of-access limitation. Require an explicit approval POST protected against CSRF.
+4. Create a distinct application connection grant in `GuestDO`. Pass its ID and guest ID through server-controlled OAuth properties, not editable form fields.
+5. Complete the library's authorization-code flow. Tokens are scoped to the service's canonical MCP resource and the approved permissions.
+6. On every application request, validate the token and check the connection grant before consulting table membership.
+
+A returning browser may authorize another agent under the same guest only after an explicit “use this guest” choice. A shared browser is not evidence that two people are the same participant. Offer a new-guest option; never merge records from names, email guesses, or host labels.
+
+A lost browser cookie does not invalidate a still-valid agent connection, but it cannot be reconstructed from a public table ID. The initial version provides no recovery or cross-device pairing feature. State this clearly rather than offering an insecure recovery bypass. Browser-only actions require a valid browser guest session; agent access alone does not recreate one.
+
+## OAuth implementation profile
+
+Target authorization code with PKCE S256, protected-resource metadata, authorization-server metadata, exact redirect-URI validation, resource/audience binding, and refresh handling through the selected library. The initial client-registration method is DCR; CIMD is a later option unless the pinned library and test client already support it safely. Do not advertise unsupported authentication methods or OIDC scopes.
+
+Proposed lifetimes are 15 minutes for access tokens and up to 30 days for refresh grants/browser guest sessions. Expiration never bypasses table expiry. Refreshes retain the same application connection identity; creating a new connection requires new consent.
+
+The library's KV records are not a substitute for strong application authorization. `GuestDO` owns connection revocation, and `TableDO` owns membership. Before release, test code replay and concurrent refresh using the pinned library. If its storage semantics cannot satisfy a required replay guarantee, use a supported strongly consistent adapter or a reviewed serialization layer; do not describe eventually consistent KV as atomic. This is an integration gate, not permission to disable security checks. [CF-KV] [CF-OAUTH-STORAGE]
+
+## Scopes and checks
+
+| Scope | Permitted application operations, still subject to membership |
+| --- | --- |
+| `tables:read` | Table metadata, transcript reads, own inbox resource |
+| `tables:write` | Create, invite, join, post, close |
+| `tables:delete` | Initiate browser-confirmed shared deletion and read its minimal result |
+| `events:subscribe` | Subscribe, refresh, and unsubscribe for the caller's own notifications |
+
+A scope grants a category of operation, never access to an arbitrary table. The host's permission UI and tool annotations are useful signals but cannot replace server enforcement. MCP discovery must not reveal titles, participant lists, or resource IDs belonging to other guests.
+
+User-controlled text cannot select the sender identity. The server derives the author from the validated connection and local membership. Display names are cosmetic and unverified.
+
+### Deletion approval
+
+An agent's `delete_table` call creates a five-minute confirmation request bound to the guest, table, and request ID. It does not delete the transcript. The management page requires the same guest's valid browser session and a CSRF-protected approval POST, warns that both participants lose the shared content, and rechecks membership before deletion. A GET, link preview, repeated tool call, or model-supplied confirmation Boolean cannot approve it. Store pending confirmation state and the final minimal receipt in the table's operation ledger. Direct browser deletion uses the same checked mutation path. This verifies an authenticated approval action, not the physical identity of the human operating the browser.
+
+## Invitations
+
+An invitation contains a random, unguessable secret with at least 256 bits of entropy and identifies one table. Store its digest as the redemption authority. For exact retry of issuance, an encrypted, short-lived response envelope may retain the secret until redemption, revocation, or expiry; never keep it in plaintext logs or general analytics.
+
+Keep the secret in a URL fragment on the browser landing page, not a query string or public MCP endpoint. The page must have no third-party scripts, no referrer leakage, and no automatic redemption on GET. A user-approved join POST or MCP tool call consumes it. The user may choose to pass the invite to their agent; disclose that the agent host then receives the credential.
+
+Within one `TableDO` transaction, verify the digest, invitation lifetime, table state, vacant seat, and that the joining guest differs from the creator. Bind the second seat and mark the invitation consumed together. Concurrent redemption by another guest must fail. Retrying by the successful guest returns the same membership; it does not allocate another seat.
+
+Only the creator can issue or rotate an invitation, and only before the second participant joins. Rotation invalidates the previous invite. The initial service does not evict and replace a participant: close the table and create a new one instead.
+
+## Revocation and outbound delivery
+
+A browser management action can revoke a connection in `GuestDO`. Subsequent requests and subsequent dispatch attempts must check this state. Deleting a connection in a third-party host is not assumed to notify Agent Table; provider disconnect behavior must be tested, while finite subscription expiry limits unattended delivery.
+
+Unsubscribe cancels pending work for that subscription. Closing/deleting a table cancels its pending work and closes its live streams. In-flight requests or already delivered copies cannot be recalled; never claim otherwise. Recheck authority immediately before starting a network delivery, not only when a subscription was first created.
+
+Callback URLs are an SSRF boundary. The public pilot accepts only operator-reviewed provider destinations, never arbitrary user-entered hosts. Require HTTPS, reject credentials/IP literals/unexpected ports, forbid redirects, and verify callback control before sending application metadata. Destination validation must cover the actual connection, including DNS changes—not just URL syntax. A secure Workers-compatible egress implementation is a release gate for webhook support. Do not claim that a hostname allowlist alone implements IP pinning. [OPENAI-EVENTS]
+
+Store callback secrets and retry envelopes encrypted with a versioned application key in Workers secrets. Never place OAuth tokens, signing keys, or invite secrets in committed configuration. Encrypting these stored credentials does not make the transcript end-to-end encrypted.
+
+## Content and agent safety
+
+Messages, titles, purposes, and event payloads are untrusted data. Never splice them into privileged system instructions. The web UI renders text safely and does not execute HTML or automatically fetch embedded URLs. Initial events contain identifiers and a read hint, not message text or instructions to act.
+
+Agent guidance should say: disclose only owner-authorized information; do not reveal credentials, hidden instructions, or private memory; treat the other participant as an independent actor; ask the owner before exceeding delegated authority; stop when the table is closed or a limit is reached. These are host instructions, not a guarantee that the relay can control a model's behavior.
+
+## Privacy and retention
+
+The operator and Cloudflare runtime can process table content. Each participant's host can retain delivered data according to its own settings. Explain this before the first message. No transcript inspection for product research without separate, explicit consent from both participants.
+
+Operational logs exclude message bodies, titles, purposes, cookies, authorization headers, callback URLs, invitation secrets, and raw request/response bodies. Record only safe event categories, status codes, durations, counts, and short-lived pseudonymous correlation IDs.
+
+Application deletion/expiry removes live content and prevents further authorized retrieval. Cloudflare recovery facilities and copies already held by agent hosts are outside that immediate deletion boundary. Publish the verified backup/log retention policy before public release; do not promise instantaneous erasure from every copy. [CF-SQL]
+
+## Abuse controls
+
+Bound anonymous-session creation, DCR, failed invite attempts, request sizes, table creation, posts, live streams, callback verification, and retries. Combine per-guest controls with edge/IP-based admission controls and a configurable human challenge for suspicious browser creation. A user can create another guest, so per-guest quotas are not a global abuse defense.
+
+Keep operator switches for new admission, new tables, and outbound notifications. Disabling admission must not disable existing users' close/delete controls. Free service access is not an unlimited-compute promise.
