@@ -1457,7 +1457,18 @@ export class TableDO extends DurableObject<Env> {
         this.ctx.storage.transactionSync(() => {
           const table = this.metadataRow();
           const now = Date.now();
-          if (!table || !this.memberFor(guestId)) {
+          if (!table) {
+            // An overlapping approval can commit while this RPC waits. The
+            // minimal tombstone receipt is the authoritative idempotent result.
+            if (
+              this.tombstoneRow()?.terminal_state === "deleted" &&
+              this.hasDeletionReceipt(guestId, requestId)
+            ) {
+              return { ok: true, value: { state: "deleted" as const } } as const;
+            }
+            return { ok: false, code: "NOT_FOUND" } as const;
+          }
+          if (!this.memberFor(guestId)) {
             return { ok: false, code: "NOT_FOUND" } as const;
           }
           if (table.expires_at <= now || table.state === "expired") {
