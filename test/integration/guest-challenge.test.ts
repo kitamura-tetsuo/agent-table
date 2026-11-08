@@ -20,14 +20,18 @@ const required: Env = {
 
 describe("server-verified guest admission challenge", () => {
   it("fails closed for missing verifier configuration or unknown mode", () => {
-    expect(guestChallengeConfiguration({
-      ...required,
-      TURNSTILE_SECRET: undefined,
-    })).toEqual({ mode: "unavailable" });
-    expect(guestChallengeConfiguration({
-      ...required,
-      GUEST_CHALLENGE_MODE: "unexpected",
-    })).toEqual({ mode: "unavailable" });
+    expect(
+      guestChallengeConfiguration({
+        ...required,
+        TURNSTILE_SECRET: undefined,
+      }),
+    ).toEqual({ mode: "unavailable" });
+    expect(
+      guestChallengeConfiguration({
+        ...required,
+        GUEST_CHALLENGE_MODE: "unexpected",
+      }),
+    ).toEqual({ mode: "unavailable" });
   });
 
   it("verifies official Siteverify response fields, rejecting mismatches and outages", async () => {
@@ -52,16 +56,21 @@ describe("server-verified guest admission challenge", () => {
       { success: false },
       { challenge_ts: new Date(Date.now() - 360_000).toISOString() },
     ]) {
-      const responseFetch: typeof fetch = async () => Response.json({
-        ...payload,
-        ...change,
-      });
-      expect(await verifyGuestChallenge(required, TOKEN, responseFetch)).toBe(false);
+      const responseFetch: typeof fetch = async () =>
+        Response.json({
+          ...payload,
+          ...change,
+        });
+      expect(await verifyGuestChallenge(required, TOKEN, responseFetch)).toBe(
+        false,
+      );
     }
     expect(await verifyGuestChallenge(required, "", verifier)).toBe(false);
-    expect(await verifyGuestChallenge(required, TOKEN, async () => {
-      throw new Error("synthetic service outage");
-    })).toBe(false);
+    expect(
+      await verifyGuestChallenge(required, TOKEN, async () => {
+        throw new Error("synthetic service outage");
+      }),
+    ).toBe(false);
   });
 
   it("renders a challenge and refuses missing proof on real guest routes", async () => {
@@ -78,9 +87,10 @@ describe("server-verified guest admission challenge", () => {
       "challenges.cloudflare.com",
     );
     const token = html.match(/name="csrf" value="([A-Za-z0-9_-]{43})"/)?.[1];
-    const cookie = page.headers.getSetCookie().find((item) =>
-      item.startsWith("__Host-agent_table_csrf="),
-    )?.split(";")[0];
+    const cookie = page.headers
+      .getSetCookie()
+      .find((item) => item.startsWith("__Host-agent_table_csrf="))
+      ?.split(";")[0];
     if (!token || !cookie) throw new Error("Expected CSRF not issued");
     const missing = await worker.fetch(
       new Request(`${ORIGIN}/guest/session`, {
