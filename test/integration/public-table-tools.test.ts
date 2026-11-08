@@ -10,7 +10,8 @@ import {
 } from "@modelcontextprotocol/client";
 import { describe, expect, it } from "vitest";
 import worker from "../../src/index";
-import type { CreationReservation } from "../../src/objects/guest";
+import type { CreationReservation, CreationResult } from "../../src/objects/guest";
+import type { SafeTableMetadata, TableResult } from "../../src/shared/table";
 import { authorizeGuestConnection, type VerifiedConnectionActor } from "../../src/shared/auth";
 
 const ORIGIN = "http://localhost:8787";
@@ -163,8 +164,15 @@ function output(result: Awaited<ReturnType<Client["callTool"]>>) {
 
 type GuestStub = ReturnType<Env["GUESTS"]["get"]>;
 type TableStub = ReturnType<Env["TABLES"]["get"]>;
-type ReserveRpc = GuestStub["reserveCreation"];
-type InitializeRpc = TableStub["initializeTable"];
+type ReserveRpc = (
+  actor: VerifiedConnectionActor,
+  input: unknown,
+) => Promise<CreationResult>;
+type InitializeRpc = (
+  actor: VerifiedConnectionActor,
+  input: unknown,
+  receipt: CreationReservation,
+) => Promise<TableResult<SafeTableMetadata>>;
 
 /**
  * Inject only at Worker-to-DO RPC bindings; the official SDK, OAuth handler,
@@ -240,7 +248,11 @@ function withInitializationRpc(
 
 function fetchThroughWorker(overlay: Env) {
   return (request: Request) =>
-    worker.fetch(request, overlay, createExecutionContext());
+    worker.fetch(
+      request as Parameters<typeof worker.fetch>[0],
+      overlay,
+      createExecutionContext(),
+    );
 }
 
 describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () => {
