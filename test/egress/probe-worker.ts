@@ -30,9 +30,13 @@ const SYNTHETIC_BODY = JSON.stringify({
   value: "synthetic",
 });
 
-function result(status: number, category: ProbeResult): Response {
+function result(
+  status: number,
+  category: ProbeResult,
+  extra?: Record<string, unknown>,
+): Response {
   return Response.json(
-    { result: category },
+    { result: category, ...extra },
     { status, headers: { "Cache-Control": "no-store" } },
   );
 }
@@ -120,10 +124,21 @@ export default {
       if (!(await responseWithinLimit(response))) {
         return result(502, "response-too-large");
       }
+      console.log(
+        "probe-upstream-status:",
+        response.status,
+        response.statusText,
+      );
+      for (const [k, v] of response.headers.entries()) {
+        console.log(`probe-upstream-header: ${k}: ${v}`);
+      }
       return response.ok
         ? result(200, "reachable")
-        : result(502, "upstream-non-2xx");
-    } catch {
+        : result(502, "upstream-non-2xx", {
+            upstreamStatus: response.status,
+          });
+    } catch (err) {
+      console.error("probe-fetch-error:", err);
       return result(
         controller.signal.aborted ? 504 : 502,
         controller.signal.aborted ? "deadline" : "transport-error",

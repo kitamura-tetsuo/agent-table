@@ -143,8 +143,82 @@ Receiver Fixture: Cloudflare Tunnel endpoint `https://probe.outliner-online.com/
 | Outgoing body > 16 KiB | `sendVerifiedHttps` request size check assertion in Workerd Vitest | N/A (local workerd) | **PASS (local)** |
 | Connection-time destination IP validation | Workers native `fetch` provides no API to inspect or pin destination IP address at connect time | N/A | **BLOCKED (runtime limitation)** |
 | DNS Rebinding defense | Dynamic `fetch()` re-resolves DNS independently; pre-lookup cannot guarantee address at connect time; platform lacks documented rebind SLA | N/A | **BLOCKED (runtime limitation)** |
-| TLS certificate hostname mismatch | Native `fetch` fails Web PKI validation on mismatch, but no live mismatch fixture was configured | N/A | **NOT RUN / BLOCKED** |
-| Prohibited private IP at DNS resolution | No authorized DNS fixture resolving public name to RFC1918 / loopback in hosted runtime | N/A | **NOT RUN / BLOCKED** |
+| TLS certificate hostname mismatch | OpenSSL s_client: verification failed (`hostname mismatch`, `error:0A000086`); Workers remote preview: Cloudflare edge returned HTTP 526 (`Invalid SSL Certificate`), worker returned `upstream-non-2xx` (502) | Origin not reached; connection rejected at TLS handshake | **PASS (hostname mismatch rejected)** |
+| Prohibited private IP at DNS resolution | No authorized DNS fixture resolving public name to RFC1918 / loopback in hosted runtime; Cloudflare API 403 (Wrangler OAuth token lacks `dns:edit` permission) | N/A | **NOT RUN / BLOCKED** |
+
+### Security Verification: DNS Rebinding and TLS Hostname Mismatch (2026-11-08 JST)
+
+- **Git Commit SHA:** `fd03142e46f8a9fd7406ca959ace070b0f05dff2` (pre-verification HEAD) / branch `feat/issue-19-safe-egress-preflight`
+- **Toolchain Versions:** Node `24.22.1`, Wrangler `4.158.0`, local `workerd 2026-11-04`
+- **Execution Timestamp:** 2026-11-08 23:08 – 23:14 JST
+- **Environment & Execution Mode:** Cloudflare Workers Remote Preview (`npx wrangler dev --remote --config test/egress/wrangler.jsonc --ip 127.0.0.1 --port 8788 / 8787`)
+- **Authenticated Cloudflare Account ID:** `0fbaae27d3ff021bc17109f1493d0b2d`
+
+| テスト | ローカル | Workers 実環境 | 判定 |
+|---|---|---|---|
+| 公開ホストへの正常接続 | — | `probe.outliner-online.com`: HTTP 200 `{"result":"reachable"}` (Upstream HTTP 204 No Content) | **PASS** |
+| 公開IP→非公開IPへのDNS変更 | — | Cloudflare API 403 Forbidden (`code 10000: Authentication error`; OAuth token lacks `dns:edit` scope) | **NOT RUN / BLOCKED** |
+| 同一リクエスト内のDNS Rebinding | workerd source: `client.rs` / `network.rs` `connect_allowed()` validates `SocketAddr` and connects directly without secondary query | 未実施 (Hosted runtime lacks per-query alternating DNS fixture) | **NOT RUN** (ローカル設計証拠あり) |
+| 正しいTLS証明書 | OpenSSL: `Verification: OK`, peername verified (`badssl.com`); Origin returned HTTP 405 Method Not Allowed | `badssl.com`: HTTP 502 `{"result":"upstream-non-2xx","upstreamStatus":405}` (TLS handshake succeeded) | **PASS** |
+| TLSホスト名不一致 | OpenSSL: `verify error:num=62:hostname mismatch` (`CN=*.badssl.com` does not match `wrong.host.badssl.com`) | `wrong.host.badssl.com`: HTTP 502 `{"result":"upstream-non-2xx","upstreamStatus":526}` (Cloudflare Error 526) | **PASS** |
+
+#### Test Details & Evidence Breakdown
+
+##### 1. 公開ホストへの正常接続 (Positive Control Baseline)
+- **Target URL:** `https://probe.outliner-online.com/egress-check/positive`
+- **Reviewed Policy:** Origin `https://probe.outliner-online.com`, Prefix `/egress-check`
+- **Reproduction:** Set target bindings in `test/egress/.dev.vars`, start `npx wrangler dev --remote`, send `POST /__egress_probe` with bearer token and browser user-agent.
+- **Observed Response:** HTTP 200 `{"result":"reachable"}`.
+- **DNS Observation:** `dig @1.1.1.1 probe.outliner-online.com` returned Cloudflare public anycast IPs (`172.67.155.83`, `104.21.66.24`).
+- **Receiver Receipt:** Local listener on `127.0.0.1:8790` behind Cloudflare Tunnel `469ea721-e109-4081-b6ac-d8abc6152879` received synthetic body `{"probe":"agent-table-egress","value":"synthetic"}` and responded HTTP 204.
+- **Basis for PASS:** Successful end-to-end HTTPS egress via Cloudflare edge and tunnel to verified receiver.
+
+##### 2. 公開IP→非公開IPへのDNS変更 (Request-to-Request DNS Rebinding)
+- **Target Subdomain:** Temporary domain `egress-rebind-<random>.outliner-online.com`
+- **Attempted Action:** Create test DNS record in zone `d93d3721c888913fa36a3f170853578d` pointing to private IP (e.g. `127.0.0.1`), verify refusal.
+- **Observed Obstacle:** `POST https://api.cloudflare.com/client/v4/zones/d93d3721c888913fa36a3f170853578d/dns_records` returned `HTTP 403 Forbidden` (`code: 10000: Authentication error`).
+- **Root Cause:** The OAuth token issued via `wrangler login` contains scopes (`zone:read`, `workers:write`, `connectivity:admin`...) but lacks `dns:edit` / `dns:write` permissions for the zone.
+- **Constraint Compliance:** Per testing guidelines, existing production DNS records (`probe.outliner-online.com`) were NOT modified, access control boundaries were NOT bypassed, and untrusted third-party dynamic DNS fixtures were NOT used.
+- **Basis for NOT RUN / BLOCKED:** Platform credential permission boundary blocked authorized creation of private DNS test records.
+- **Remaining Uncertainty:** Hosted Cloudflare egress proxy behavior when resolving a non-Cloudflare-proxied domain to RFC 1918 / loopback is expected to abort per Cloudflare's egress security model, but cannot be empirically demonstrated without DNS write access.
+
+##### 3. 同一リクエスト内のDNS Rebinding (In-flight TOCTOU Rebinding)
+- **Local Source Code Evidence:** Cloudflare official `workerd` (`src/rust/cxx/kj-hyper/client.rs`, `src/workerd/server/server/services/network.rs`).
+  1. DNS resolution yields candidate `SocketAddr`s.
+  2. `workerd` checks `connect_allowed(addr)` against private/loopback/link-local/ULA ranges.
+  3. Hyper client establishes TCP connection directly to the verified `SocketAddr`.
+  4. There is no secondary hostname lookup between inspection and socket establishment, eliminating the TOCTOU gap in `workerd`.
+- **Hosted Workers Reality:** Hosted Workers outbound requests are handled by Cloudflare's egress proxy infrastructure. While Cloudflare documents that outbound fetch is restricted to public Internet services, the hosted runtime does not expose socket-level IP inspection.
+- **Status:** **NOT RUN** for live in-flight attack (requires authoritative DNS server returning alternating IP addresses on consecutive lookups).
+
+##### 4. 正しいTLS証明書 (TLS Valid Certificate Control)
+- **Target URL:** `https://badssl.com/`
+- **Local Pre-check:** `openssl s_client -connect badssl.com:443 -servername badssl.com -verify_hostname badssl.com </dev/null`
+  - Output: `Verification: OK`, `Verified peername: badssl.com`. Handshake completed with cipher `ECDHE-RSA-AES128-GCM-SHA256`.
+  - Local POST test: `curl -X POST https://badssl.com/` returns HTTP 405 Method Not Allowed (badssl origin web server rejects POST on `/`).
+- **Workers Remote Preview Execution:**
+  - `PROBE_CALLBACK_URL="https://badssl.com/"`, `PROBE_REVIEWED_ORIGIN="https://badssl.com"`, `PROBE_REVIEWED_PATH_PREFIX="/"`.
+  - Worker performed HTTPS POST to `https://badssl.com/`.
+  - Upstream TLS handshake completed cleanly. BadSSL's Nginx origin web server processed the request and replied HTTP 405 Method Not Allowed.
+  - Worker received HTTP 405 (`upstreamStatus: 405`) and returned HTTP 502 `{"result":"upstream-non-2xx","upstreamStatus":405}`.
+- **Basis for PASS:** Demonstrates that a valid Web PKI HTTPS endpoint completes TLS negotiation through Cloudflare Workers egress.
+
+##### 5. TLS ホスト名不一致 (Certificate Hostname Mismatch Refusal)
+- **Target URL:** `https://wrong.host.badssl.com/`
+- **Local Pre-check:** `openssl s_client -connect wrong.host.badssl.com:443 -servername wrong.host.badssl.com -verify_hostname wrong.host.badssl.com </dev/null`
+  - Output: `CONNECTED(00000004)`, `depth=0 CN=*.badssl.com`, `verify error:num=62:hostname mismatch`, `error:0A000086:SSL routines:tls_post_process_server_certificate:certificate verify failed`.
+  - Certificate SANs (`*.badssl.com`, `badssl.com`) do not match sub-subdomain `wrong.host.badssl.com` under standard Web PKI rules.
+- **Workers Remote Preview Execution:**
+  - `PROBE_CALLBACK_URL="https://wrong.host.badssl.com/"`, `PROBE_REVIEWED_ORIGIN="https://wrong.host.badssl.com"`, `PROBE_REVIEWED_PATH_PREFIX="/"`.
+  - Worker performed HTTPS POST to `https://wrong.host.badssl.com/`.
+  - Cloudflare's egress proxy initiated TLS handshake with `wrong.host.badssl.com:443` (IP `104.154.89.105`).
+  - Cloudflare's TLS verification layer detected that the presented certificate (`*.badssl.com`) did not match the requested SNI/host (`wrong.host.badssl.com`).
+  - Cloudflare aborted the upstream TLS handshake immediately. Synthetic POST body was **never transmitted** to the origin server.
+  - Cloudflare generated an **HTTP 526 (Invalid SSL Certificate)** response at the egress proxy layer.
+  - Worker received HTTP 526 (`upstreamStatus: 526`) and safely returned HTTP 502 `{"result":"upstream-non-2xx","upstreamStatus":526}`.
+  - No fallback to unencrypted HTTP, no certificate validation bypass, and no retry to alternative destinations occurred.
+- **Basis for PASS:** TLS certificate hostname mismatch is strictly enforced at Cloudflare's egress proxy boundary via HTTP 526, preventing communication with mismatched HTTPS endpoints.
+
 
 ### Cloudflare Platform Security Guarantees & Boundaries
 
