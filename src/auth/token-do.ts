@@ -3,6 +3,7 @@ import { authorizationServer } from "./provider";
 
 interface RedemptionReadProbe {
   grantReads: number;
+  providerEntries: number;
   release: () => void;
   barrier: Promise<void>;
 }
@@ -34,17 +35,19 @@ export class OAuthTokenDO extends DurableObject<Env> {
     const barrier = new Promise<void>((resolve) => {
       release = resolve;
     });
-    this.probe = { grantReads: 0, barrier, release };
+    this.probe = { grantReads: 0, providerEntries: 0, barrier, release };
   }
 
   async redemptionReadProbeState(): Promise<{
     activeRequests: number;
     grantReads: number;
+    providerEntries: number;
   }> {
     this.assertLocalProbe();
     return {
       activeRequests: this.activeRequests,
       grantReads: this.probe?.grantReads ?? 0,
+      providerEntries: this.probe?.providerEntries ?? 0,
     };
   }
 
@@ -106,6 +109,7 @@ export class OAuthTokenDO extends DurableObject<Env> {
     this.tail = before.then(() => current);
     try {
       await before;
+      if (this.probe) this.probe.providerEntries++;
       const environment = this.observedEnvironment();
       return await authorizationServer(environment).fetch(
         request,
