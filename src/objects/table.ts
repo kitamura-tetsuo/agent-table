@@ -386,30 +386,31 @@ export class TableDO extends DurableObject<Env> {
       return { kind: "new", row: this.inviteForRequest(requestId) } as const;
     });
     if (snapshot.kind === "error") return { ok: false, code: snapshot.code };
-    if (!snapshot.row || !snapshot.row.response_envelope) {
+    const row = snapshot.row;
+    if (!row || !row.response_envelope) {
       return { ok: false, code: "TEMPORARILY_UNAVAILABLE" };
     }
     let recovered: string;
     try {
       recovered = snapshot.kind === "new" ? encoded :
-        await openSecret("invitation-response", snapshot.row.response_envelope,
-          { recordId: snapshot.row.invite_id }, this.env);
+        await openSecret("invitation-response", row.response_envelope,
+          { recordId: row.invite_id }, this.env);
     } catch {
       return { ok: false, code: "TEMPORARILY_UNAVAILABLE" };
     }
     const stillActive = this.ctx.storage.transactionSync(() => {
       const current = this.inviteForRequest(requestId);
       return current?.state === "active" &&
-        current.invite_id === snapshot.row.invite_id &&
-        current.response_envelope === snapshot.row.response_envelope &&
+        current.invite_id === row.invite_id &&
+        current.response_envelope === row.response_envelope &&
         current.expires_at > Date.now() &&
         this.metadataRow()?.state === "waiting";
     });
     if (!stillActive) return { ok: false, code: "INVITATION_REVOKED" };
     return { ok: true, value: {
       tableId: table.table_id,
-      inviteId: snapshot.row.invite_id,
-      expiresAt: new Date(snapshot.row.expires_at).toISOString(),
+      inviteId: row.invite_id,
+      expiresAt: new Date(row.expires_at).toISOString(),
       invitation: recovered,
       landingUrl: invitationLandingUrl(this.env.PUBLIC_ORIGIN, recovered),
     } };
