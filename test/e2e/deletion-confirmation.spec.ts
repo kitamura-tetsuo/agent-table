@@ -215,9 +215,16 @@ test("official SDK deletion requires an explicit same-guest browser POST", async
         }),
       ),
     ).toMatchObject({ messages: [{ seq: 1 }] });
-    await page
-      .getByRole("button", { name: "Permanently delete shared content" })
-      .click();
+    const [approvalResponse] = await Promise.all([
+      page.waitForNavigation(),
+      page
+        .getByRole("button", { name: "Permanently delete shared content" })
+        .click(),
+    ]);
+    expect(
+      approvalResponse?.status(),
+      await page.locator("body").innerText(),
+    ).toBe(200);
     await expect(page.locator("main")).toContainText("Deletion committed");
     const after = await client.callTool({
       name: "read_messages",
