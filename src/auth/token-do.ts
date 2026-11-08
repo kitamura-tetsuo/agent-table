@@ -36,7 +36,13 @@ export class OAuthTokenDO extends DurableObject<Env> {
     const barrier = new Promise<void>((resolve) => {
       release = resolve;
     });
-    this.probe = { grantReads: 0, providerEntries: 0, requestArrivals: 0, barrier, release };
+    this.probe = {
+      grantReads: 0,
+      providerEntries: 0,
+      requestArrivals: 0,
+      barrier,
+      release,
+    };
   }
 
   async redemptionReadProbeState(): Promise<{
