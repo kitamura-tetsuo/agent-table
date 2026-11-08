@@ -269,6 +269,7 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
     try {
       const tools = await client.listTools();
       expect(tools.tools.map((tool) => tool.name).sort()).toEqual([
+        "close_table",
         "create_invite",
         "create_table",
         "get_table",
@@ -1039,9 +1040,19 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
         name: "join_table",
         arguments: { invitation, request_id: winningKey },
       });
-      expect(afterClose.isError).not.toBe(true);
-      expect(output(afterClose).ownMembershipId).toBe(membership);
-      expect(output(afterClose).state).toBe("closed");
+      // A closed table remains readable by a member, but join RPCs stop.
+      // Even a previously accepted join key cannot re-enter the join path.
+      expect(afterClose.isError).toBe(true);
+      expect(output(afterClose)).toMatchObject({
+        error: { code: "INVITATION_INVALID" },
+      });
+      const closedRead = await winningClient.callTool({
+        name: "get_table",
+        arguments: { table_id: tableId },
+      });
+      expect(closedRead.isError).not.toBe(true);
+      expect(output(closedRead).ownMembershipId).toBe(membership);
+      expect(output(closedRead).state).toBe("closed");
     } finally {
       await a.close();
       await b.close();
@@ -1798,6 +1809,104 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
       });
     } finally {
       await creator.close();
+    }
+  });
+  it("closes a shared table via the authenticated SDK and keeps only earlier posts readable", async () => {
+    const owner = await tokenForGuest("tables:read tables:write");
+    const creator = await sdk(owner.token);
+    const guest = await tokenForGuest("tables:read tables:write");
+    const outsider = await sdk(guest.token);
+    try {
+      const created = await creator.callTool({
+        name: "create_table",
+        arguments: { ...input, request_id: "sdk_lifecycle_create_0001" },
+      });
+      expect(created.isError).not.toBe(true);
+      const tableId = String(output(created).tableId);
+      const original = {
+        table_id: tableId,
+        request_id: "sdk_lifecycle_post_0001",
+        body: "A synthetic completed message",
+      };
+      const first = await creator.callTool({
+        name: "post_message",
+        arguments: original,
+      });
+      expect(first.isError).not.toBe(true);
+      const closeRequest = {
+        table_id: tableId,
+        request_id: "sdk_lifecycle_close_0001",
+      };
+      const forbidden = await outsider.callTool({
+        name: "close_table",
+        arguments: closeRequest,
+      });
+      expect(forbidden.isError).toBe(true);
+      expect(output(forbidden)).toMatchObject({
+        error: { code: "TABLE_NOT_FOUND" },
+      });
+      const closed = await creator.callTool({
+        name: "close_table",
+        arguments: closeRequest,
+      });
+      expect(closed.isError).not.toBe(true);
+      expect(output(closed)).toMatchObject({
+        table_id: tableId,
+        state: "closed",
+        expires_at: output(created).expiresAt,
+      });
+      const replay = await creator.callTool({
+        name: "close_table",
+        arguments: closeRequest,
+      });
+      expect(output(replay)).toEqual(output(closed));
+      const oldPost = await creator.callTool({
+        name: "post_message",
+        arguments: original,
+      });
+      expect(output(oldPost)).toEqual(output(first));
+      const newPost = await creator.callTool({
+        name: "post_message",
+        arguments: {
+          table_id: tableId,
+          request_id: "sdk_lifecycle_post_late_0001",
+          body: "Must never commit",
+        },
+      });
+      expect(newPost.isError).toBe(true);
+      expect(output(newPost)).toMatchObject({
+        error: { code: "TABLE_TERMINAL" },
+      });
+      const page = await creator.callTool({
+        name: "read_messages",
+        arguments: { table_id: tableId },
+      });
+      expect(page.isError).not.toBe(true);
+      expect(output(page)).toMatchObject({
+        messages: [{ seq: 1, body: original.body }],
+      });
+      const table = env.TABLES.get(env.TABLES.idFromName(tableId));
+      await evictDurableObject(table);
+      const afterEviction = await creator.callTool({
+        name: "get_table",
+        arguments: { table_id: tableId },
+      });
+      expect(output(afterEviction)).toMatchObject({ state: "closed", tableId });
+      await runInDurableObject(table, async (_instance, state) => {
+        expect(
+          state.storage.sql
+            .exec("SELECT COUNT(*) AS n FROM table_messages")
+            .one(),
+        ).toEqual({ n: 1 });
+        expect(
+          state.storage.sql
+            .exec("SELECT COUNT(*) AS n FROM table_post_receipts")
+            .one(),
+        ).toEqual({ n: 1 });
+      });
+    } finally {
+      await creator.close();
+      await outsider.close();
     }
   });
 });

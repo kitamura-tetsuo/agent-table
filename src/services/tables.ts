@@ -3,6 +3,10 @@ import {
   InvalidCreationRequestError,
   parseCreationRequest,
 } from "../shared/creation";
+import type {
+  CloseTableReceipt,
+  LifecycleInvalidation,
+} from "../shared/lifecycle";
 import { parseOwnInboxUri } from "../shared/resources";
 import type { SafeTableMetadata, TableResult } from "../shared/table";
 import type {
@@ -176,6 +180,35 @@ export async function readMessages(
       actor,
       input,
     );
+  } catch {
+    return { ok: false, code: "TEMPORARILY_UNAVAILABLE" };
+  }
+}
+
+/**
+ * Close is a durable, peer-authorized state transition; transient observers
+ * never change a committed result or authorize an external dispatch.
+ */
+export async function closeTable(
+  env: Env,
+  actor: VerifiedConnectionActor,
+  id: string,
+  requestId: string,
+  onTerminal?: (hint: LifecycleInvalidation) => void,
+): Promise<TableResult<CloseTableReceipt>> {
+  try {
+    const committed = await env.TABLES.get(
+      env.TABLES.idFromName(id),
+    ).closeTable(actor, requestId);
+    if (!committed.ok) return committed;
+    if (committed.terminalHint && onTerminal) {
+      try {
+        onTerminal(committed.terminalHint);
+      } catch {
+        // Observer failures never reverse already committed terminal state.
+      }
+    }
+    return { ok: true, value: committed.value };
   } catch {
     return { ok: false, code: "TEMPORARILY_UNAVAILABLE" };
   }

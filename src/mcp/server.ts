@@ -2,6 +2,7 @@ import { McpServer, ResourceTemplate } from "@modelcontextprotocol/server";
 import { createMcpHandler } from "agents/mcp/server";
 import * as z from "zod/v4";
 import {
+  closeTable,
   createInvite,
   createTable,
   getTable,
@@ -41,6 +42,11 @@ const inviteInput = z.strictObject({
 });
 const joinInput = z.strictObject({
   invitation: z.string().min(1).max(160),
+  request_id: z.string().regex(/^[A-Za-z0-9_-]{16,128}$/),
+});
+
+const closeInput = z.strictObject({
+  table_id: z.string().regex(TABLE_ID),
   request_id: z.string().regex(/^[A-Za-z0-9_-]{16,128}$/),
 });
 
@@ -202,6 +208,30 @@ function newServer(env: Env, identity: AuthenticatedMcpIdentity) {
       if (!actor)
         return toolResult({ error: { code: "NOT_AUTHORIZED" } }, true);
       return appResult(await joinTable(env, actor, invitation, request_id));
+    },
+  );
+
+  server.registerTool(
+    "close_table",
+    {
+      description:
+        "Close a shared table permanently to new posts and invites. Retained reads remain available only until its original expiry.",
+      inputSchema: closeInput,
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    async ({ table_id, request_id }) => {
+      const actor = await scopedActor("tables:write");
+      if (!actor)
+        return toolResult({ error: { code: "NOT_AUTHORIZED" } }, true);
+      const result = await closeTable(env, actor, table_id, request_id);
+      return result.ok
+        ? toolResult(result.value)
+        : toolResult({ error: { code: result.code } }, true);
     },
   );
 

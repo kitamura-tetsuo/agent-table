@@ -206,3 +206,41 @@ instances are not globally enumerated; resource-update subscriptions and
 outbound notifications remain unavailable. Future durable outbox integration
 must add the corresponding pending notification row *within* the message
 transaction instead of treating a post-commit side effect as durable delivery.
+
+
+## Shared lifecycle and terminal boundaries (Issue #13)
+
+`close_table(table_id, request_id)` is an authenticated destructive MCP tool.
+Either participant with an active `tables:write` grant and local membership may
+permanently close a waiting/open table. Requests use strict 16–128 ASCII
+mutation keys. A repeated close returns the original `closed_at` and
+`expires_at` without changing either timestamp or emitting a second
+transient terminal hint. Public delete/purge tools do **not** exist.
+
+A closed table is read-only until its immutable original expiry. Previously
+committed `post_message` operations may be retried with identical arguments
+and return their recorded receipt; conflicting keys remain conflicts. Newly
+submitted posts, invitations, and joins are forbidden even if old invitation
+material was retained by a client. Server-side expiry checks deny reads and
+writes at the exact expiry boundary, independent of the alarm scheduler.
+
+The private TableDO `purgeTable` method is reserved for the later
+browser-confirmed deletion flow. It currently has no public route and cannot
+be called as a model-provided confirmation. Purge deletes all implemented
+message, receipt, membership, invitation/secret-envelope, transcript usage
+and metadata rows in a single local transaction. A minimal tombstone retains
+the opaque table ID, guest membership authorities, original expiry, terminal
+state and cleanup deadline; it holds **no** title, purpose, message body,
+invitation token or secret envelope. After original expiry plus 24 hours,
+alarm processing removes the tombstone. A retained GuestDO reservation cannot
+reinitialize a deleted/expired TableDO; once the tombstone expires, that same
+reservation's original lifetime is already over.
+
+The TableDO scheduler atomically arms initial expiry and private purge
+deadlines with the associated SQL mutation, restores missing alarms after
+reconstruction, and drains one bounded lifecycle action per invocation.
+Dispatch consumers must recheck the internal `lifecycleStatus` before
+each outbound side effect. The transient close/purge invalidation observer
+is **not** a durable event outbox and cannot recall already dispatched bytes.
+No public Events, host wakeup, production deployment, backup erasure or
+browser deletion-approval success is implied by this lifecycle implementation.
