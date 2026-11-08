@@ -23,7 +23,7 @@ function cookieFrom(response: APIResponse, name: string): string {
 
 function toolOutput(result: Awaited<ReturnType<Client["callTool"]>>) {
   const text = result.content.find((entry) => entry.type === "text");
-  if (!text || text.type !== "text") throw new Error("No tool result");
+  if (text?.type !== "text") throw new Error("No tool result");
   return JSON.parse(text.text) as Record<string, unknown>;
 }
 
@@ -45,10 +45,7 @@ test("official SDK deletion requires an explicit same-guest browser POST", async
     maxRedirects: 0,
   });
   expect(signedIn.status()).toBe(303);
-  const originalCookie = cookieFrom(
-    signedIn,
-    "__Host-agent_table_session",
-  );
+  const originalCookie = cookieFrom(signedIn, "__Host-agent_table_session");
 
   const registered = await request.post("/oauth/register", {
     data: {
@@ -82,7 +79,7 @@ test("official SDK deletion requires an explicit same-guest browser POST", async
   expect(consent.status()).toBe(200);
   const markup = await consent.text();
   const hidden = (name: string) =>
-    new RegExp('name="' + name + '" type="hidden" value="([^"]+)"').exec(
+    new RegExp(`name="${name}" type="hidden" value="([^"]+)"`).exec(
       markup,
     )?.[1];
   const handle = hidden("handle");
@@ -116,10 +113,7 @@ test("official SDK deletion requires an explicit same-guest browser POST", async
     maxRedirects: 0,
   });
   expect(approved.status()).toBe(302);
-  const browserCookie = cookieFrom(
-    approved,
-    "__Host-agent_table_session",
-  );
+  const browserCookie = cookieFrom(approved, "__Host-agent_table_session");
   const authorizationCode = new URL(
     approved.headers().location ?? REDIRECT,
   ).searchParams.get("code");
@@ -158,14 +152,16 @@ test("official SDK deletion requires an explicit same-guest browser POST", async
     expect(created.isError).not.toBe(true);
     const tableId = String(toolOutput(created).tableId);
     expect(
-      (await client.callTool({
-        name: "post_message",
-        arguments: {
-          table_id: tableId,
-          request_id: "e2e_browser_delete_post_0001",
-          body: "Never erase by GET",
-        },
-      })).isError,
+      (
+        await client.callTool({
+          name: "post_message",
+          arguments: {
+            table_id: tableId,
+            request_id: "e2e_browser_delete_post_0001",
+            body: "Never erase by GET",
+          },
+        })
+      ).isError,
     ).not.toBe(true);
 
     const operation = {
