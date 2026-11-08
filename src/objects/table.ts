@@ -134,6 +134,9 @@ function sameReservation(
 
 export class TableDO extends DurableObject<Env> {
   private readonly deadlines: DurableDeadlineScheduler;
+  // Integration tests may place two real RPCs immediately before the SQL commit.
+  // This hook is not configurable by clients and is never set in production.
+  private beforeTranscriptCommitForTest?: () => Promise<void>;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -703,6 +706,9 @@ export class TableDO extends DurableObject<Env> {
     const digest = await postDigest(input);
     const bytes = new TextEncoder().encode(input.body).byteLength;
     const messageId = crypto.randomUUID();
+    if (this.beforeTranscriptCommitForTest) {
+      await this.beforeTranscriptCommitForTest();
+    }
     return this.ctx.storage.transactionSync(() => {
       const table = this.metadataRow();
       const member = this.memberFor(actor.guestId);

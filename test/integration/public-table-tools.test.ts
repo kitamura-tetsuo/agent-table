@@ -1052,10 +1052,12 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
   it("uses the real OAuth SDK boundary for post retries, private reads and fixed snapshots", async () => {
     const owner = await tokenForGuest("tables:read tables:write");
     const outsider = await tokenForGuest("tables:read tables:write");
+    const invitee = await tokenForGuest("tables:read tables:write");
     const readOnly = await tokenForGuest("tables:read");
-    const [client, stranger, reader] = await Promise.all([
+    const [client, stranger, peer, reader] = await Promise.all([
       sdk(owner.token),
       sdk(outsider.token),
+      sdk(invitee.token),
       sdk(readOnly.token),
     ]);
     try {
@@ -1125,7 +1127,48 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
           error: { code: "TABLE_NOT_FOUND" },
         });
       }
+      const issued = await client.callTool({
+        name: "create_invite",
+        arguments: {
+          table_id: tableId,
+          request_id: "sdk_transcript_prejoin_invite_0001",
+        },
+      });
+      expect(issued.isError).not.toBe(true);
+      const joined = await peer.callTool({
+        name: "join_table",
+        arguments: {
+          invitation: output(issued).invitation,
+          request_id: "sdk_transcript_prejoin_join_0001",
+        },
+      });
+      expect(joined.isError).not.toBe(true);
+      const prejoinRead = await peer.callTool({
+        name: "read_messages",
+        arguments: { table_id: tableId },
+      });
+      expect(prejoinRead.isError).not.toBe(true);
+      expect(output(prejoinRead)).toMatchObject({
+        through_seq: 1,
+        messages: [{ seq: 1, body }],
+        latest_peer_seq: 1,
+      });
       const inboxUri = String(metadata.ownInboxUri);
+      const peerInboxUri = String(output(joined).ownInboxUri);
+      const peerInbox = await peer.readResource({ uri: peerInboxUri });
+      const peerContent = peerInbox.contents.find(
+        (entry) => entry.uri === peerInboxUri && "text" in entry,
+      );
+      if (!peerContent || !("text" in peerContent)) {
+        throw new Error("Authenticated peer inbox resource missing");
+      }
+      expect(JSON.parse(peerContent.text)).toMatchObject({
+        tableId,
+        lastSeq: 1,
+        latestPeerSeq: 1,
+      });
+      await expect(client.readResource({ uri: peerInboxUri })).rejects.toThrow();
+      await expect(peer.readResource({ uri: inboxUri })).rejects.toThrow();
       const inbox = await client.readResource({ uri: inboxUri });
       const ownContent = inbox.contents.find(
         (entry) => entry.uri === inboxUri && "text" in entry,
@@ -1204,6 +1247,7 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
     } finally {
       await client.close();
       await stranger.close();
+      await peer.close();
       await reader.close();
     }
   });
@@ -1590,39 +1634,27 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
       });
 
       let arrived = 0;
-      const overlay: Env = {
-        ...env,
-        TABLES: {
-          idFromName: (name: string) => env.TABLES.idFromName(name),
-          get: (id: DurableObjectId): TableStub => {
-            const stub = env.TABLES.get(id);
-            return new Proxy(stub, {
-              get(target, property) {
-                if (property === "postMessage") {
-                  return async (
-                    actor: VerifiedConnectionActor,
-                    value: unknown,
-                  ) => {
-                    arrived++;
-                    for (let spin = 0; arrived < 2 && spin < 500; spin++) {
-                      await new Promise<void>((resolve) =>
-                        setTimeout(resolve, 10),
-                      );
-                    }
-                    if (arrived < 2)
-                      throw new Error("SDK posts did not overlap");
-                    return target.postMessage(actor, value);
-                  };
-                }
-                return Reflect.get(target, property, target);
-              },
-            });
-          },
-        } as Env["TABLES"],
-      };
+      let release!: () => void;
+      let bothArrived!: () => void;
+      const releaseCommit = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const enteredCommit = new Promise<void>((resolve) => {
+        bothArrived = resolve;
+      });
+      await runInDurableObject(table, async (instance) => {
+        const testInstance = instance as unknown as {
+          beforeTranscriptCommitForTest?: () => Promise<void>;
+        };
+        testInstance.beforeTranscriptCommitForTest = async () => {
+          arrived++;
+          if (arrived === 2) bothArrived();
+          await releaseCommit;
+        };
+      });
       const [a, b] = await Promise.all([
-        sdk(owner.token, fetchThroughWorker(overlay)),
-        sdk(peer.token, fetchThroughWorker(overlay)),
+        sdk(owner.token),
+        sdk(peer.token),
       ]);
       const argsA = {
         table_id: tableId,
@@ -1635,10 +1667,19 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
         body: "B".repeat(TABLE_LIMITS.messageBodyBytes),
       };
       try {
-        const results = await Promise.all([
+        const pending = Promise.all([
           a.callTool({ name: "post_message", arguments: argsA }),
           b.callTool({ name: "post_message", arguments: argsB }),
         ]);
+        const bothReachedBoundary = await Promise.race([
+          enteredCommit.then(() => true),
+          new Promise<boolean>((resolve) =>
+            setTimeout(() => resolve(false), 5_000),
+          ),
+        ]);
+        release();
+        expect(bothReachedBoundary).toBe(true);
+        const results = await pending;
         expect(arrived).toBe(2);
         expect(results.filter((result) => !result.isError)).toHaveLength(1);
         const winnerIndex = results.findIndex((result) => !result.isError);
@@ -1681,6 +1722,13 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
           ).toEqual({ message_id: accepted.message_id });
         });
       } finally {
+        release();
+        await runInDurableObject(table, async (instance) => {
+          const testInstance = instance as unknown as {
+            beforeTranscriptCommitForTest?: () => Promise<void>;
+          };
+          testInstance.beforeTranscriptCommitForTest = undefined;
+        });
         await a.close();
         await b.close();
       }
