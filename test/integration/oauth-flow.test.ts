@@ -338,17 +338,18 @@ describe("real authorization code and guest-grant flow", () => {
         payloads.filter((item) => item.error === "invalid_grant"),
       ).toHaveLength(1);
 
-      const grants = await env.OAUTH_KV.list({
-        prefix: `grant:${browser.guestId}:`,
-      });
-      expect(grants.keys).toHaveLength(1);
-      const stored = await env.OAUTH_KV.get<Record<string, unknown>>(
-        grants.keys[0].name,
-        "json",
+      // A third sequential exchange must observe the provider's durable
+      // consumed-code state, independently of the two overlapping responses.
+      // Do not use KV.list() as an immediate consistency oracle.
+      const replay = await redeem(
+        clientId,
+        approved.code,
+        approved.verifier,
       );
-      expect(stored).not.toBeNull();
-      expect(stored?.authCodeWrappedKey).toBeUndefined();
-      expect(typeof stored?.refreshTokenId).toBe("string");
+      expect(replay.status).toBe(400);
+      const replayBody = await jsonUrl(replay);
+      expect(replayBody.error).toBe("invalid_grant");
+      expect(replayBody.access_token).toBeUndefined();
     } finally {
       await tokenDO.clearRedemptionReadProbe();
     }
