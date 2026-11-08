@@ -1,0 +1,35 @@
+{
+  "name": "agent-table",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": "24.22.1"
+  },
+  "packageManager": "npm@11.9.0",
+  "scripts": {
+    "dev": "wrangler dev --local --ip 127.0.0.1",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check src schema test",
+    "test": "vitest run",
+    "test:integration": "vitest run test/integration",
+    "test:e2e": "playwright test",
+    "build": "wrangler deploy --dry-run --outdir dist"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/client": "2.4.0",
+    "@modelcontextprotocol/server": "2.4.0",
+    "agents": "0.33.0",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.6.6",
+    "@cloudflare/vitest-plugin": "1.6.0",
+    "@cloudflare/workers-types": "5.20261108.1",
+    "@playwright/test": "1.65.0",
+    "@types/node": "24.19.2",
+    "typescript": "6.0.3",
+    "vitest": "4.1.0",
+    "wrangler": "4.158.0"
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "agent-table-dev",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-07",
+  "compatibility_flags": ["nodejs_compat"],
+  "durable_objects": {
+    "bindings": [
+      { "name": "TABLES", "class_name": "TableDO" },
+      { "name": "GUESTS", "class_name": "GuestDO" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["TableDO", "GuestDO"] }
+  ],
+  "vars": {
+    "PUBLIC_ORIGIN": "http://localhost:8787",
+    "ENABLE_MCP_SUBSCRIPTIONS": "false",
+    "ENABLE_OPENAI_EVENTS": "false",
+    "ALLOW_NEW_GUESTS": "false"
+  }
+}
