@@ -2329,7 +2329,9 @@ describe("authenticated public SDK admission quota", () => {
       const denied = observed.filter((item) => item.status === 429);
       expect(accepted).toHaveLength(60);
       expect(denied.length).toBeGreaterThan(0);
-      expect(denied.every((item) => /^[1-9][0-9]*$/.test(item.retryAfter ?? ""))).toBe(true);
+      expect(
+        denied.every((item) => /^[1-9][0-9]*$/.test(item.retryAfter ?? "")),
+      ).toBe(true);
       expect(accepted.every((item) => item.status < 400)).toBe(true);
 
       const bytes = await crypto.subtle.digest(
@@ -2342,9 +2344,11 @@ describe("authenticated public SDK admission quota", () => {
       const admission = env.ADMISSION.get(env.ADMISSION.idFromName(hash));
       await runInDurableObject(admission, async (_instance, state) => {
         expect(
-          state.storage.sql.exec<{ count: number }>(
-            "SELECT COUNT(*) AS count FROM admission_hits WHERE category = 'application'",
-          ).one().count,
+          state.storage.sql
+            .exec<{ count: number }>(
+              "SELECT COUNT(*) AS count FROM admission_hits WHERE category = 'application'",
+            )
+            .one().count,
         ).toBe(60);
       });
       await evictDurableObject(admission);
@@ -2356,9 +2360,11 @@ describe("authenticated public SDK admission quota", () => {
       expect(observed.at(-1)?.status).toBe(429);
       await runInDurableObject(admission, async (_instance, state) => {
         expect(
-          state.storage.sql.exec<{ count: number }>(
-            "SELECT COUNT(*) AS count FROM admission_hits WHERE category = 'application'",
-          ).one().count,
+          state.storage.sql
+            .exec<{ count: number }>(
+              "SELECT COUNT(*) AS count FROM admission_hits WHERE category = 'application'",
+            )
+            .one().count,
         ).toBe(60);
       });
     } finally {
