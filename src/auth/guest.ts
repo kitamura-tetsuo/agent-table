@@ -1,4 +1,9 @@
-import type { GuestSessionPrincipal, NewGuestSession } from "../objects/guest";
+import type {
+  ConnectionRevocation,
+  ConnectionSummary,
+  GuestSessionPrincipal,
+  NewGuestSession,
+} from "../objects/guest";
 import { randomBase64Url } from "../shared/random";
 import { connectionsPage } from "../web/connections";
 import { guestPage } from "../web/guest";
@@ -256,14 +261,17 @@ export async function handleConnectionList(
   const credential = browserCredential(request);
   if (!credential) return response("No valid guest session", 401);
   let guest: GuestSessionPrincipal | null;
-  let connections;
+  let connections: ConnectionSummary[] | null;
   try {
     const stub = guestStub(env, credential.guestId);
     guest = await stub.validateSession(credential.sessionId, credential.secret);
     if (!guest || guest.guestId !== credential.guestId) {
       return response("No valid guest session", 401);
     }
-    connections = await stub.listConnections(credential.sessionId, credential.secret);
+    connections = await stub.listConnections(
+      credential.sessionId,
+      credential.secret,
+    );
   } catch {
     return response("Connection authority unavailable", 503);
   }
@@ -305,7 +313,7 @@ export async function handleConnectionRevoke(
   }
   const credential = browserCredential(request);
   if (!credential) return response("No valid guest session", 401);
-  let result;
+  let result: ConnectionRevocation;
   try {
     result = await guestStub(env, credential.guestId).revokeConnection(
       credential.sessionId,
@@ -328,7 +336,7 @@ export async function handleConnectionRevoke(
   headers.append("Set-Cookie", sessionCookie(result.session));
   headers.append(
     "Set-Cookie",
-    CSRF_COOKIE_NAME + "=; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=Lax",
+    `${CSRF_COOKIE_NAME}=; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=Lax`,
   );
   return new Response(null, { status: 303, headers });
 }

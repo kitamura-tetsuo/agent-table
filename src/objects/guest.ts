@@ -62,7 +62,6 @@ export type ConnectionRevocation =
   | { status: "not-found" }
   | { status: "revoked"; session: NewGuestSession };
 
-
 function validCredential(sessionId: string, secret: string): boolean {
   return UUID_V4.test(sessionId) && SESSION_SECRET.test(secret);
 }
