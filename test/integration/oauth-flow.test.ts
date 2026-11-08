@@ -484,10 +484,12 @@ describe("real authorization code and guest-grant flow", () => {
     const responses = await Promise.all([retry(), retry()]);
     expect(responses.map((item) => item.status).sort()).toEqual([200, 400]);
     const results = await Promise.all(responses.map(jsonUrl));
-    expect(results.filter((item) => typeof item.access_token === "string"))
-      .toHaveLength(1);
-    expect(results.filter((item) => item.error === "invalid_grant"))
-      .toHaveLength(1);
+    expect(
+      results.filter((item) => typeof item.access_token === "string"),
+    ).toHaveLength(1);
+    expect(
+      results.filter((item) => item.error === "invalid_grant"),
+    ).toHaveLength(1);
     const grants = await browser.guest.listConnections(
       approved.sessionId,
       approved.sessionSecret,
