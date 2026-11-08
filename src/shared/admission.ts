@@ -201,7 +201,6 @@ export async function verifyGuestChallenge(
   }
 }
 
-
 /** All requests from one edge source share one durable rate authority. */
 export type EdgeAdmissionCategory =
   | "guest"
@@ -241,17 +240,17 @@ function configuredRate(
   return count <= 10_000 ? count : null;
 }
 
-function admissionResponse(
-  status: 429 | 503,
-  retryAfterMs?: number,
-): Response {
+function admissionResponse(status: 429 | 503, retryAfterMs?: number): Response {
   const headers = new Headers({
     "Cache-Control": "no-store",
     "Content-Type": "text/plain; charset=utf-8",
     "X-Content-Type-Options": "nosniff",
   });
   if (retryAfterMs !== undefined) {
-    headers.set("Retry-After", String(Math.max(1, Math.ceil(retryAfterMs / 1_000))));
+    headers.set(
+      "Retry-After",
+      String(Math.max(1, Math.ceil(retryAfterMs / 1_000))),
+    );
   }
   return new Response(
     status === 429 ? "RATE_LIMITED" : "Admission authority unavailable",
@@ -334,5 +333,10 @@ export function checkPrincipalAdmission(
     "PRINCIPAL_RATE_PER_MINUTE",
     INGRESS_LIMITS.principalRequestsPerMinute,
   );
-  return consumeAdmission(env, `principal-v1:${verifiedGuestId}`, "application", limit);
+  return consumeAdmission(
+    env,
+    `principal-v1:${verifiedGuestId}`,
+    "application",
+    limit,
+  );
 }
