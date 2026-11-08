@@ -1,6 +1,6 @@
 # Authentication, authorization, and privacy
 
-Status: proposed security model. These controls require implementation and verification before handling private conversations.
+Status: proposed security model, except for the Workers-compatible, purpose-separated secret-envelope primitive (Issue #3). Encryption is implemented and tested; invitation, callback, OAuth and other application consumers are not yet implemented. The remaining controls require verification before handling private conversations.
 
 ## Registration-free does not mean unauthenticated
 
@@ -65,6 +65,18 @@ Unsubscribe cancels pending work for that subscription. Closing/deleting a table
 Callback URLs are an SSRF boundary. The public pilot accepts only operator-reviewed provider destinations, never arbitrary user-entered hosts. Require HTTPS, reject credentials/IP literals/unexpected ports, forbid redirects, and verify callback control before sending application metadata. Destination validation must cover the actual connection, including DNS changes—not just URL syntax. A secure Workers-compatible egress implementation is a release gate for webhook support. Do not claim that a hostname allowlist alone implements IP pinning. [OPENAI-EVENTS]
 
 Store callback secrets and retry envelopes encrypted with a versioned application key in Workers secrets. Never place OAuth tokens, signing keys, or invite secrets in committed configuration. Encrypting these stored credentials does not make the transcript end-to-end encrypted.
+
+## Encrypted retained credentials (implemented primitive)
+
+`src/shared/secret-envelope.ts` provides `sealSecret` and `openSecret` using the Workers Web Crypto AES-256-GCM implementation. It is for *retained invitation-response secrets* and *callback credentials* only; their eventual producers must call the helper before writing anything persistent. No plaintext fallback is permitted. Invitation redemption and callback authorization are **not** provided by decryptability and remain separate, unimplemented checks.
+
+The serialized v1 envelope contains only `version`, `keyId`, `purpose`, `nonce`, and `ciphertext` (including the authentication tag). The cipher authenticates the format version, exact purpose, key ID, and a caller-supplied stable owning `recordId` as additional data; the record ID is never serialized into the envelope. A consumer must supply the same record ID when opening a persisted envelope. An altered field, record ID, nonce, tag or unknown format cannot return plaintext. Ciphertext is bounded to a maximum 16 KiB plaintext equivalent. Do not log envelopes merely because their fields are not plaintext.
+
+`INVITATION_RESPONSE_KEYRING` and `CALLBACK_CREDENTIAL_KEYRING` are **distinct Workers secret bindings**. Each secret is a JSON keyring with a `current` entry (`id`, `key`) and a `previous` array (entries add `retiredAt` and `acceptUntil`). The `key` field is an unpadded base64url-encoded 32-byte random AES key. Key IDs are non-secret routing identifiers. A keyring may contain up to two uniquely identified previous keys, each with an explicit UTC-millisecond retirement/start and deadline separated by at most seven days. Encryption always uses `current`. Previous keys can decrypt only from `retiredAt` up to, but not including, `acceptUntil`; missing/expired keys are never implicitly rediscovered. Reject unsupported envelope versions rather than attempting a silent downgrade.
+
+Failures raise only fixed-category `SecretEnvelopeError` values; they carry no raw ciphertext, plaintext, key, underlying Web Crypto exception or input-derived message. Consumers must surface an appropriate generic failure without reissuing an invitation, changing an access grant, or logging the rejected payload. Use short-lived invitation response retention and purge it at redemption/revocation/expiry when those consumers are built.
+
+This encryption protects retained credentials **at rest within the application**, not the table transcript end-to-end. The operator and Cloudflare Worker still process plaintext on authorized access, and recipient agents may retain data separately.
 
 ## Content and agent safety
 

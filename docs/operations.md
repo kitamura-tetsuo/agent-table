@@ -1,6 +1,6 @@
 # Development and operations
 
-Status: local foundation runbook plus future deployment plan. The Worker/DO scaffold, dependency lockfile, test scripts, and PR-only validation workflow exist. No public or staging deployment, guest authorization, tables, event delivery, or host interoperability has been completed.
+Status: local foundation runbook plus future deployment plan. The Worker/DO scaffold, dependency lockfile, test scripts, PR-only validation workflow, and purpose-separated encrypted-secret primitive exist. No public or staging deployment, guest authorization, invitation producer, callback producer, application tables, event delivery, or host interoperability has been completed.
 
 ## Implemented foundation (Issue #2)
 
@@ -18,6 +18,12 @@ Exact direct dependency pins (also recorded in `package-lock.json`):
 | TypeScript / Biome / Playwright | `6.0.3` / `2.6.6` / `1.65.0` |
 
 The pinned Agents release declares the MCP SDK `2.4.0` optional peer version. Tests pin the official modern `2026-07-28` SDK client and use Cloudflare's workerd test plugin with a real SQLite Durable Object namespace; no Node-only storage mocks are the runtime oracle. The browser smoke suite uses a live Wrangler dev server and Chromium. The local test harness and CI perform no Cloudflare deployment.
+
+### Secret-envelope implementation (Issue #3)
+
+`src/shared/config.ts` validates the two independent encryption keyrings, and `src/shared/secret-envelope.ts` seals/opens authenticated v1 AES-256-GCM envelopes. `src/env.d.ts` declares their optional Worker secret bindings. They are deliberately **not** defined in `wrangler.jsonc` variables, nor used by a public endpoint. See [security.md](security.md) for the envelope and authorization boundaries.
+
+The workerd integration suite tests both purposes, authenticated metadata and record-ID binding, tampering, secret-safe errors, old-key overlap/deadline refusal, and ciphertext persisted through an actual SQLite-backed `TableDO` eviction and reconstruction. Run just that production-function suite using `npx vitest run test/integration/secret-envelope.test.ts`. Application consumers and credential records are future issues; these tests do not claim the service can already issue invites or deliver callbacks.
 
 ## Future repository layout
 
@@ -48,7 +54,7 @@ test/
 docs/
 ```
 
-The implemented subset has `src/index.ts`, `src/mcp/server.ts`, `src/objects/{table,guest}.ts`, `src/shared/schema.ts`, `schema/001_initial.ts`, `test/{unit,integration,e2e}/`, and `.github/workflows/ci.yml`. OAuth provider, webhook, and browser-management dependencies will be selected by their respective implementation issues after reviewing compatibility.
+The implemented subset has `src/index.ts`, `src/mcp/server.ts`, `src/objects/{table,guest}.ts`, `src/shared/{schema,config,secret-envelope}.ts`, `schema/001_initial.ts`, `test/{unit,integration,e2e}/`, and `.github/workflows/ci.yml`. OAuth provider, webhook, and browser-management dependencies will be selected by their respective implementation issues after reviewing compatibility.
 
 Tests should run in Cloudflare's workerd-based harness for storage, bindings, alarms, and streams. Browser tests cover consent and invitation handling. Pure Node unit tests alone are not an adequate production oracle. [CF-TEST]
 
@@ -64,6 +70,8 @@ Initial bindings:
 | `GUESTS` | SQLite-backed `GuestDO` namespace |
 | `OAUTH_KV` | Selected OAuth library's protocol storage |
 | `ASSETS` | Optional Worker static-assets binding |
+| `INVITATION_RESPONSE_KEYRING` | Workers secret: invitation-response encryption keys |
+| `CALLBACK_CREDENTIAL_KEYRING` | Workers secret: callback-credential encryption keys |
 
 `wrangler.jsonc` is the committed local development/dry-run configuration. It contains **no** real account, namespace, KV, or secret identifiers. `PUBLIC_ORIGIN` must be changed to the intended HTTPS hostname in a separately reviewed staging/production configuration before deployment. The MCP handler uses that origin's hostname as its accepted Host/Origin allowlist (with loopback aliases only for local development). OAuth library KV bindings are not present yet because OAuth itself is not implemented. Do not deploy the local scaffold as a public guest service.
 
@@ -91,16 +99,26 @@ The GitHub Actions PR workflow repeats clean `npm ci`, type checking, linting, w
 
 ## Deployment procedure after implementation
 
-After the guest/OAuth and later application stages have been implemented, separately approve staging publication, provision the OAuth KV binding if the selected library requires it, and set real staging origin/namespace configuration outside the committed local scaffold. Store encryption keys with `wrangler secret put`, not in JSON or shell history. Use separate versioned keys for encrypted callback credentials and any other encryption purpose. Configure additional secrets from the chosen OAuth library's pinned documentation. The following commands are a future operator workflow, **not** part of PR CI:
+After the guest/OAuth and later application stages have been implemented, separately approve staging publication, provision the OAuth KV binding if the selected library requires it, and set real staging origin/namespace configuration outside the committed local scaffold. Store encryption keyrings with `wrangler secret put`, not in committed configuration, shell history, deployment logs or test artifacts. Configure additional secrets from the chosen OAuth library's pinned documentation. The following commands are a future **interactive** operator workflow, **not** part of PR CI:
 
 ```sh
 npx wrangler login
 npx wrangler kv namespace create OAUTH_KV
-npx wrangler secret put CREDENTIAL_ENCRYPTION_KEY
+npx wrangler secret put INVITATION_RESPONSE_KEYRING
+npx wrangler secret put CALLBACK_CREDENTIAL_KEYRING
 npx wrangler deploy --dry-run
 ```
 
 These commands do not publish the service. After the validation gates pass, use an explicit staging deployment, then separately approve production deployment. CI should typecheck, lint, test, and build on pull requests; production deployment should be restricted to the intended repository/branch and environment. Use a narrowly scoped Cloudflare credential.
+
+Provision and rotate the purpose-specific keyrings as follows:
+
+1. Generate independent 32-byte random AES key material per purpose in a trusted operator environment; encode each key as unpadded base64url. Protect it in your secret manager; do not paste it into commands, tickets, chat, or CI. Choose non-secret, unique version IDs for the `current` entries. Keep `previous` empty until rotation. Each keyring is a JSON object, entered through the interactive Wrangler secret prompt, not a committed file.
+2. To rotate, create fresh independent key material for the purpose being rotated; make it `current`. Move the former current key to `previous` with exact UTC `.sssZ` `retiredAt` (rotation start) and `acceptUntil` (no more than seven days later). Existing ciphertext remains encrypted under its recorded `keyId`; new writes use the new current ID. Deploy the new secret before relying on it, and check in staging that old reads and new writes work. Keep different environments' keyrings separate.
+3. Plan to retire/revoke or otherwise safely complete any still-needed old invitation responses and callback credentials before `acceptUntil`. At the deadline, opening a record under the former key fails with `key-expired`; remove the old key entry from the Worker secret promptly. Removing it earlier causes `key-unavailable`. Neither failure authorizes reissuance, access restoration, a plaintext fallback or silent resealing.
+4. If a keyring is absent, corrupt, lost or wrong for its purpose, the helper fails closed with a safe error. Recover only from an authorized protected key backup or rotate affected credentials through their future ownership flows. Do not log inputs to diagnose the failure. Never extend the overlap beyond seven days as a shortcut.
+
+The envelope contains only ciphertext and non-secret format/key metadata; the owning record retains its own stable ID. Restrict decryption to the owning consumer after separate authorization and expiry checks. Encryption does not protect table transcripts end-to-end; Worker operators and connected agent hosts may process their content.
 
 Enable capabilities one at a time. A tools-only deployment must omit unavailable notifications from discovery. Events must remain disabled when secure egress, signing, durable scheduling, or host compatibility is unverified. Never advertise a feature merely because its flag is enabled.
 
