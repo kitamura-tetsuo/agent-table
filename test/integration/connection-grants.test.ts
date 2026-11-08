@@ -348,19 +348,34 @@ describe("Worker and durable connection grant authority", () => {
       );
     });
     await evictDurableObject(guest.stub);
-    expect(
-      await decision(guest, grant.connectionId, "events:subscribe"),
-    ).toEqual({ allowed: false, reason: "expired" });
+    const expired = await decision(
+      guest,
+      grant.connectionId,
+      "events:subscribe",
+    );
+    if (expired.allowed) throw new Error("Expired grant authorized");
+    // GuestDO may physically purge an already-expired grant on the alarm
+    // between requests. Both expired and missing must deny authorization.
+    expect(["expired", "missing"]).toContain(expired.reason);
+
+    // Corruption must be exercised on a separate, currently live grant.
+    // Reusing the expired row races its durable alarm-driven deletion.
+    const live = await guest.stub.createConnection(
+      guest.sessionId,
+      guest.secret,
+      ["events:subscribe"],
+      Date.now() + 60_000,
+    );
+    if (!live) throw new Error("Live grant not created");
     await runInDurableObject(guest.stub, async (_instance, state) => {
       state.storage.sql.exec(
-        "UPDATE guest_connections SET expires_at = ?, scopes_json = ? WHERE connection_id = ?",
-        Date.now() + 50_000,
+        "UPDATE guest_connections SET scopes_json = ? WHERE connection_id = ?",
         JSON.stringify(["unknown"]),
-        grant.connectionId,
+        live.connectionId,
       );
     });
     expect(
-      await decision(guest, grant.connectionId, "events:subscribe"),
+      await decision(guest, live.connectionId, "events:subscribe"),
     ).toEqual({ allowed: false, reason: "insufficient-scope" });
   });
 });

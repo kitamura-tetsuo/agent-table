@@ -3,20 +3,50 @@
   "name": "agent-table-dev",
   "main": "src/index.ts",
   "compatibility_date": "2026-11-07",
-  "compatibility_flags": ["nodejs_compat"],
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
   "durable_objects": {
     "bindings": [
-      { "name": "TABLES", "class_name": "TableDO" },
-      { "name": "GUESTS", "class_name": "GuestDO" }
+      {
+        "name": "TABLES",
+        "class_name": "TableDO"
+      },
+      {
+        "name": "GUESTS",
+        "class_name": "GuestDO"
+      },
+      {
+        "name": "OAUTH_SERIALIZER",
+        "class_name": "OAuthTokenDO"
+      }
     ]
   },
   "migrations": [
-    { "tag": "v1", "new_sqlite_classes": ["TableDO", "GuestDO"] }
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "TableDO",
+        "GuestDO"
+      ]
+    },
+    {
+      "tag": "v2",
+      "new_classes": [
+        "OAuthTokenDO"
+      ]
+    }
   ],
   "vars": {
     "PUBLIC_ORIGIN": "http://localhost:8787",
     "ENABLE_MCP_SUBSCRIPTIONS": "false",
     "ENABLE_OPENAI_EVENTS": "false",
     "ALLOW_NEW_GUESTS": "false"
-  }
+  },
+  "kv_namespaces": [
+    {
+      "binding": "OAUTH_KV",
+      "id": "00000000000000000000000000000000"
+    }
+  ]
 }
