@@ -1,15 +1,15 @@
 import {
   AuthorizationError,
+  insufficientScope,
   OAuthAuthorizationServer,
   OAuthError,
   OAuthResourceServer,
-  insufficientScope,
 } from "@cloudflare/workers-oauth-provider";
 import { handleMcp } from "../mcp/server";
 import {
+  authorizeGuestConnection,
   CONNECTION_SCOPES,
   isConnectionScope,
-  authorizeGuestConnection,
 } from "../shared/auth";
 import { randomBase64Url } from "../shared/random";
 import {
@@ -229,14 +229,22 @@ export async function handleAuthorize(
       headers.set("Content-Type", "text/html; charset=utf-8");
       headers.set("Cache-Control", "no-store");
       headers.set("Referrer-Policy", "no-referrer");
-      headers.set("Content-Security-Policy",
-        "default-src 'none'; style-src 'none'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'");
-      headers.append("Set-Cookie",
-        `${CSRF_COOKIE}=${csrf}; Path=/; Max-Age=600; Secure; HttpOnly; SameSite=Lax`);
-      return new Response(consentPage(details, principal.guestId, consent.handle, csrf), { headers });
+      headers.set(
+        "Content-Security-Policy",
+        "default-src 'none'; style-src 'none'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+      );
+      headers.append(
+        "Set-Cookie",
+        `${CSRF_COOKIE}=${csrf}; Path=/; Max-Age=600; Secure; HttpOnly; SameSite=Lax`,
+      );
+      return new Response(
+        consentPage(details, principal.guestId, consent.handle, csrf),
+        { headers },
+      );
     }
 
-    if (!sameOriginPost(request)) return safeError("CSRF validation failed", 403);
+    if (!sameOriginPost(request))
+      return safeError("CSRF validation failed", 403);
     const form = await readBoundedForm(request);
     if (!form || request.headers.get("Content-Length") === "0") {
       return safeError("Invalid consent", 400);
@@ -244,7 +252,12 @@ export async function handleAuthorize(
     const allowedKeys = new Set(["handle", "csrf", "decision", "scope"]);
     if ([...form.keys()].some((key) => !allowedKeys.has(key)))
       return safeError("Invalid consent", 400);
-    if (!equalCsrf(form.get("csrf") ?? "", cookieValue(request, CSRF_COOKIE) ?? "")) {
+    if (
+      !equalCsrf(
+        form.get("csrf") ?? "",
+        cookieValue(request, CSRF_COOKIE) ?? "",
+      )
+    ) {
       return safeError("CSRF validation failed", 403);
     }
     const handle = form.get("handle") ?? "";
@@ -253,26 +266,35 @@ export async function handleAuthorize(
       const denied = await oauth.denyConsent(request, handle);
       return new Response(null, { status: 302, headers: denied.headers });
     }
-    if (decision !== "approve") return safeError("Invalid consent decision", 400);
+    if (decision !== "approve")
+      return safeError("Invalid consent decision", 400);
     const requested = form.getAll("scope");
     if (
-      requested.length < 1 || requested.length > CONNECTION_SCOPES.length ||
+      requested.length < 1 ||
+      requested.length > CONNECTION_SCOPES.length ||
       requested.some((value) => !isConnectionScope(value)) ||
       new Set(requested).size !== requested.length
-    ) return safeError("Invalid requested scopes", 400);
+    )
+      return safeError("Invalid requested scopes", 400);
 
-    const approved = await oauth.approveConsent(request, handle, { scope: requested });
+    const approved = await oauth.approveConsent(request, handle, {
+      scope: requested,
+    });
     const credential = browserCredential(request);
     if (!credential || credential.guestId !== principal.guestId)
       return safeError("Invalid guest", 401);
     const guest = env.GUESTS.get(env.GUESTS.idFromName(principal.guestId));
     const grant = await guest.createConnection(
-      credential.sessionId, credential.secret,
-      requested as (typeof CONNECTION_SCOPES[number])[],
+      credential.sessionId,
+      credential.secret,
+      requested as (typeof CONNECTION_SCOPES)[number][],
       Date.now() + REFRESH_SECONDS * 1000,
     );
     if (!grant) return safeError("Guest session expired", 401);
-    const rotated = await guest.rotateSession(credential.sessionId, credential.secret);
+    const rotated = await guest.rotateSession(
+      credential.sessionId,
+      credential.secret,
+    );
     if (!rotated) {
       // A grant may exist but no authorization code has been issued. Fail closed.
       return safeError("Unable to rotate guest session", 503);
@@ -288,25 +310,32 @@ export async function handleAuthorize(
     headers.set("Location", redirectTo);
     headers.set("Cache-Control", "no-store");
     headers.append("Set-Cookie", sessionCookie(rotated));
-    headers.append("Set-Cookie",
-      `${CSRF_COOKIE}=; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=Lax`);
+    headers.append(
+      "Set-Cookie",
+      `${CSRF_COOKIE}=; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=Lax`,
+    );
     return new Response(null, { status: 302, headers });
   } catch (error) {
     if (error instanceof AuthorizationError && error.redirectTo) {
       return Response.redirect(error.redirectTo, 302);
     }
-    if (error instanceof AuthorizationError) return safeError("Invalid authorization request", 400);
+    if (error instanceof AuthorizationError)
+      return safeError("Invalid authorization request", 400);
     throw error;
   }
 }
 
 /** Token exchange is serialized in the single token Durable Object. */
 export function oauthTokenStub(env: Env) {
-  return env.OAUTH_SERIALIZER.get(env.OAUTH_SERIALIZER.idFromName("token-exchange-v1"));
+  return env.OAUTH_SERIALIZER.get(
+    env.OAUTH_SERIALIZER.idFromName("token-exchange-v1"),
+  );
 }
 
 export async function handleAuthenticatedMcp(
-  request: Request, env: Env, ctx: ExecutionContext,
+  request: Request,
+  env: Env,
+  ctx: ExecutionContext,
 ): Promise<Response> {
   const origin = canonicalOAuthOrigin(env);
   const resource = canonicalMcpResource(env);
@@ -317,9 +346,11 @@ export async function handleAuthenticatedMcp(
       resource_name: "Agent Table",
     },
     requiredScopes: ["tables:read"],
-    validateToken: (environment) =>
-      (audience, token) => authorizationServer(environment).validateToken<OAuthActorProps>(
-        audience, token, environment,
+    validateToken: (environment) => (audience, token) =>
+      authorizationServer(environment).validateToken<OAuthActorProps>(
+        audience,
+        token,
+        environment,
       ),
     handler: {
       async fetch(authRequest, environment, authCtx) {
@@ -330,7 +361,10 @@ export async function handleAuthenticatedMcp(
         const scope = scopes[0];
         if (!scope) return insufficientScope(authCtx.auth, ["tables:read"]);
         const checked = await authorizeGuestConnection(
-          environment, props.guestId, props.connectionId, scope,
+          environment,
+          props.guestId,
+          props.connectionId,
+          scope,
         );
         if (!checked.allowed) {
           return safeError("Connection not authorized", 401);

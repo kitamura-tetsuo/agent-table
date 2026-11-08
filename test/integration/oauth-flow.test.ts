@@ -274,10 +274,18 @@ describe("real authorization code and guest-grant flow", () => {
       redeem(clientId, approved.code, approved.verifier),
       redeem(clientId, approved.code, approved.verifier),
     ]);
-    expect(results.map((response) => response.status).sort()).toEqual([200, 400]);
-    const payloads = await Promise.all(results.map((response) => jsonUrl(response)));
-    expect(payloads.filter((item) => typeof item.access_token === "string")).toHaveLength(1);
-    expect(payloads.filter((item) => item.error === "invalid_grant")).toHaveLength(1);
+    expect(results.map((response) => response.status).sort()).toEqual([
+      200, 400,
+    ]);
+    const payloads = await Promise.all(
+      results.map((response) => jsonUrl(response)),
+    );
+    expect(
+      payloads.filter((item) => typeof item.access_token === "string"),
+    ).toHaveLength(1);
+    expect(
+      payloads.filter((item) => item.error === "invalid_grant"),
+    ).toHaveLength(1);
   });
 
   it("does not authorize a denied browser consent", async () => {
@@ -289,14 +297,19 @@ describe("real authorization code and guest-grant flow", () => {
     });
     expect(response.status).toBe(200);
     const html = await response.text();
-    const handle = /name="handle" type="hidden" value="([^"]+)"/.exec(html)?.[1];
+    const handle = /name="handle" type="hidden" value="([^"]+)"/.exec(
+      html,
+    )?.[1];
     const csrf = /name="csrf" type="hidden" value="([^"]+)"/.exec(html)?.[1];
-    const cookies = response.headers.getSetCookie().map((line) => line.split(";")[0]);
+    const cookies = response.headers
+      .getSetCookie()
+      .map((line) => line.split(";")[0]);
     if (!handle || !csrf) throw Error("Consent form missing bound values");
     const denied = await exports.default.fetch(`${ORIGIN}/authorize`, {
       method: "POST",
       headers: {
-        Origin: ORIGIN, "Sec-Fetch-Site": "same-origin",
+        Origin: ORIGIN,
+        "Sec-Fetch-Site": "same-origin",
         "Content-Type": "application/x-www-form-urlencoded",
         Cookie: [browser.cookie, ...cookies].join("; "),
       },
@@ -305,7 +318,8 @@ describe("real authorization code and guest-grant flow", () => {
     expect(denied.status).toBe(302);
     expect(denied.headers.get("Location")).toContain("error=access_denied");
     const grants = await browser.guest.listConnections(
-      browser.session.sessionId, browser.session.secret,
+      browser.session.sessionId,
+      browser.session.secret,
     );
     expect(grants).toEqual([]);
   });
