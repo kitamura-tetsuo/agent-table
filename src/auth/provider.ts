@@ -5,6 +5,13 @@ import {
   OAuthResourceServer,
   insufficientScope,
 } from "@cloudflare/workers-oauth-provider";
+import { handleMcp } from "../mcp/server";
+import {
+  CONNECTION_SCOPES,
+  isConnectionScope,
+  authorizeGuestConnection,
+} from "../shared/auth";
+import { randomBase64Url } from "../shared/random";
 import {
   browserCredential,
   readBoundedForm,
@@ -12,16 +19,13 @@ import {
   sameOriginPost,
   sessionCookie,
 } from "./guest";
-import { CONNECTION_SCOPES, isConnectionScope, authorizeGuestConnection } from "../shared/auth";
-import { randomBase64Url } from "../shared/random";
-import { handleMcp } from "../mcp/server";
 
 const ACCESS_SECONDS = 15 * 60;
 const REFRESH_SECONDS = 30 * 24 * 60 * 60;
 const CSRF_COOKIE = "__Host-agent_table_oauth_csrf";
-const OAUTH_FORM_MAX = 1024;
 const CSRF = /^[A-Za-z0-9_-]{43}$/;
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const UUID =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export type OAuthActorProps = {
   guestId: string;
@@ -30,11 +34,15 @@ export type OAuthActorProps = {
 
 export function canonicalOAuthOrigin(env: Env): string {
   const url = new URL(env.PUBLIC_ORIGIN);
-  const isLocal = url.protocol === "http:" &&
+  const isLocal =
+    url.protocol === "http:" &&
     ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
   if (
     (url.protocol !== "https:" && !isLocal) ||
-    url.username || url.password || url.search || url.hash ||
+    url.username ||
+    url.password ||
+    url.search ||
+    url.hash ||
     url.pathname !== "/" ||
     url.origin !== env.PUBLIC_ORIGIN.replace(/\/$/, "")
   ) {
@@ -53,8 +61,10 @@ function oauthProps(value: unknown): OAuthActorProps | null {
   if (
     typeof props.guestId !== "string" ||
     typeof props.connectionId !== "string" ||
-    !UUID.test(props.guestId) || !UUID.test(props.connectionId)
-  ) return null;
+    !UUID.test(props.guestId) ||
+    !UUID.test(props.connectionId)
+  )
+    return null;
   return { guestId: props.guestId, connectionId: props.connectionId };
 }
 
@@ -72,20 +82,27 @@ export function authorizationServer(env: Env) {
     tokenExchangeCallback: async (options) => {
       const props = oauthProps(options.props);
       if (
-        !props || props.guestId !== options.userId ||
+        !props ||
+        props.guestId !== options.userId ||
         options.resource !== resource ||
         options.scope.length === 0 ||
         options.scope.some((scope) => !isConnectionScope(scope))
       ) {
-        throw new OAuthError("invalid_grant", { description: "Invalid connection" });
+        throw new OAuthError("invalid_grant", {
+          description: "Invalid connection",
+        });
       }
       const guest = env.GUESTS.get(env.GUESTS.idFromName(props.guestId));
       for (const scope of options.scope) {
         let allowed = false;
         try {
-          allowed = (await guest.authorizeConnection(
-            props.guestId, props.connectionId, scope as typeof CONNECTION_SCOPES[number],
-          )).allowed;
+          allowed = (
+            await guest.authorizeConnection(
+              props.guestId,
+              props.connectionId,
+              scope as (typeof CONNECTION_SCOPES)[number],
+            )
+          ).allowed;
         } catch {
           throw new OAuthError("temporarily_unavailable", {
             description: "Authorization service unavailable",
@@ -93,7 +110,9 @@ export function authorizationServer(env: Env) {
           });
         }
         if (!allowed) {
-          throw new OAuthError("invalid_grant", { description: "Connection revoked or expired" });
+          throw new OAuthError("invalid_grant", {
+            description: "Connection revoked or expired",
+          });
         }
       }
       return {
@@ -106,8 +125,10 @@ export function authorizationServer(env: Env) {
 }
 
 function escapeHtml(value: string): string {
-  return value.replace(/[&<>"']/g, (character) =>
-    `&#${character.charCodeAt(0)};`);
+  return value.replace(
+    /[&<>"']/g,
+    (character) => `&#${character.charCodeAt(0)};`,
+  );
 }
 
 function cookieValue(request: Request, name: string): string | null {
@@ -126,13 +147,23 @@ function equalCsrf(a: string, b: string): boolean {
 }
 
 function consentPage(
-  info: { clientName: string; clientDomain?: string; redirectHost: string;
-    redirectIsLoopback: boolean; scope: string[] },
-  guestId: string, handle: string, csrf: string,
+  info: {
+    clientName: string;
+    clientDomain?: string;
+    redirectHost: string;
+    redirectIsLoopback: boolean;
+    scope: string[];
+  },
+  guestId: string,
+  handle: string,
+  csrf: string,
 ): string {
-  const requested = info.scope.map((scope) =>
-    `<label><input type="checkbox" name="scope" value="${escapeHtml(scope)}" checked> ${escapeHtml(scope)}</label>`
-  ).join("");
+  const requested = info.scope
+    .map(
+      (scope) =>
+        `<label><input type="checkbox" name="scope" value="${escapeHtml(scope)}" checked> ${escapeHtml(scope)}</label>`,
+    )
+    .join("");
   return `<!doctype html><html lang="en"><meta charset="utf-8">
 <title>Authorize Agent Table</title>
 <h1>Connect ${escapeHtml(info.clientName)}</h1>
@@ -155,12 +186,15 @@ ${requested}<p><button type="submit" name="decision" value="approve">Allow</butt
 }
 
 function safeError(message: string, status: number): Response {
-  return new Response(message, { status, headers: {
-    "Cache-Control": "no-store",
-    "Content-Type": "text/plain; charset=utf-8",
-    "Referrer-Policy": "no-referrer",
-    "X-Content-Type-Options": "nosniff",
-  } });
+  return new Response(message, {
+    status,
+    headers: {
+      "Cache-Control": "no-store",
+      "Content-Type": "text/plain; charset=utf-8",
+      "Referrer-Policy": "no-referrer",
+      "X-Content-Type-Options": "nosniff",
+    },
+  });
 }
 
 /**
@@ -168,8 +202,12 @@ function safeError(message: string, status: number): Response {
  * GuestDO owns identity and grant creation; neither client metadata nor form
  * fields can choose the guest/connection bound into a token.
  */
-export async function handleAuthorize(request: Request, env: Env): Promise<Response> {
-  if (!["GET", "POST"].includes(request.method)) return safeError("Method Not Allowed", 405);
+export async function handleAuthorize(
+  request: Request,
+  env: Env,
+): Promise<Response> {
+  if (!["GET", "POST"].includes(request.method))
+    return safeError("Method Not Allowed", 405);
   if (new URL(request.url).origin !== canonicalOAuthOrigin(env))
     return safeError("Invalid authorization origin", 400);
 

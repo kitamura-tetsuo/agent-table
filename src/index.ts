@@ -6,12 +6,14 @@ import {
   handleGuestPage,
 } from "./auth/guest";
 import {
-  authorizationServer, handleAuthenticatedMcp, handleAuthorize,
+  authorizationServer,
+  handleAuthenticatedMcp,
+  handleAuthorize,
   oauthTokenStub,
 } from "./auth/provider";
 
-export { GuestDO } from "./objects/guest";
 export { OAuthTokenDO } from "./auth/token-do";
+export { GuestDO } from "./objects/guest";
 export { TableDO } from "./objects/table";
 
 export default {
@@ -20,16 +22,16 @@ export default {
     if (
       url.pathname === "/mcp" ||
       url.pathname === "/.well-known/oauth-protected-resource/mcp"
-    ) return handleAuthenticatedMcp(request, env, ctx);
+    )
+      return handleAuthenticatedMcp(request, env, ctx);
     if (url.pathname === "/authorize") return handleAuthorize(request, env);
-    if (
-      url.pathname === "/oauth/token" ||
-      url.pathname === "/oauth/revoke"
-    ) return oauthTokenStub(env).fetch(request);
+    if (url.pathname === "/oauth/token" || url.pathname === "/oauth/revoke")
+      return oauthTokenStub(env).fetch(request);
     if (
       url.pathname === "/.well-known/oauth-authorization-server" ||
       url.pathname === "/oauth/register"
-    ) return authorizationServer(env).fetch(request, env, ctx);
+    )
+      return authorizationServer(env).fetch(request, env, ctx);
     if (url.pathname === "/" || url.pathname === "/guest") {
       return handleGuestPage(request, env);
     }

@@ -6,7 +6,9 @@ declare global {
     interface Env {
       TABLES: DurableObjectNamespace<TableDO>;
       GUESTS: DurableObjectNamespace<GuestDO>;
-      OAUTH_SERIALIZER: DurableObjectNamespace<import("./auth/token-do").OAuthTokenDO>;
+      OAUTH_SERIALIZER: DurableObjectNamespace<
+        import("./auth/token-do").OAuthTokenDO
+      >;
       OAUTH_KV: KVNamespace;
       PUBLIC_ORIGIN: string;
       ENABLE_MCP_SUBSCRIPTIONS: string;

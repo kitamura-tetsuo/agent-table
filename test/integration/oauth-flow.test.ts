@@ -26,34 +26,49 @@ async function register() {
 }
 
 async function start(clientId: string, extra: Record<string, string> = {}) {
-  const verifier = crypto.randomUUID().replaceAll("-", "") + crypto.randomUUID().replaceAll("-", "");
-  const bytes = new Uint8Array(await crypto.subtle.digest(
-    "SHA-256", new TextEncoder().encode(verifier),
-  ));
+  const verifier =
+    crypto.randomUUID().replaceAll("-", "") +
+    crypto.randomUUID().replaceAll("-", "");
+  const bytes = new Uint8Array(
+    await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier)),
+  );
   const challenge = btoa(String.fromCharCode(...bytes))
-    .replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+    .replaceAll("+", "-")
+    .replaceAll("/", "_")
+    .replaceAll("=", "");
   const url = new URL(`${ORIGIN}/authorize`);
   const params = {
-    response_type: "code", client_id: clientId, redirect_uri: REDIRECT,
-    scope: "tables:read tables:write", state: "synthetic_state",
-    code_challenge: challenge, code_challenge_method: "S256",
-    resource: RESOURCE, ...extra,
+    response_type: "code",
+    client_id: clientId,
+    redirect_uri: REDIRECT,
+    scope: "tables:read tables:write",
+    state: "synthetic_state",
+    code_challenge: challenge,
+    code_challenge_method: "S256",
+    resource: RESOURCE,
+    ...extra,
   };
-  for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value);
+  for (const [key, value] of Object.entries(params))
+    url.searchParams.set(key, value);
   return { url: String(url), verifier };
 }
 
 describe("OAuth library and consent boundary", () => {
   it("advertises DCR, PKCE and exact canonical resource without OIDC scope", async () => {
     expect(canonicalMcpResource(env)).toBe(RESOURCE);
-    const metadata = await exports.default.fetch(`${ORIGIN}/.well-known/oauth-authorization-server`);
+    const metadata = await exports.default.fetch(
+      `${ORIGIN}/.well-known/oauth-authorization-server`,
+    );
     expect(metadata.status).toBe(200);
     const data = await jsonUrl(metadata);
     expect(data.issuer).toBe(ORIGIN);
     expect(data.registration_endpoint).toBe(`${ORIGIN}/oauth/register`);
     expect(data.code_challenge_methods_supported).toContain("S256");
     expect(data.scopes_supported).toEqual([
-      "tables:read", "tables:write", "tables:delete", "events:subscribe",
+      "tables:read",
+      "tables:write",
+      "tables:delete",
+      "events:subscribe",
     ]);
     expect(data.token_endpoint).toBe(`${ORIGIN}/oauth/token`);
   });
@@ -86,8 +101,11 @@ describe("OAuth library and consent boundary", () => {
       method: "POST",
       headers: { "content-type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({
-        client_id: clientId, grant_type: "authorization_code",
-        code: "invented", redirect_uri: REDIRECT, code_verifier: "A".repeat(43),
+        client_id: clientId,
+        grant_type: "authorization_code",
+        code: "invented",
+        redirect_uri: REDIRECT,
+        code_verifier: "A".repeat(43),
         resource: RESOURCE,
       }),
     });
@@ -127,7 +145,9 @@ async function approvedConsent(
   const handle = /name="handle" type="hidden" value="([^"]+)"/.exec(html)?.[1];
   const csrf = /name="csrf" type="hidden" value="([^"]+)"/.exec(html)?.[1];
   if (!handle || !csrf) throw Error("Consent form missing bound values");
-  const cookies = response.headers.getSetCookie().map((line) => line.split(";")[0]);
+  const cookies = response.headers
+    .getSetCookie()
+    .map((line) => line.split(";")[0]);
   const approved = await exports.default.fetch(`${ORIGIN}/authorize`, {
     method: "POST",
     headers: {
@@ -148,10 +168,14 @@ async function approvedConsent(
   if (!redirectTo) throw Error("OAuth authorization redirect was absent");
   const code = new URL(redirectTo).searchParams.get("code");
   if (!code) throw Error("Code absent");
-  const newSession = approved.headers.getSetCookie()
+  const newSession = approved.headers
+    .getSetCookie()
     .find((line) => line.startsWith("__Host-agent_table_session="));
-  const values = newSession && /^__Host-agent_table_session=v1\.([0-9a-f-]+)\.([0-9a-f-]+)\.([A-Za-z0-9_-]{43})/
-    .exec(newSession);
+  const values =
+    newSession &&
+    /^__Host-agent_table_session=v1\.([0-9a-f-]+)\.([0-9a-f-]+)\.([A-Za-z0-9_-]{43})/.exec(
+      newSession,
+    );
   if (!values) throw Error("Browser session not rotated");
   return { code, verifier, sessionId: values[2], sessionSecret: values[3] };
 }
@@ -176,11 +200,15 @@ describe("real authorization code and guest-grant flow", () => {
     const browser = await withBrowserGuest();
     const clientId = await register();
     const approved = await approvedConsent(browser, clientId);
-    expect(await browser.guest.validateSession(
-      browser.session.sessionId, browser.session.secret,
-    )).toBeNull();
+    expect(
+      await browser.guest.validateSession(
+        browser.session.sessionId,
+        browser.session.secret,
+      ),
+    ).toBeNull();
     const grants = await browser.guest.listConnections(
-      approved.sessionId, approved.sessionSecret,
+      approved.sessionId,
+      approved.sessionSecret,
     );
     expect(grants).toHaveLength(1);
     expect(grants?.[0].scopes).toEqual(["tables:read"]);
@@ -199,25 +227,39 @@ describe("real authorization code and guest-grant flow", () => {
     const protectedRead = await exports.default.fetch(`${ORIGIN}/mcp`, {
       method: "POST",
       headers,
-      body: JSON.stringify({ jsonrpc: "2.0", id: 5, method: "tools/list", params: {} }),
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 5,
+        method: "tools/list",
+        params: {},
+      }),
     });
     expect(protectedRead.status).not.toBe(401);
 
     const revoked = await browser.guest.revokeConnection(
-      approved.sessionId, approved.sessionSecret, grants?.[0].connectionId ?? "",
+      approved.sessionId,
+      approved.sessionSecret,
+      grants?.[0].connectionId ?? "",
     );
     expect(revoked.status).toBe("revoked");
     const denied = await exports.default.fetch(`${ORIGIN}/mcp`, {
-      method: "POST", headers,
-      body: JSON.stringify({ jsonrpc: "2.0", id: 5, method: "tools/list", params: {} }),
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 5,
+        method: "tools/list",
+        params: {},
+      }),
     });
     expect(denied.status).toBe(401);
     const refresh = await exports.default.fetch(`${ORIGIN}/oauth/token`, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({
-        client_id: clientId, grant_type: "refresh_token",
-        refresh_token: String(tokens.refresh_token), resource: RESOURCE,
+        client_id: clientId,
+        grant_type: "refresh_token",
+        refresh_token: String(tokens.refresh_token),
       }),
     });
     expect(refresh.status).toBe(400);

@@ -14,15 +14,20 @@ export class OAuthTokenDO extends DurableObject<Env> {
     if (
       request.method !== "POST" ||
       (path !== "/oauth/token" && path !== "/oauth/revoke")
-    ) return new Response("Not Found", { status: 404 });
+    )
+      return new Response("Not Found", { status: 404 });
     let release: () => void = () => {};
-    const current = new Promise<void>((resolve) => { release = resolve; });
+    const current = new Promise<void>((resolve) => {
+      release = resolve;
+    });
     const before = this.tail;
     this.tail = before.then(() => current);
     await before;
     try {
       return await authorizationServer(this.env).fetch(
-        request, this.env, this.ctx as unknown as ExecutionContext,
+        request,
+        this.env,
+        this.ctx as unknown as ExecutionContext,
       );
     } finally {
       release();
