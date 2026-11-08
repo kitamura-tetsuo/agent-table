@@ -50,12 +50,7 @@ const RESERVED_SUFFIXES = [
 function hasUnsafeRawCharacters(raw: string): boolean {
   for (const character of raw) {
     const code = character.charCodeAt(0);
-    if (
-      code <= 31 ||
-      code === 127 ||
-      character === "#" ||
-      character === "\\"
-    ) {
+    if (code <= 31 || code === 127 || character === "#" || character === "\\") {
       return true;
     }
   }
