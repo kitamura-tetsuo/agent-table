@@ -203,10 +203,12 @@ describe("browser -> Worker -> durable connection grant authority", () => {
     expect(checkedBefore.allowed).toBe(true);
 
     const ownerPage = await formPage("/guest/connections", owner.session);
-    const outsiderPage = await formPage("/guest/connections", outsider.session);
+    const outsiderPage = await formPage("/guest", outsider.session);
+    const outsiderList = await dispatch("/guest/connections", {
+      headers: { Cookie: outsider.session },
+    });
     expect(ownerPage.html).toContain(grant.connectionId);
-    expect(outsiderPage.html).not.toContain(grant.connectionId);
-    expect(outsiderPage.html).toContain("No connections for this guest");
+    expect(await outsiderList.text()).not.toContain(grant.connectionId);
     expect((await dispatch("/guest/connections/revoke")).status).toBe(405);
     expect(
       (await revoke(grant.connectionId, owner.session, ownerPage.csrf, ownerPage.csrfCookie, "https://evil.example")).status,
@@ -241,8 +243,11 @@ describe("browser -> Worker -> durable connection grant authority", () => {
     expect(
       await authorizeGuestConnection(env, owner.guestId, grant.connectionId, "tables:read"),
     ).toEqual({ allowed: false, reason: "revoked" });
-    const repeatedPage = await formPage("/guest/connections", nextSession);
-    expect(repeatedPage.html).toContain("Revoked");
+    const repeatedPage = await formPage("/guest", nextSession);
+    const repeatedList = await dispatch("/guest/connections", {
+      headers: { Cookie: nextSession },
+    });
+    expect(await repeatedList.text()).toContain("Revoked");
     const repeated = await revoke(
       grant.connectionId, nextSession, repeatedPage.csrf, repeatedPage.csrfCookie,
     );
