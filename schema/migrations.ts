@@ -4,6 +4,7 @@ import { connectionGrantsSchema } from "./003_connection_grants";
 import { creationReservationsSchema } from "./004_creation_reservations";
 import { tableAuthoritySchema } from "./005_table_authority";
 import { invitationsSchema } from "./006_invitations";
+import { transcriptSchema } from "./007_transcript";
 
 export const migrations = [
   initialSchema,
@@ -12,6 +13,7 @@ export const migrations = [
   creationReservationsSchema,
   tableAuthoritySchema,
   invitationsSchema,
+  transcriptSchema,
 ] as const;
 
 export const APPLICATION_SCHEMA_VERSION = migrations.at(-1)?.version ?? 0;

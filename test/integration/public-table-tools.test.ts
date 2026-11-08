@@ -18,6 +18,7 @@ import {
   authorizeGuestConnection,
   type VerifiedConnectionActor,
 } from "../../src/shared/auth";
+import { TABLE_LIMITS } from "../../src/shared/limits";
 import type { SafeTableMetadata, TableResult } from "../../src/shared/table";
 
 const ORIGIN = "http://localhost:8787";
@@ -272,6 +273,8 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
         "create_table",
         "get_table",
         "join_table",
+        "post_message",
+        "read_messages",
       ]);
       const rejected = await client.callTool({
         name: "create_table",
@@ -1042,6 +1045,758 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
     } finally {
       await a.close();
       await b.close();
+      await creator.close();
+    }
+  });
+
+  it("uses the real OAuth SDK boundary for post retries, private reads and fixed snapshots", async () => {
+    const owner = await tokenForGuest("tables:read tables:write");
+    const outsider = await tokenForGuest("tables:read tables:write");
+    const invitee = await tokenForGuest("tables:read tables:write");
+    const readOnly = await tokenForGuest("tables:read");
+    const [client, stranger, peer, reader] = await Promise.all([
+      sdk(owner.token),
+      sdk(outsider.token),
+      sdk(invitee.token),
+      sdk(readOnly.token),
+    ]);
+    try {
+      const created = await client.callTool({
+        name: "create_table",
+        arguments: {
+          ...input,
+          request_id: "sdk_transcript_create_0001",
+        },
+      });
+      expect(created.isError).not.toBe(true);
+      const metadata = output(created);
+      const tableId = String(metadata.tableId);
+      const body = "  é 😀\nPreserve whitespace  ";
+      const original = {
+        table_id: tableId,
+        body,
+        request_id: "sdk_transcript_post_0001",
+      };
+      const first = await client.callTool({
+        name: "post_message",
+        arguments: original,
+      });
+      expect(first.isError).not.toBe(true);
+      expect(output(first)).toMatchObject({
+        table_id: tableId,
+        seq: 1,
+        persisted: true,
+      });
+      const receipt = output(first);
+      const retry = await client.callTool({
+        name: "post_message",
+        arguments: original,
+      });
+      expect(output(retry)).toEqual(receipt);
+      const conflict = await client.callTool({
+        name: "post_message",
+        arguments: { ...original, body: "Changed" },
+      });
+      expect(conflict.isError).toBe(true);
+      expect(output(conflict)).toMatchObject({
+        error: { code: "IDEMPOTENCY_CONFLICT" },
+      });
+      const noGrant = await reader.callTool({
+        name: "post_message",
+        arguments: original,
+      });
+      expect(noGrant.isError).toBe(true);
+      expect(output(noGrant)).toMatchObject({
+        error: { code: "NOT_AUTHORIZED" },
+      });
+      for (const peer of [stranger]) {
+        const foreignRead = await peer.callTool({
+          name: "read_messages",
+          arguments: { table_id: tableId },
+        });
+        expect(foreignRead.isError).toBe(true);
+        expect(output(foreignRead)).toMatchObject({
+          error: { code: "TABLE_NOT_FOUND" },
+        });
+        const foreignPost = await peer.callTool({
+          name: "post_message",
+          arguments: { ...original, request_id: "sdk_foreign_post_0001" },
+        });
+        expect(foreignPost.isError).toBe(true);
+        expect(output(foreignPost)).toMatchObject({
+          error: { code: "TABLE_NOT_FOUND" },
+        });
+      }
+      const issued = await client.callTool({
+        name: "create_invite",
+        arguments: {
+          table_id: tableId,
+          request_id: "sdk_transcript_prejoin_invite_0001",
+        },
+      });
+      expect(issued.isError).not.toBe(true);
+      const joined = await peer.callTool({
+        name: "join_table",
+        arguments: {
+          invitation: output(issued).invitation,
+          request_id: "sdk_transcript_prejoin_join_0001",
+        },
+      });
+      expect(joined.isError).not.toBe(true);
+      const prejoinRead = await peer.callTool({
+        name: "read_messages",
+        arguments: { table_id: tableId },
+      });
+      expect(prejoinRead.isError).not.toBe(true);
+      expect(output(prejoinRead)).toMatchObject({
+        through_seq: 1,
+        messages: [{ seq: 1, body }],
+        latest_peer_seq: 1,
+      });
+      const inboxUri = String(metadata.ownInboxUri);
+      const peerInboxUri = String(output(joined).ownInboxUri);
+      const peerInbox = await peer.readResource({ uri: peerInboxUri });
+      const peerContent = peerInbox.contents.find(
+        (entry) => entry.uri === peerInboxUri && "text" in entry,
+      );
+      if (!peerContent || !("text" in peerContent)) {
+        throw new Error("Authenticated peer inbox resource missing");
+      }
+      expect(JSON.parse(peerContent.text)).toMatchObject({
+        tableId,
+        lastSeq: 1,
+        latestPeerSeq: 1,
+      });
+      await expect(
+        client.readResource({ uri: peerInboxUri }),
+      ).rejects.toThrow();
+      await expect(peer.readResource({ uri: inboxUri })).rejects.toThrow();
+      const inbox = await client.readResource({ uri: inboxUri });
+      const ownContent = inbox.contents.find(
+        (entry) => entry.uri === inboxUri && "text" in entry,
+      );
+      if (!ownContent || !("text" in ownContent)) {
+        throw new Error("Authenticated own-inbox resource missing");
+      }
+      expect(JSON.parse(ownContent.text)).toMatchObject({
+        tableId,
+        lastSeq: 1,
+        latestPeerSeq: 0,
+      });
+      await expect(stranger.readResource({ uri: inboxUri })).rejects.toThrow();
+      for (const [key, invalidBody] of [
+        ["sdk_transcript_bad_whitespace_001", "  \n  "],
+        ["sdk_transcript_bad_utf8_limit_001", "😀".repeat(2049)],
+      ] as const) {
+        const invalid = await client.callTool({
+          name: "post_message",
+          arguments: {
+            table_id: tableId,
+            request_id: key,
+            body: invalidBody,
+          },
+        });
+        expect(invalid.isError).toBe(true);
+        expect(output(invalid)).toMatchObject({
+          error: { code: "INVALID_REQUEST" },
+        });
+      }
+      const firstPage = await client.callTool({
+        name: "read_messages",
+        arguments: { table_id: tableId, limit: 1 },
+      });
+      expect(firstPage.isError).not.toBe(true);
+      expect(output(firstPage)).toMatchObject({
+        through_seq: 1,
+        next_after_seq: 1,
+        has_more: false,
+        messages: [{ seq: 1, body }],
+      });
+      const second = await client.callTool({
+        name: "post_message",
+        arguments: {
+          table_id: tableId,
+          body: "Later",
+          request_id: "sdk_transcript_post_0002",
+        },
+      });
+      expect(output(second)).toMatchObject({ seq: 2, persisted: true });
+      const unchanged = await client.callTool({
+        name: "read_messages",
+        arguments: { table_id: tableId, after_seq: 1, through_seq: 1 },
+      });
+      expect(output(unchanged)).toMatchObject({
+        messages: [],
+        through_seq: 1,
+        next_after_seq: 1,
+        has_more: false,
+      });
+      const table = env.TABLES.get(env.TABLES.idFromName(tableId));
+      await evictDurableObject(table);
+      const replay = await client.callTool({
+        name: "post_message",
+        arguments: original,
+      });
+      expect(output(replay)).toEqual(receipt);
+      await runInDurableObject(table, async (_instance, state) => {
+        expect(
+          state.storage.sql.exec("SELECT * FROM table_messages").toArray(),
+        ).toHaveLength(2);
+        expect(
+          state.storage.sql.exec("SELECT * FROM table_post_receipts").toArray(),
+        ).toHaveLength(2);
+      });
+    } finally {
+      await client.close();
+      await stranger.close();
+      await peer.close();
+      await reader.close();
+    }
+  });
+
+  it("rolls back a failed transcript insert and recovers with the same SDK request key", async () => {
+    const owner = await tokenForGuest("tables:read tables:write");
+    const client = await sdk(owner.token);
+    try {
+      const created = await client.callTool({
+        name: "create_table",
+        arguments: {
+          ...input,
+          request_id: "sdk_transcript_fault_create_001",
+        },
+      });
+      const tableId = String(output(created).tableId);
+      const table = env.TABLES.get(env.TABLES.idFromName(tableId));
+      await runInDurableObject(table, async (_instance, state) => {
+        state.storage.sql.exec(
+          "CREATE TRIGGER reject_transcript_insert BEFORE INSERT ON table_messages BEGIN SELECT RAISE(ABORT, 'injected-write-failure'); END",
+        );
+      });
+      const original = {
+        table_id: tableId,
+        request_id: "sdk_transcript_fault_post_001",
+        body: "Must be committed or absent",
+      };
+      const failed = await client.callTool({
+        name: "post_message",
+        arguments: original,
+      });
+      expect(failed.isError).toBe(true);
+      expect(output(failed)).toMatchObject({
+        error: { code: "TEMPORARILY_UNAVAILABLE" },
+      });
+      await runInDurableObject(table, async (_instance, state) => {
+        expect(
+          state.storage.sql.exec("SELECT last_seq FROM table_metadata").one(),
+        ).toMatchObject({ last_seq: 0 });
+        expect(
+          state.storage.sql.exec("SELECT * FROM table_messages").toArray(),
+        ).toHaveLength(0);
+        expect(
+          state.storage.sql.exec("SELECT * FROM table_post_receipts").toArray(),
+        ).toHaveLength(0);
+        expect(
+          state.storage.sql
+            .exec("SELECT body_bytes FROM table_transcript_usage")
+            .one(),
+        ).toMatchObject({ body_bytes: 0 });
+        state.storage.sql.exec("DROP TRIGGER reject_transcript_insert");
+      });
+      await evictDurableObject(table);
+      const recovered = await client.callTool({
+        name: "post_message",
+        arguments: original,
+      });
+      expect(recovered.isError).not.toBe(true);
+      expect(output(recovered)).toMatchObject({ seq: 1, persisted: true });
+      const exactRetry = await client.callTool({
+        name: "post_message",
+        arguments: original,
+      });
+      expect(output(exactRetry)).toEqual(output(recovered));
+      await runInDurableObject(table, async (_instance, state) => {
+        expect(
+          state.storage.sql.exec("SELECT * FROM table_messages").toArray(),
+        ).toHaveLength(1);
+        expect(
+          state.storage.sql.exec("SELECT * FROM table_post_receipts").toArray(),
+        ).toHaveLength(1);
+      });
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("bounds two overlapping SDK post requests at the last rate-limit slot", async () => {
+    const owner = await tokenForGuest("tables:read tables:write");
+    const peer = await tokenForGuest("tables:read tables:write");
+    const creator = await sdk(owner.token);
+    const invitee = await sdk(peer.token);
+    try {
+      const created = await creator.callTool({
+        name: "create_table",
+        arguments: {
+          ...input,
+          request_id: "sdk_transcript_race_create_001",
+        },
+      });
+      const tableId = String(output(created).tableId);
+      const issued = await creator.callTool({
+        name: "create_invite",
+        arguments: {
+          table_id: tableId,
+          request_id: "sdk_transcript_race_invite_001",
+        },
+      });
+      const joined = await invitee.callTool({
+        name: "join_table",
+        arguments: {
+          invitation: output(issued).invitation,
+          request_id: "sdk_transcript_race_join_0001",
+        },
+      });
+      expect(joined.isError).not.toBe(true);
+      for (let i = 0; i < 9; i++) {
+        const seed = await creator.callTool({
+          name: "post_message",
+          arguments: {
+            table_id: tableId,
+            body: `Seed ${i}`,
+            request_id: `sdk_transcript_race_seed_${i}`,
+          },
+        });
+        expect(seed.isError).not.toBe(true);
+      }
+      let entered = 0;
+      const overlay: Env = {
+        ...env,
+        TABLES: {
+          idFromName: (name: string) => env.TABLES.idFromName(name),
+          get: (id: DurableObjectId): TableStub => {
+            const stub = env.TABLES.get(id);
+            return new Proxy(stub, {
+              get(target, property) {
+                if (property === "postMessage") {
+                  return async (
+                    actor: VerifiedConnectionActor,
+                    value: unknown,
+                  ) => {
+                    entered++;
+                    for (
+                      let attempt = 0;
+                      entered < 2 && attempt < 500;
+                      attempt++
+                    ) {
+                      await new Promise<void>((resolve) =>
+                        setTimeout(resolve, 10),
+                      );
+                    }
+                    if (entered < 2)
+                      throw new Error("SDK posts did not overlap");
+                    return target.postMessage(actor, value);
+                  };
+                }
+                return Reflect.get(target, property, target);
+              },
+            });
+          },
+        } as Env["TABLES"],
+      };
+      const [a, b] = await Promise.all([
+        sdk(owner.token, fetchThroughWorker(overlay)),
+        sdk(peer.token, fetchThroughWorker(overlay)),
+      ]);
+      const argsA = {
+        table_id: tableId,
+        request_id: "sdk_transcript_race_winner_a_001",
+        body: "Competing creator",
+      };
+      const argsB = {
+        table_id: tableId,
+        request_id: "sdk_transcript_race_winner_b_001",
+        body: "Competing invitee",
+      };
+      try {
+        const results = await Promise.all([
+          a.callTool({ name: "post_message", arguments: argsA }),
+          b.callTool({ name: "post_message", arguments: argsB }),
+        ]);
+        expect(entered).toBe(2);
+        expect(results.filter((result) => !result.isError)).toHaveLength(1);
+        const winningIndex = results.findIndex((result) => !result.isError);
+        const winner = winningIndex === 0 ? creator : invitee;
+        const original = winningIndex === 0 ? argsA : argsB;
+        const rejected = results[1 - winningIndex];
+        expect(output(rejected)).toMatchObject({
+          error: { code: "RATE_LIMITED" },
+        });
+        expect(output(results[winningIndex])).toMatchObject({
+          seq: 10,
+          persisted: true,
+        });
+        const table = env.TABLES.get(env.TABLES.idFromName(tableId));
+        await evictDurableObject(table);
+        const retry = await winner.callTool({
+          name: "post_message",
+          arguments: original,
+        });
+        expect(output(retry)).toEqual(output(results[winningIndex]));
+        await runInDurableObject(table, async (_instance, state) => {
+          expect(
+            state.storage.sql.exec("SELECT last_seq FROM table_metadata").one(),
+          ).toMatchObject({ last_seq: 10 });
+          expect(
+            state.storage.sql.exec("SELECT * FROM table_messages").toArray(),
+          ).toHaveLength(10);
+          expect(
+            state.storage.sql
+              .exec("SELECT * FROM table_post_receipts")
+              .toArray(),
+          ).toHaveLength(10);
+        });
+      } finally {
+        await a.close();
+        await b.close();
+      }
+    } finally {
+      await creator.close();
+      await invitee.close();
+    }
+  });
+
+  it("recovers a committed post after its TableDO response is lost through the SDK", async () => {
+    const owner = await tokenForGuest("tables:read tables:write");
+    const primary = await sdk(owner.token);
+    try {
+      const created = await primary.callTool({
+        name: "create_table",
+        arguments: {
+          ...input,
+          request_id: "sdk_transcript_lost_create_001",
+        },
+      });
+      const tableId = String(output(created).tableId);
+      let dropped = false;
+      const overlay: Env = {
+        ...env,
+        TABLES: {
+          idFromName: (name: string) => env.TABLES.idFromName(name),
+          get: (id: DurableObjectId): TableStub => {
+            const stub = env.TABLES.get(id);
+            return new Proxy(stub, {
+              get(target, property) {
+                if (property === "postMessage") {
+                  return async (
+                    actor: VerifiedConnectionActor,
+                    value: unknown,
+                  ) => {
+                    const result = await target.postMessage(actor, value);
+                    if (result.ok && !dropped) {
+                      dropped = true;
+                      throw new Error("Injected lost committed post response");
+                    }
+                    return result;
+                  };
+                }
+                return Reflect.get(target, property, target);
+              },
+            });
+          },
+        } as Env["TABLES"],
+      };
+      const intercepted = await sdk(owner.token, fetchThroughWorker(overlay));
+      const original = {
+        table_id: tableId,
+        request_id: "sdk_transcript_lost_post_0001",
+        body: "One committed post only",
+      };
+      try {
+        const ambiguous = await intercepted.callTool({
+          name: "post_message",
+          arguments: original,
+        });
+        expect(dropped).toBe(true);
+        expect(ambiguous.isError).toBe(true);
+        expect(output(ambiguous)).toMatchObject({
+          error: { code: "TEMPORARILY_UNAVAILABLE" },
+        });
+      } finally {
+        await intercepted.close();
+      }
+      const table = env.TABLES.get(env.TABLES.idFromName(tableId));
+      const originalRow = await runInDurableObject(
+        table,
+        async (_instance, state) => {
+          const rows = state.storage.sql
+            .exec<{ message_id: string; seq: number }>(
+              "SELECT message_id, seq FROM table_messages",
+            )
+            .toArray();
+          expect(rows).toHaveLength(1);
+          expect(
+            state.storage.sql
+              .exec("SELECT * FROM table_post_receipts")
+              .toArray(),
+          ).toHaveLength(1);
+          return rows[0];
+        },
+      );
+      await evictDurableObject(table);
+      const recovered = await primary.callTool({
+        name: "post_message",
+        arguments: original,
+      });
+      expect(recovered.isError).not.toBe(true);
+      expect(output(recovered)).toMatchObject({
+        message_id: originalRow.message_id,
+        seq: originalRow.seq,
+        persisted: true,
+      });
+      await runInDurableObject(table, async (_instance, state) => {
+        expect(
+          state.storage.sql.exec("SELECT * FROM table_messages").toArray(),
+        ).toHaveLength(1);
+      });
+    } finally {
+      await primary.close();
+    }
+  });
+  it("keeps the 256-message and 2 MiB ceiling under competing authenticated SDK posts", async () => {
+    const owner = await tokenForGuest("tables:read tables:write");
+    const peer = await tokenForGuest("tables:read tables:write");
+    const creator = await sdk(owner.token);
+    const invitee = await sdk(peer.token);
+    try {
+      const created = await creator.callTool({
+        name: "create_table",
+        arguments: {
+          ...input,
+          request_id: "sdk_capacity_table_create_0001",
+        },
+      });
+      const tableId = String(output(created).tableId);
+      const invited = await creator.callTool({
+        name: "create_invite",
+        arguments: {
+          table_id: tableId,
+          request_id: "sdk_capacity_invite_0001",
+        },
+      });
+      const joined = await invitee.callTool({
+        name: "join_table",
+        arguments: {
+          invitation: output(invited).invitation,
+          request_id: "sdk_capacity_join_000001",
+        },
+      });
+      expect(joined.isError).not.toBe(true);
+
+      const table = env.TABLES.get(env.TABLES.idFromName(tableId));
+      const ownerMembershipId = String(output(created).ownMembershipId);
+      const peerMembershipId = String(output(joined).ownMembershipId);
+      const historicalBody = "H".repeat(TABLE_LIMITS.messageBodyBytes);
+      const historicalTime = Date.now() - 120_000;
+      // Seed the equivalent of 255 old committed posts in SQLite, rather than
+      // running 255 expensive OAuth/SDK calls. Keep the receipt and byte
+      // ledgers consistent; only the final competing posts use the live SDK.
+      await runInDurableObject(table, async (_instance, state) => {
+        state.storage.sql.exec(
+          `WITH RECURSIVE seed(n) AS (
+             SELECT 1 UNION ALL SELECT n + 1 FROM seed WHERE n < 255
+           )
+           INSERT INTO table_messages
+             (seq, message_id, sender_membership_id, body, body_bytes, created_at, reply_to_message_id)
+           SELECT n, printf('00000000-0000-4000-8000-%012d', n), ?, ?, ?, ?, NULL
+           FROM seed`,
+          ownerMembershipId,
+          historicalBody,
+          TABLE_LIMITS.messageBodyBytes,
+          historicalTime,
+        );
+        state.storage.sql.exec(
+          `WITH RECURSIVE seed(n) AS (
+             SELECT 1 UNION ALL SELECT n + 1 FROM seed WHERE n < 255
+           )
+           INSERT INTO table_post_receipts (guest_id, request_id, request_digest, message_seq)
+           SELECT ?, printf('sdk_seed_capacity_%04d', n), ?, n FROM seed`,
+          owner.guestId,
+          "0".repeat(64),
+        );
+        state.storage.sql.exec(
+          "UPDATE table_metadata SET last_seq = 255 WHERE singleton = 1",
+        );
+        state.storage.sql.exec(
+          "UPDATE table_transcript_usage SET body_bytes = ? WHERE singleton = 1",
+          255 * TABLE_LIMITS.messageBodyBytes,
+        );
+        state.storage.sql.exec(
+          "UPDATE table_memberships SET latest_peer_seq = 255 WHERE membership_id = ?",
+          peerMembershipId,
+        );
+      });
+
+      await runInDurableObject(table, async (instance) => {
+        const testInstance = instance as unknown as {
+          transcriptCommitBarrierEnabledForTest: boolean;
+        };
+        testInstance.transcriptCommitBarrierEnabledForTest = true;
+      });
+      const [a, b] = await Promise.all([sdk(owner.token), sdk(peer.token)]);
+      const argsA = {
+        table_id: tableId,
+        request_id: "sdk_capacity_final_owner_0001",
+        body: "🧪".repeat(2048),
+      };
+      const argsB = {
+        table_id: tableId,
+        request_id: "sdk_capacity_final_peer_0001",
+        body: "B".repeat(TABLE_LIMITS.messageBodyBytes),
+      };
+      try {
+        const results = await Promise.all([
+          a.callTool({ name: "post_message", arguments: argsA }),
+          b.callTool({ name: "post_message", arguments: argsB }),
+        ]);
+        const arrivals = await runInDurableObject(table, async (instance) => {
+          const testInstance = instance as unknown as {
+            transcriptCommitBarrierArrivalsForTest: number;
+            transcriptCommitBarrierOverlappedForTest: boolean;
+          };
+          return {
+            count: testInstance.transcriptCommitBarrierArrivalsForTest,
+            overlapped: testInstance.transcriptCommitBarrierOverlappedForTest,
+          };
+        });
+        expect(arrivals).toEqual({ count: 2, overlapped: true });
+        expect(results.filter((result) => !result.isError)).toHaveLength(1);
+        const winnerIndex = results.findIndex((result) => !result.isError);
+        const winner = winnerIndex === 0 ? creator : invitee;
+        const winnerArgs = winnerIndex === 0 ? argsA : argsB;
+        const accepted = output(results[winnerIndex]);
+        expect(accepted).toMatchObject({ seq: 256, persisted: true });
+        expect(output(results[1 - winnerIndex])).toMatchObject({
+          error: { code: "LIMIT_REACHED" },
+        });
+        await evictDurableObject(table);
+        const replay = await winner.callTool({
+          name: "post_message",
+          arguments: winnerArgs,
+        });
+        expect(output(replay)).toEqual(accepted);
+        await runInDurableObject(table, async (_instance, state) => {
+          expect(
+            state.storage.sql.exec("SELECT last_seq FROM table_metadata").one(),
+          ).toEqual({ last_seq: 256 });
+          expect(
+            state.storage.sql
+              .exec("SELECT body_bytes FROM table_transcript_usage")
+              .one(),
+          ).toEqual({ body_bytes: TABLE_LIMITS.transcriptBodyBytes });
+          expect(
+            state.storage.sql
+              .exec("SELECT COUNT(*) AS total FROM table_messages")
+              .one(),
+          ).toEqual({ total: 256 });
+          expect(
+            state.storage.sql
+              .exec("SELECT COUNT(*) AS total FROM table_post_receipts")
+              .one(),
+          ).toEqual({ total: 256 });
+          expect(
+            state.storage.sql
+              .exec("SELECT message_id FROM table_messages WHERE seq = 256")
+              .one(),
+          ).toEqual({ message_id: accepted.message_id });
+        });
+      } finally {
+        await runInDurableObject(table, async (instance) => {
+          const testInstance = instance as unknown as {
+            transcriptCommitBarrierEnabledForTest: boolean;
+          };
+          testInstance.transcriptCommitBarrierEnabledForTest = false;
+        });
+        await a.close();
+        await b.close();
+      }
+    } finally {
+      await creator.close();
+      await invitee.close();
+    }
+  }, 10_000);
+
+  it("rejects SDK posts against the aggregate byte budget before the message-count ceiling", async () => {
+    const owner = await tokenForGuest("tables:read tables:write");
+    const creator = await sdk(owner.token);
+    try {
+      const created = await creator.callTool({
+        name: "create_table",
+        arguments: {
+          ...input,
+          request_id: "sdk_byte_budget_create_0001",
+        },
+      });
+      expect(created.isError).not.toBe(true);
+      const tableId = String(output(created).tableId);
+      const table = env.TABLES.get(env.TABLES.idFromName(tableId));
+      // These default ceilings coincide for valid full-size bodies:
+      // 256 * 8 KiB = 2 MiB. A controlled storage budget fixture isolates
+      // the aggregate-byte branch without reaching the message-count ceiling.
+      await runInDurableObject(table, async (_instance, state) => {
+        state.storage.sql.exec(
+          "UPDATE table_transcript_usage SET body_bytes = ? WHERE singleton = 1",
+          TABLE_LIMITS.transcriptBodyBytes - 4,
+        );
+      });
+      const overflow = await creator.callTool({
+        name: "post_message",
+        arguments: {
+          table_id: tableId,
+          request_id: "sdk_byte_budget_overflow_001",
+          body: "12345",
+        },
+      });
+      expect(overflow.isError).toBe(true);
+      expect(output(overflow)).toMatchObject({
+        error: { code: "LIMIT_REACHED" },
+      });
+      const justFits = {
+        table_id: tableId,
+        request_id: "sdk_byte_budget_exact_0001",
+        body: "1234",
+      };
+      const accepted = await creator.callTool({
+        name: "post_message",
+        arguments: justFits,
+      });
+      expect(accepted.isError).not.toBe(true);
+      expect(output(accepted)).toMatchObject({ seq: 1, persisted: true });
+      await evictDurableObject(table);
+      const retried = await creator.callTool({
+        name: "post_message",
+        arguments: justFits,
+      });
+      expect(output(retried)).toEqual(output(accepted));
+      await runInDurableObject(table, async (_instance, state) => {
+        expect(
+          state.storage.sql.exec("SELECT last_seq FROM table_metadata").one(),
+        ).toEqual({ last_seq: 1 });
+        expect(
+          state.storage.sql
+            .exec("SELECT body_bytes FROM table_transcript_usage")
+            .one(),
+        ).toEqual({ body_bytes: TABLE_LIMITS.transcriptBodyBytes });
+        expect(
+          state.storage.sql
+            .exec("SELECT COUNT(*) AS total FROM table_messages")
+            .one(),
+        ).toEqual({ total: 1 });
+        expect(
+          state.storage.sql
+            .exec("SELECT COUNT(*) AS total FROM table_post_receipts")
+            .one(),
+        ).toEqual({ total: 1 });
+      });
+    } finally {
       await creator.close();
     }
   });

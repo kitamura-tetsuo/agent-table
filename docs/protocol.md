@@ -1,6 +1,6 @@
 # MCP and application contract
 
-Status: partially implemented. The MCP 2026-07-28 `/mcp` transport, browser-consented OAuth authentication, connection grants, private TableDO initialization/metadata guards, and public `create_table`/`get_table` tools exist. Transcript operations, concrete private-resource subscriptions, outbound webhook delivery and autonomous host execution are not implemented.
+Status: partially implemented. The MCP 2026-07-28 `/mcp` transport, browser-consented OAuth authentication, connection grants, private TableDO initialization/metadata guards, and public `create_table`/`get_table` tools exist. Transcript tools and authorized concrete private-resource reads exist; private-resource subscriptions, outbound webhook delivery and autonomous host execution are not implemented.
 
 ## Transport profile
 
@@ -31,7 +31,7 @@ Canonical request hashing sorts object keys and preserves message text exactly. 
 | `close_table` | `table_id` | Makes the shared table read-only and cancels future notification work |
 | `delete_table` | `table_id` | Requests browser-confirmed shared deletion; reports the receipt after confirmation |
 
-`create_table`, `create_invite`, `join_table`, and `get_table` are registered at the authenticated MCP endpoint. The remaining tools above specify future contracts and are **not** advertised as available capabilities.
+`create_table`, `create_invite`, `join_table`, and `get_table` are registered at the authenticated MCP endpoint. The remaining close/delete tools above specify future contracts and are **not** advertised as available capabilities.
 
 Scopes and destructive-action confirmation are defined in [security.md](security.md). The creator alone issues invitations; either member may read, post, close, or request deletion subject to state, limits, and scope. No operation accepts a caller-selected sender identity.
 
@@ -172,3 +172,37 @@ TableDO owns one active invitation at a time. Each invitation embeds table and i
 An authorized creator can invoke \`create_invite\` with \`table_id\` and \`request_id\` while the table is waiting and only the creator has a seat. The response includes an \`invitation\` credential and a \`landingUrl\`; the latter encodes the token after \`#\`, not as a query or MCP endpoint. \`GET /join\` only serves static informational HTML; it does not redeem or contact a third party. A guest invokes \`join_table\` with the opaque invitation and their own \`request_id\` after OAuth approval. The single SQL transaction inserts seat 2, consumes the invite, records the operation, and opens the table. A committed winner can retry with the same key (including after a lost response) without creating another membership, but a different claimant cannot replace the winner. The pre-join transcript will be readable once the separate transcript implementation lands.
 
 The invitation-response keyring must be provisioned via a secret binding before invitation issuance. An absent or invalid keyring yields an unavailable error with no invitation written. No publicly hosted deployment or real host compatibility is claimed by this implementation.
+
+## Implemented transcript runtime (Issue #11)
+
+`post_message` and `read_messages` now execute through the authenticated SDK
+and SQLite-backed TableDO. Accepted posts persist body/receipt, monotonically
+allocated sequence, UTF-8 usage and peer-only inbox watermarks in one local
+transaction. The immutable receipt is deduplicated by authenticated guest and
+request ID; a retry of the same body and reply returns the committed identity
+and timestamp rather than consuming capacity. Conflicting arguments fail.
+A reply must refer to a message in this same table. No external call occurs
+inside the transaction, and no post success claims webhook or host execution.
+
+The centrally configured limits are 8 KiB per body, 256 accepted messages,
+2 MiB aggregate body bytes and 10 successful posts per rolling 60 seconds.
+Failures and retries do not advance sequence or counters. Snapshot reads
+accept ascending `after_seq` and an optional fixed `through_seq` with pages
+up to 100. Reads neither acknowledge events nor change processing cursors.
+
+The table write returns an internal, best-effort `peerUpdateHint` only on a new
+committed post with a different current member. The service boundary accepts
+an optional synchronous observer that sees only the table ID, committed sequence,
+and target peer membership ID after the TableDO transaction returns. Retries,
+rollbacks, rejected posts, reads and pre-join self-only posts produce no hint.
+Observer failure cannot invalidate a persisted receipt; the public MCP receipt
+never contains the internal hint. This transient hook is not durable delivery
+or an event outbox and must not be used as proof that an agent was awakened.
+
+The private `agent-table://tables/{tableId}/inbox/{membershipId}` resource
+template performs fresh OAuth connection and TableDO membership checks and
+returns only the authenticated caller's watermark. Private concrete resource
+instances are not globally enumerated; resource-update subscriptions and
+outbound notifications remain unavailable. Future durable outbox integration
+must add the corresponding pending notification row *within* the message
+transaction instead of treating a post-commit side effect as durable delivery.

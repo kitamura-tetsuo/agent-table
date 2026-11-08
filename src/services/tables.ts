@@ -4,7 +4,14 @@ import {
   parseCreationRequest,
 } from "../shared/creation";
 import { parseOwnInboxUri } from "../shared/resources";
-import type { SafeTableMetadata } from "../shared/table";
+import type { SafeTableMetadata, TableResult } from "../shared/table";
+import type {
+  PostMessageInput,
+  PostReceipt,
+  ReadMessagesInput,
+  TranscriptPage,
+  TransientPeerUpdateHint,
+} from "../shared/transcript";
 
 export type PublicTableResult =
   | { ok: true; value: SafeTableMetadata }
@@ -125,6 +132,50 @@ export async function joinTable(
     return await env.TABLES.get(
       env.TABLES.idFromName(parsed.tableId),
     ).redeemInvite(actor, invitation, requestId);
+  } catch {
+    return { ok: false, code: "TEMPORARILY_UNAVAILABLE" };
+  }
+}
+
+/** Route only a validated table ID to the authoritative TableDO. */
+export async function postMessage(
+  env: Env,
+  actor: VerifiedConnectionActor,
+  id: string,
+  input: PostMessageInput,
+  onPeerUpdate?: (hint: TransientPeerUpdateHint) => void,
+): Promise<TableResult<PostReceipt>> {
+  try {
+    const committed = await env.TABLES.get(
+      env.TABLES.idFromName(id),
+    ).postMessage(actor, input);
+    if (!committed.ok) return committed;
+    if (committed.peerUpdateHint && onPeerUpdate) {
+      try {
+        // The SQL commit is already complete. This is not durable delivery.
+        onPeerUpdate(committed.peerUpdateHint);
+      } catch {
+        // A transient observer cannot change the persisted post receipt.
+      }
+    }
+    // Never expose internal peer routing details through public MCP tools.
+    return { ok: true, value: committed.value };
+  } catch {
+    return { ok: false, code: "TEMPORARILY_UNAVAILABLE" };
+  }
+}
+
+export async function readMessages(
+  env: Env,
+  actor: VerifiedConnectionActor,
+  id: string,
+  input: ReadMessagesInput,
+): Promise<TableResult<TranscriptPage>> {
+  try {
+    return await env.TABLES.get(env.TABLES.idFromName(id)).readMessages(
+      actor,
+      input,
+    );
   } catch {
     return { ok: false, code: "TEMPORARILY_UNAVAILABLE" };
   }
