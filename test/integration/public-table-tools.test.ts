@@ -1385,4 +1385,100 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
       await invitee.close();
     }
   });
+
+  it("recovers a committed post after its TableDO response is lost through the SDK", async () => {
+    const owner = await tokenForGuest("tables:read tables:write");
+    const primary = await sdk(owner.token);
+    try {
+      const created = await primary.callTool({
+        name: "create_table",
+        arguments: {
+          ...input,
+          request_id: "sdk_transcript_lost_create_001",
+        },
+      });
+      const tableId = String(output(created).tableId);
+      let dropped = false;
+      const overlay: Env = {
+        ...env,
+        TABLES: {
+          idFromName: (name: string) => env.TABLES.idFromName(name),
+          get: (id: DurableObjectId): TableStub => {
+            const stub = env.TABLES.get(id);
+            return new Proxy(stub, {
+              get(target, property) {
+                if (property === "postMessage") {
+                  return async (
+                    actor: VerifiedConnectionActor,
+                    value: unknown,
+                  ) => {
+                    const result = await target.postMessage(actor, value);
+                    if (result.ok && !dropped) {
+                      dropped = true;
+                      throw new Error("Injected lost committed post response");
+                    }
+                    return result;
+                  };
+                }
+                return Reflect.get(target, property, target);
+              },
+            });
+          },
+        } as Env["TABLES"],
+      };
+      const intercepted = await sdk(owner.token, fetchThroughWorker(overlay));
+      const original = {
+        table_id: tableId,
+        request_id: "sdk_transcript_lost_post_0001",
+        body: "One committed post only",
+      };
+      try {
+        const ambiguous = await intercepted.callTool({
+          name: "post_message",
+          arguments: original,
+        });
+        expect(dropped).toBe(true);
+        expect(ambiguous.isError).toBe(true);
+        expect(output(ambiguous)).toMatchObject({
+          error: { code: "TEMPORARILY_UNAVAILABLE" },
+        });
+      } finally {
+        await intercepted.close();
+      }
+      const table = env.TABLES.get(env.TABLES.idFromName(tableId));
+      const originalRow = await runInDurableObject(
+        table,
+        async (_instance, state) => {
+          const rows = state.storage.sql
+            .exec<{ message_id: string; seq: number }>(
+              "SELECT message_id, seq FROM table_messages",
+            )
+            .toArray();
+          expect(rows).toHaveLength(1);
+          expect(
+            state.storage.sql.exec("SELECT * FROM table_post_receipts").toArray(),
+          ).toHaveLength(1);
+          return rows[0];
+        },
+      );
+      await evictDurableObject(table);
+      const recovered = await primary.callTool({
+        name: "post_message",
+        arguments: original,
+      });
+      expect(recovered.isError).not.toBe(true);
+      expect(output(recovered)).toMatchObject({
+        message_id: originalRow.message_id,
+        seq: originalRow.seq,
+        persisted: true,
+      });
+      await runInDurableObject(table, async (_instance, state) => {
+        expect(
+          state.storage.sql.exec("SELECT * FROM table_messages").toArray(),
+        ).toHaveLength(1);
+      });
+    } finally {
+      await primary.close();
+    }
+  });
 });
