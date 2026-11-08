@@ -2,9 +2,9 @@ import { McpServer, ResourceTemplate } from "@modelcontextprotocol/server";
 import { createMcpHandler } from "agents/mcp/server";
 import * as z from "zod/v4";
 import {
+  closeTable,
   createInvite,
   createTable,
-  closeTable,
   getTable,
   joinTable,
   type PublicTableResult,

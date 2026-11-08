@@ -3,9 +3,12 @@ import {
   InvalidCreationRequestError,
   parseCreationRequest,
 } from "../shared/creation";
+import type {
+  CloseTableReceipt,
+  LifecycleInvalidation,
+} from "../shared/lifecycle";
 import { parseOwnInboxUri } from "../shared/resources";
 import type { SafeTableMetadata, TableResult } from "../shared/table";
-import type { CloseTableReceipt, LifecycleInvalidation } from "../shared/lifecycle";
 import type {
   PostMessageInput,
   PostReceipt,
