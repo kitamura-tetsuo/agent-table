@@ -275,7 +275,7 @@ export async function sendVerifiedHttps(
     const response = await Promise.race([
       fetch(destination.url.toString(), {
         method: "POST",
-        body: request.body,
+        body: new Uint8Array(request.body).buffer,
         headers,
         redirect: "manual",
         signal: controller.signal,
