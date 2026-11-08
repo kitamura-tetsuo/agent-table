@@ -181,6 +181,7 @@ Agents may retain information already read, and approval does not grant table me
 <form method="post" action="/authorize">
 <input name="handle" type="hidden" value="${escapeHtml(handle)}">
 <input name="csrf" type="hidden" value="${escapeHtml(csrf)}">
+<input name="guest_id" type="hidden" value="${escapeHtml(guestId)}">
 ${requested}<p><button type="submit" name="decision" value="approve">Allow</button>
 <button type="submit" name="decision" value="deny">Deny</button></p></form></html>`;
 }
@@ -249,7 +250,7 @@ export async function handleAuthorize(
     if (!form || request.headers.get("Content-Length") === "0") {
       return safeError("Invalid consent", 400);
     }
-    const allowedKeys = new Set(["handle", "csrf", "decision", "scope"]);
+    const allowedKeys = new Set(["handle", "csrf", "decision", "scope", "guest_id"]);
     if ([...form.keys()].some((key) => !allowedKeys.has(key)))
       return safeError("Invalid consent", 400);
     if (
@@ -268,6 +269,13 @@ export async function handleAuthorize(
     }
     if (decision !== "approve")
       return safeError("Invalid consent decision", 400);
+    // A consent form shown for another browser guest must never authorize
+    // the currently selected guest without a new explicit consent display.
+    if (
+      form.getAll("guest_id").length !== 1 ||
+      form.get("guest_id") !== principal.guestId
+    )
+      return safeError("Guest changed; restart authorization", 409);
     const requested = form.getAll("scope");
     if (
       requested.length < 1 ||

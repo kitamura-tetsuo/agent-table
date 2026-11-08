@@ -143,7 +143,9 @@ async function approvedConsent(
   expect(html).toContain("lose your browser session"); // The page states the loss-of-access limitation.
   const handle = /name="handle" type="hidden" value="([^"]+)"/.exec(html)?.[1];
   const csrf = /name="csrf" type="hidden" value="([^"]+)"/.exec(html)?.[1];
-  if (!handle || !csrf) throw Error("Consent form missing bound values");
+  const guestId = /name="guest_id" type="hidden" value="([^"]+)"/.exec(html)?.[1];
+  if (!handle || !csrf || guestId !== browser.guestId)
+    throw Error("Consent form missing bound guest or values");
   const cookies = response.headers
     .getSetCookie()
     .map((line) => line.split(";")[0]);
@@ -159,6 +161,7 @@ async function approvedConsent(
     body: new URLSearchParams([
       ["handle", handle],
       ["csrf", csrf],
+      ["guest_id", browser.guestId],
       ["decision", "approve"],
       ["scope", "tables:read"],
     ]),
@@ -286,6 +289,164 @@ describe("real authorization code and guest-grant flow", () => {
     expect(
       payloads.filter((item) => item.error === "invalid_grant"),
     ).toHaveLength(1);
+  });
+
+
+  it("rejects an approval submitted after the selected browser guest changed", async () => {
+    const browserA = await withBrowserGuest();
+    const browserB = await withBrowserGuest();
+    const clientId = await register();
+    const { url } = await start(clientId);
+    const form = await exports.default.fetch(url, {
+      headers: { Cookie: browserA.cookie },
+    });
+    expect(form.status).toBe(200);
+    const html = await form.text();
+    const handle = /name="handle" type="hidden" value="([^"]+)"/.exec(html)?.[1];
+    const csrf = /name="csrf" type="hidden" value="([^"]+)"/.exec(html)?.[1];
+    const cookies = form.headers.getSetCookie().map((line) => line.split(";")[0]);
+    if (!handle || !csrf) throw Error("Consent handle missing");
+    const stale = await exports.default.fetch(`${ORIGIN}/authorize`, {
+      method: "POST",
+      redirect: "manual",
+      headers: {
+        Origin: ORIGIN,
+        "Sec-Fetch-Site": "same-origin",
+        "Content-Type": "application/x-www-form-urlencoded",
+        Cookie: [browserB.cookie, ...cookies].join("; "),
+      },
+      body: new URLSearchParams({
+        handle,
+        csrf,
+        guest_id: browserA.guestId,
+        decision: "approve",
+        scope: "tables:read",
+      }),
+    });
+    expect(stale.status).toBe(409);
+    expect(
+      await browserB.guest.listConnections(
+        browserB.session.sessionId,
+        browserB.session.secret,
+      ),
+    ).toEqual([]);
+  });
+
+  it("refreshes a live grant without creating a new connection, then refuses it after revocation", async () => {
+    const browser = await withBrowserGuest();
+    const clientId = await register();
+    const approved = await approvedConsent(browser, clientId);
+    const issued = await redeem(clientId, approved.code, approved.verifier);
+    expect(issued.status).toBe(200);
+    const original = await jsonUrl(issued);
+    const before = await browser.guest.listConnections(
+      approved.sessionId,
+      approved.sessionSecret,
+    );
+    expect(before).toHaveLength(1);
+    const refresh = (refreshToken: string) =>
+      exports.default.fetch(`${ORIGIN}/oauth/token`, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          client_id: clientId,
+          grant_type: "refresh_token",
+          refresh_token: refreshToken,
+          resource: RESOURCE,
+        }),
+      });
+    const refreshed = await refresh(String(original.refresh_token));
+    expect(refreshed.status).toBe(200);
+    const renewal = await jsonUrl(refreshed);
+    expect(typeof renewal.access_token).toBe("string");
+    expect(renewal.expires_in).toBe(900);
+    const after = await browser.guest.listConnections(
+      approved.sessionId,
+      approved.sessionSecret,
+    );
+    expect(after?.map((item) => item.connectionId)).toEqual(
+      before?.map((item) => item.connectionId),
+    );
+    const protectedRead = () =>
+      exports.default.fetch(`${ORIGIN}/mcp`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${renewal.access_token}`,
+          "Content-Type": "application/json",
+          Accept: "application/json, text/event-stream",
+        },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 8,
+          method: "tools/list",
+          params: {},
+        }),
+      });
+    expect((await protectedRead()).status).not.toBe(401);
+    expect(
+      (await browser.guest.revokeConnection(
+        approved.sessionId,
+        approved.sessionSecret,
+        before?.[0].connectionId ?? "",
+      )).status,
+    ).toBe("revoked");
+    expect((await protectedRead()).status).toBe(401);
+    const rejected = await refresh(String(renewal.refresh_token));
+    expect(rejected.status).toBe(400);
+    expect((await jsonUrl(rejected)).error).toBe("invalid_grant");
+  });
+
+  it("keeps two overlapping bearer connections independent after revoking only one", async () => {
+    const first = await withBrowserGuest();
+    const second = await withBrowserGuest();
+    const clientA = await register();
+    const clientB = await register();
+    const consentA = await approvedConsent(first, clientA);
+    const consentB = await approvedConsent(second, clientB);
+    const issued = await Promise.all([
+      redeem(clientA, consentA.code, consentA.verifier),
+      redeem(clientB, consentB.code, consentB.verifier),
+    ]);
+    expect(issued.map((response) => response.status)).toEqual([200, 200]);
+    const [tokenA, tokenB] = await Promise.all(issued.map(jsonUrl));
+    const request = (token: unknown) =>
+      exports.default.fetch(`${ORIGIN}/mcp`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${String(token)}`,
+          "Content-Type": "application/json",
+          Accept: "application/json, text/event-stream",
+        },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 12,
+          method: "tools/list",
+          params: {},
+        }),
+      });
+    const both = await Promise.all([
+      request(tokenA.access_token),
+      request(tokenB.access_token),
+    ]);
+    expect(both.every((response) => response.status !== 401)).toBe(true);
+    const grantsA = await first.guest.listConnections(
+      consentA.sessionId,
+      consentA.sessionSecret,
+    );
+    expect(grantsA).toHaveLength(1);
+    expect(
+      (await first.guest.revokeConnection(
+        consentA.sessionId,
+        consentA.sessionSecret,
+        grantsA?.[0].connectionId ?? "",
+      )).status,
+    ).toBe("revoked");
+    const [denied, unaffected] = await Promise.all([
+      request(tokenA.access_token),
+      request(tokenB.access_token),
+    ]);
+    expect(denied.status).toBe(401);
+    expect(unaffected.status).not.toBe(401);
   });
 
   it("does not authorize a denied browser consent", async () => {
