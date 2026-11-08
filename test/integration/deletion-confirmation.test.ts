@@ -341,9 +341,13 @@ describe("browser-confirmed deletion through real TableDO and GuestDO", () => {
          BEGIN SELECT RAISE(ABORT, 'injected-delete-failure'); END`,
       );
     });
-    await expect(
-      f.table.resolveDeletion(f.owner.credential, key, "approve"),
-    ).rejects.toThrow();
+    // Run inside the DO: the Vitest Worker RPC bridge leaks an expected
+    // rejecting RPC as an additional, unhandled rejection (workers-sdk #14736).
+    await runInDurableObject(f.table, async (instance) => {
+      await expect(
+        instance.resolveDeletion(f.owner.credential, key, "approve"),
+      ).rejects.toThrow();
+    });
     await runInDurableObject(f.table, async (_instance, state) => {
       expect(
         state.storage.sql
