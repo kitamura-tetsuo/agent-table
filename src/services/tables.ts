@@ -1,3 +1,4 @@
+import { allowNewTables } from "../shared/admission";
 import type { VerifiedConnectionActor } from "../shared/auth";
 import {
   InvalidCreationRequestError,
@@ -37,6 +38,9 @@ export async function createTable(
   actor: VerifiedConnectionActor,
   input: unknown,
 ): Promise<PublicTableResult> {
+  if (!allowNewTables(env)) {
+    return { ok: false, code: "ADMISSION_DISABLED" };
+  }
   let parsed: ReturnType<typeof parseCreationRequest>;
   try {
     parsed = parseCreationRequest(input);
