@@ -9,6 +9,7 @@ import {
   InvalidCreationRequestError,
   parseCreationRequest,
 } from "../shared/creation";
+import { DurableDeadlineScheduler } from "../shared/deadlines";
 import { ownInboxUri, parseOwnInboxUri } from "../shared/resources";
 import {
   initializeApplicationSchema,
@@ -64,9 +65,12 @@ function sameReservation(
 }
 
 export class TableDO extends DurableObject<Env> {
+  private readonly deadlines: DurableDeadlineScheduler;
+
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     initializeApplicationSchema(ctx.storage, "table");
+    this.deadlines = new DurableDeadlineScheduler(ctx.storage);
   }
 
   // An application schema exists even when no table has ever been created.
@@ -343,5 +347,16 @@ export class TableDO extends DurableObject<Env> {
         expiresAt: new Date(table.expires_at).toISOString(),
       },
     };
+  }
+
+  /**
+   * No TableDO deadline consumer exists yet. Lifecycle and delivery producers
+   * will use this same per-object scheduler when their schemas are introduced.
+   */
+  async alarm(): Promise<void> {
+    await this.deadlines.drainDueWork(
+      () => null,
+      () => 0,
+    );
   }
 }

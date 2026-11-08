@@ -37,6 +37,12 @@ Run `npx vitest run test/integration/creation-reservations.test.ts` for real wor
 
 Run `npx vitest run test/integration/table-authority.test.ts` for real binding/SQLite checks, including forged and relocated reservations, unknown-table noncreation, membership isolation, inbox ownership and terminal/expiry denial. The tests use synthetic guests; a second-seat fixture tests access boundaries but does not implement invitation acceptance. This is not yet a public `create_table` implementation or proof of OAuth/host interoperability.
 
+### Crash-safe deadlines (Issue #12)
+
+`src/shared/deadlines.ts` provides per-object atomic alarm-plus-SQL commit and bounded alarm draining. The implementation uses the pinned Cloudflare SQLite `storage.transaction` API (which can contain awaited alarm operations and synchronous SQL), not an in-memory timer or an assumption that `transactionSync` awaits alarm writes. Actual workerd tests in `test/integration/deadline-runtime-probe.test.ts` demonstrate paired SQL/alarm commit and rollback. `test/integration/deadline-scheduler.test.ts` forces crashes at the alarm/commit/rearm boundaries, tests response loss and competing deadlines, then reconstructs storage. `test/integration/guest-cleanup.test.ts` drives production `GuestDO.alarm` through batches exceeding 100 expired records and verifies live sessions, grants and reservations remain.
+
+GuestDO's alarm handles only physical cleanup of the existing session, connection and creation-reservation records. It schedules a separate 60-second recovery wakeup before processing and a one-second follow-up for already-due backlog; valid records keep their original deadlines and server-side authorization remains synchronous. TableDO has the same scheduler interface but no application expiry/outbox handler yet; **do not** enable notifications or interpret alarm execution as table purge or callback delivery. No real deployed alarm observation or external host run is claimed.
+
 ## Future repository layout
 
 ```text
