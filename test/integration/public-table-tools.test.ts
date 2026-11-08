@@ -1040,9 +1040,19 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
         name: "join_table",
         arguments: { invitation, request_id: winningKey },
       });
-      expect(afterClose.isError).not.toBe(true);
-      expect(output(afterClose).ownMembershipId).toBe(membership);
-      expect(output(afterClose).state).toBe("closed");
+      // A closed table remains readable by a member, but join RPCs stop.
+      // Even a previously accepted join key cannot re-enter the join path.
+      expect(afterClose.isError).toBe(true);
+      expect(output(afterClose)).toMatchObject({
+        error: { code: "INVITATION_INVALID" },
+      });
+      const closedRead = await winningClient.callTool({
+        name: "get_table",
+        arguments: { table_id: tableId },
+      });
+      expect(closedRead.isError).not.toBe(true);
+      expect(output(closedRead).ownMembershipId).toBe(membership);
+      expect(output(closedRead).state).toBe("closed");
     } finally {
       await a.close();
       await b.close();
