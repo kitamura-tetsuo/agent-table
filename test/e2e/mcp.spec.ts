@@ -95,7 +95,10 @@ test("official SDK negotiates against the authenticated live Wrangler HTTP serve
   const guestId = html.match(
     /name="guest_id" type="hidden" value="([^"]+)"/,
   )?.[1];
-  if (!handle || !csrf || !guestId)
+  const binding = html.match(
+    /name="binding" type="hidden" value="([^"]+)"/,
+  )?.[1];
+  if (!handle || !csrf || !guestId || !binding)
     throw new Error("OAuth consent form is incomplete");
   // Preserve all provider-issued handle cookies, not only the CSRF cookie.
   const consentCookies = consent
@@ -117,6 +120,7 @@ test("official SDK negotiates against the authenticated live Wrangler HTTP serve
       handle,
       csrf,
       guest_id: guestId,
+      binding,
       decision: "approve",
       scope: "tables:read",
     },

@@ -146,7 +146,8 @@ async function approvedConsent(
   const guestId = /name="guest_id" type="hidden" value="([^"]+)"/.exec(
     html,
   )?.[1];
-  if (!handle || !csrf || guestId !== browser.guestId)
+  const binding = /name="binding" type="hidden" value="([^"]+)"/.exec(html)?.[1];
+  if (!handle || !csrf || !binding || guestId !== browser.guestId)
     throw Error("Consent form missing bound guest or values");
   const cookies = response.headers
     .getSetCookie()
@@ -164,6 +165,7 @@ async function approvedConsent(
       ["handle", handle],
       ["csrf", csrf],
       ["guest_id", browser.guestId],
+      ["binding", binding],
       ["decision", "approve"],
       ["scope", "tables:read"],
     ]),
@@ -307,10 +309,11 @@ describe("real authorization code and guest-grant flow", () => {
       html,
     )?.[1];
     const csrf = /name="csrf" type="hidden" value="([^"]+)"/.exec(html)?.[1];
+    const binding = /name="binding" type="hidden" value="([^"]+)"/.exec(html)?.[1];
     const cookies = form.headers
       .getSetCookie()
       .map((line) => line.split(";")[0]);
-    if (!handle || !csrf) throw Error("Consent handle missing");
+    if (!handle || !csrf || !binding) throw Error("Consent handle missing");
     const stale = await exports.default.fetch(`${ORIGIN}/authorize`, {
       method: "POST",
       redirect: "manual",
@@ -324,11 +327,33 @@ describe("real authorization code and guest-grant flow", () => {
         handle,
         csrf,
         guest_id: browserA.guestId,
+        binding,
         decision: "approve",
         scope: "tables:read",
       }),
     });
     expect(stale.status).toBe(409);
+    // Editing both hidden guest fields cannot turn A's displayed consent
+    // into authorization for the second browser's credential.
+    const forged = await exports.default.fetch(`${ORIGIN}/authorize`, {
+      method: "POST",
+      redirect: "manual",
+      headers: {
+        Origin: ORIGIN,
+        "Sec-Fetch-Site": "same-origin",
+        "Content-Type": "application/x-www-form-urlencoded",
+        Cookie: [browserB.cookie, ...cookies].join("; "),
+      },
+      body: new URLSearchParams({
+        handle,
+        csrf,
+        guest_id: browserB.guestId,
+        binding,
+        decision: "approve",
+        scope: "tables:read",
+      }),
+    });
+    expect(forged.status).toBe(409);
     expect(
       await browserB.guest.listConnections(
         browserB.session.sessionId,

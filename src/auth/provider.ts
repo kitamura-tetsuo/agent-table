@@ -146,6 +146,28 @@ function equalCsrf(a: string, b: string): boolean {
   return diff === 0;
 }
 
+async function consentBinding(
+  credential: NonNullable<ReturnType<typeof browserCredential>>,
+  handle: string,
+): Promise<string> {
+  // A form signed with guest A's HttpOnly session cannot be retargeted to B.
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(credential.secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const message = new TextEncoder().encode(
+    `oauth-consent-v1:${credential.guestId}:${credential.sessionId}:${handle}`,
+  );
+  const bytes = new Uint8Array(await crypto.subtle.sign("HMAC", key, message));
+  return btoa(String.fromCharCode(...bytes))
+    .replaceAll("+", "-")
+    .replaceAll("/", "_")
+    .replaceAll("=", "");
+}
+
 function consentPage(
   info: {
     clientName: string;
@@ -157,6 +179,7 @@ function consentPage(
   guestId: string,
   handle: string,
   csrf: string,
+  binding: string,
 ): string {
   const requested = info.scope
     .map(
@@ -182,6 +205,7 @@ Agents may retain information already read, and approval does not grant table me
 <input name="handle" type="hidden" value="${escapeHtml(handle)}">
 <input name="csrf" type="hidden" value="${escapeHtml(csrf)}">
 <input name="guest_id" type="hidden" value="${escapeHtml(guestId)}">
+<input name="binding" type="hidden" value="${escapeHtml(binding)}">
 ${requested}<p><button type="submit" name="decision" value="approve">Allow</button>
 <button type="submit" name="decision" value="deny">Deny</button></p></form></html>`;
 }
@@ -238,8 +262,12 @@ export async function handleAuthorize(
         "Set-Cookie",
         `${CSRF_COOKIE}=${csrf}; Path=/; Max-Age=600; Secure; HttpOnly; SameSite=Lax`,
       );
+      const credential = browserCredential(request);
+      if (!credential || credential.guestId !== principal.guestId)
+        return safeError("Invalid guest", 401);
+      const binding = await consentBinding(credential, consent.handle);
       return new Response(
-        consentPage(details, principal.guestId, consent.handle, csrf),
+        consentPage(details, principal.guestId, consent.handle, csrf, binding),
         { headers },
       );
     }
@@ -256,6 +284,7 @@ export async function handleAuthorize(
       "decision",
       "scope",
       "guest_id",
+      "binding",
     ]);
     if ([...form.keys()].some((key) => !allowedKeys.has(key)))
       return safeError("Invalid consent", 400);
@@ -275,11 +304,19 @@ export async function handleAuthorize(
     }
     if (decision !== "approve")
       return safeError("Invalid consent decision", 400);
-    // A consent form shown for another browser guest must never authorize
-    // the currently selected guest without a new explicit consent display.
+    // Guest identity is bound to the displayed, session-keyed form, not
+    // trusted from the hidden guest_id field or current cookie alone.
+    const credential = browserCredential(request);
+    if (!credential || credential.guestId !== principal.guestId)
+      return safeError("Invalid guest", 401);
     if (
       form.getAll("guest_id").length !== 1 ||
-      form.get("guest_id") !== principal.guestId
+      form.getAll("binding").length !== 1 ||
+      form.get("guest_id") !== principal.guestId ||
+      !equalCsrf(
+        form.get("binding") ?? "",
+        await consentBinding(credential, handle),
+      )
     )
       return safeError("Guest changed; restart authorization", 409);
     const requested = form.getAll("scope");
@@ -294,9 +331,6 @@ export async function handleAuthorize(
     const approved = await oauth.approveConsent(request, handle, {
       scope: requested,
     });
-    const credential = browserCredential(request);
-    if (!credential || credential.guestId !== principal.guestId)
-      return safeError("Invalid guest", 401);
     const guest = env.GUESTS.get(env.GUESTS.idFromName(principal.guestId));
     const grant = await guest.createConnection(
       credential.sessionId,
