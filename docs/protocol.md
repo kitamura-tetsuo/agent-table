@@ -1,6 +1,6 @@
 # MCP and application contract
 
-Status: proposed public application contract. The MCP 2026-07-28 transport scaffold and `/mcp` route exist, and private TableDO initialization/metadata/inbox guards have been implemented. Public application tools, exposed private resources, OAuth authentication and subscriptions are not yet registered or implemented.
+Status: partially implemented. The MCP 2026-07-28 `/mcp` transport, browser-consented OAuth authentication, connection grants, private TableDO initialization/metadata guards, and public `create_table`/`get_table` tools exist. Invitations, transcript operations, concrete private-resource subscriptions, outbound webhook delivery and autonomous host execution are not implemented.
 
 ## Transport profile
 
@@ -30,6 +30,8 @@ Canonical request hashing sorts object keys and preserves message text exactly. 
 | `post_message` | `table_id`, `body`, optional `reply_to_message_id` | Commits exactly one message per operation key and returns its receipt |
 | `close_table` | `table_id` | Makes the shared table read-only and cancels future notification work |
 | `delete_table` | `table_id` | Requests browser-confirmed shared deletion; reports the receipt after confirmation |
+
+Only `create_table` and `get_table` are registered at the public authenticated MCP endpoint so far. The other tools above specify future contracts and are **not** advertised as available capabilities.
 
 Scopes and destructive-action confirmation are defined in [security.md](security.md). The creator alone issues invitations; either member may read, post, close, or request deletion subject to state, limits, and scope. No operation accepts a caller-selected sender identity.
 
@@ -128,3 +130,36 @@ A failed storage operation cannot return `persisted: true`. An uncertain respons
 Read tools have read-only annotations. Mutation tools declare their effects honestly; close/delete are destructive to the shared workflow, and posting may cause outbound delivery and another host's run. Idempotency annotations require actual durable deduplication. An annotation does not authorize an action, replace confirmation, or prove a host will run it automatically.
 
 MCP Events methods are protocol methods—not ordinary tools named `events_subscribe`. Their separate adapter and compatibility contract are in [notifications.md](notifications.md).
+
+## Implemented MCP table-tool composition (Issue #9)
+
+The OAuth-protected `/mcp` endpoint registers `create_table` and `get_table`
+against the pinned official MCP SDK. Argument schemas are strict, with no
+caller-supplied guest or connection identity. `create_table` requires an
+active `tables:write` grant and a 16–128-character ASCII `request_id`;
+`get_table` requires `tables:read` and a canonical version-4 table ID.
+A bearer token and fresh GuestDO scope decision are prerequisites, not table
+membership. The table itself rechecks local membership and expiry.
+
+Creation reserves one durable fixed table ID in GuestDO, asks exactly that
+TableDO to initialize the waiting state and creator membership, verifies the
+committed result's identity and original timestamps, then marks the reservation
+as initialized. Uncertain RPC or receipt failures return
+`TEMPORARILY_UNAVAILABLE` as an `isError` result; clients **must retry using
+the same request ID and unchanged arguments**, even after object eviction.
+Changed arguments conflict; expired receipts cannot revive creation.
+Creation returns the caller's membership ID, inbox URI, effective limits, and
+an explicit unavailable notification status; it never issues an invitation.
+
+`get_table` delegates to TableDO's local member/expiry checks. Unknown and
+nonmember IDs both report `TABLE_NOT_FOUND`; no private concrete resources
+are advertised globally. The SDK validates strict tool argument schemas before
+handlers run and returns a tool-level `isError` for invalid tool arguments;
+malformed JSON-RPC transport envelopes are distinct protocol errors. Expected
+conflicts, limits, and unavailable dependencies also return structured
+application `isError` results. Missing or invalid OAuth credentials receive
+the transport challenge. Both tools still revalidate the per-operation
+grant inside the Durable Objects.
+
+Runtime checks: `npm run typecheck`, `npm run lint`,
+`npm run test:integration`, `npm run test:e2e`.
