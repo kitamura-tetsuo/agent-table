@@ -126,13 +126,17 @@ export type GuestChallengeConfiguration =
   | { mode: "required"; siteKey: string }
   | { mode: "unavailable" };
 
-export function guestChallengeConfiguration(env: Env): GuestChallengeConfiguration {
+export function guestChallengeConfiguration(
+  env: Env,
+): GuestChallengeConfiguration {
   const mode = env.GUEST_CHALLENGE_MODE ?? "off";
   if (mode === "off") return { mode: "off" };
-  if (mode !== "required" ||
-      !/^[A-Za-z0-9_-]{3,128}$/.test(env.TURNSTILE_SITE_KEY ?? "") ||
-      !env.TURNSTILE_SECRET ||
-      env.TURNSTILE_SECRET.length > 256) {
+  if (
+    mode !== "required" ||
+    !/^[A-Za-z0-9_-]{3,128}$/.test(env.TURNSTILE_SITE_KEY ?? "") ||
+    !env.TURNSTILE_SECRET ||
+    env.TURNSTILE_SECRET.length > 256
+  ) {
     return { mode: "unavailable" };
   }
   return { mode: "required", siteKey: env.TURNSTILE_SITE_KEY as string };
@@ -150,8 +154,8 @@ export async function verifyGuestChallenge(
 ): Promise<boolean> {
   const config = guestChallengeConfiguration(env);
   if (config.mode === "off") return true;
-  if (config.mode !== "required" ||
-      !/^[A-Za-z0-9._-]{1,2048}$/.test(token)) return false;
+  if (config.mode !== "required" || !/^[A-Za-z0-9._-]{1,2048}$/.test(token))
+    return false;
   let hostname: string;
   try {
     hostname = new URL(env.PUBLIC_ORIGIN).hostname;
@@ -180,8 +184,10 @@ export async function verifyGuestChallenge(
       return false;
     }
     const fields = verdict as Record<string, unknown>;
-    const issued = typeof fields.challenge_ts === "string" ?
-      Date.parse(fields.challenge_ts) : NaN;
+    const issued =
+      typeof fields.challenge_ts === "string"
+        ? Date.parse(fields.challenge_ts)
+        : NaN;
     return (
       fields.success === true &&
       fields.action === "create_guest" &&
