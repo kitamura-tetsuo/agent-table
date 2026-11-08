@@ -1723,4 +1723,81 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
       await invitee.close();
     }
   }, 10_000);
+}
+  it("rejects SDK posts against the aggregate byte budget before the message-count ceiling", async () => {
+    const owner = await tokenForGuest("tables:read tables:write");
+    const creator = await sdk(owner.token);
+    try {
+      const created = await creator.callTool({
+        name: "create_table",
+        arguments: {
+          ...input,
+          request_id: "sdk_byte_budget_create_0001",
+        },
+      });
+      expect(created.isError).not.toBe(true);
+      const tableId = String(output(created).tableId);
+      const table = env.TABLES.get(env.TABLES.idFromName(tableId));
+      // These default ceilings coincide for valid full-size bodies:
+      // 256 * 8 KiB = 2 MiB. A controlled storage budget fixture isolates
+      // the aggregate-byte branch without reaching the message-count ceiling.
+      await runInDurableObject(table, async (_instance, state) => {
+        state.storage.sql.exec(
+          "UPDATE table_transcript_usage SET body_bytes = ? WHERE singleton = 1",
+          TABLE_LIMITS.transcriptBodyBytes - 4,
+        );
+      });
+      const overflow = await creator.callTool({
+        name: "post_message",
+        arguments: {
+          table_id: tableId,
+          request_id: "sdk_byte_budget_overflow_001",
+          body: "12345",
+        },
+      });
+      expect(overflow.isError).toBe(true);
+      expect(output(overflow)).toMatchObject({
+        error: { code: "LIMIT_REACHED" },
+      });
+      const justFits = {
+        table_id: tableId,
+        request_id: "sdk_byte_budget_exact_0001",
+        body: "1234",
+      };
+      const accepted = await creator.callTool({
+        name: "post_message",
+        arguments: justFits,
+      });
+      expect(accepted.isError).not.toBe(true);
+      expect(output(accepted)).toMatchObject({ seq: 1, persisted: true });
+      await evictDurableObject(table);
+      const retried = await creator.callTool({
+        name: "post_message",
+        arguments: justFits,
+      });
+      expect(output(retried)).toEqual(output(accepted));
+      await runInDurableObject(table, async (_instance, state) => {
+        expect(
+          state.storage.sql.exec("SELECT last_seq FROM table_metadata").one(),
+        ).toEqual({ last_seq: 1 });
+        expect(
+          state.storage.sql
+            .exec("SELECT body_bytes FROM table_transcript_usage")
+            .one(),
+        ).toEqual({ body_bytes: TABLE_LIMITS.transcriptBodyBytes });
+        expect(
+          state.storage.sql
+            .exec("SELECT COUNT(*) AS total FROM table_messages")
+            .one(),
+        ).toEqual({ total: 1 });
+        expect(
+          state.storage.sql
+            .exec("SELECT COUNT(*) AS total FROM table_post_receipts")
+            .one(),
+        ).toEqual({ total: 1 });
+      });
+    } finally {
+      await creator.close();
+    }
+  });
 });
