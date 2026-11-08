@@ -6,6 +6,7 @@ import { tableAuthoritySchema } from "./005_table_authority";
 import { invitationsSchema } from "./006_invitations";
 import { transcriptSchema } from "./007_transcript";
 import { lifecycleSchema } from "./008_lifecycle";
+import { deletionConfirmationSchema } from "./009_deletion_confirmation";
 
 export const migrations = [
   initialSchema,
@@ -16,6 +17,7 @@ export const migrations = [
   invitationsSchema,
   transcriptSchema,
   lifecycleSchema,
+  deletionConfirmationSchema,
 ] as const;
 
 export const APPLICATION_SCHEMA_VERSION = migrations.at(-1)?.version ?? 0;

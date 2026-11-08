@@ -11,6 +11,7 @@ import {
   handleAuthorize,
   oauthTokenStub,
 } from "./auth/provider";
+import { handleDeletionPage } from "./web/deletion";
 
 export { OAuthTokenDO } from "./auth/token-do";
 export { GuestDO } from "./objects/guest";
@@ -44,6 +45,8 @@ export default {
     if (url.pathname === "/guest/connections/revoke") {
       return handleConnectionRevoke(request, env);
     }
+    if (url.pathname === "/guest/delete")
+      return handleDeletionPage(request, env);
     if (
       url.pathname === "/join" &&
       (request.method === "GET" || request.method === "HEAD")

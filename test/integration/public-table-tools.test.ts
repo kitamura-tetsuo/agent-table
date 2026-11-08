@@ -137,6 +137,7 @@ async function tokenForGuest(scope: string) {
     guest,
     token: String(tokens.access_token),
     connectionId: liveGrants?.[0].connectionId ?? "",
+    browserCookie: rotatedCookie?.split(";")[0] ?? "",
   };
 }
 
@@ -272,6 +273,7 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
         "close_table",
         "create_invite",
         "create_table",
+        "delete_table",
         "get_table",
         "join_table",
         "post_message",
@@ -1907,6 +1909,164 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
     } finally {
       await creator.close();
       await outsider.close();
+    }
+  });
+
+  it("requires an actual browser approval after the SDK requests deletion", async () => {
+    const owner = await tokenForGuest("tables:read tables:write tables:delete");
+    const limited = await tokenForGuest("tables:read tables:write");
+    const client = await sdk(owner.token);
+    const withoutDeletion = await sdk(limited.token);
+    try {
+      const created = await client.callTool({
+        name: "create_table",
+        arguments: {
+          ...input,
+          request_id: "sdk_deletion_create_0001",
+        },
+      });
+      expect(created.isError).not.toBe(true);
+      const tableId = String(output(created).tableId);
+      const saved = await client.callTool({
+        name: "post_message",
+        arguments: {
+          table_id: tableId,
+          request_id: "sdk_deletion_post_0001",
+          body: "Private content must survive preview",
+        },
+      });
+      expect(saved.isError).not.toBe(true);
+      const operation = {
+        table_id: tableId,
+        request_id: "sdk_deletion_confirm_0001",
+      };
+      const rejected = await client.callTool({
+        name: "delete_table",
+        arguments: { ...operation, confirmed: true },
+      });
+      expect(rejected.isError).toBe(true);
+      const forbidden = await withoutDeletion.callTool({
+        name: "delete_table",
+        arguments: operation,
+      });
+      expect(forbidden.isError).toBe(true);
+      expect(output(forbidden)).toMatchObject({
+        error: { code: "NOT_AUTHORIZED" },
+      });
+      const pending = await client.callTool({
+        name: "delete_table",
+        arguments: operation,
+      });
+      expect(pending.isError).not.toBe(true);
+      const receipt = output(pending);
+      expect(receipt).toMatchObject({ confirmation_required: true });
+      expect(
+        output(
+          await client.callTool({
+            name: "delete_table",
+            arguments: operation,
+          }),
+        ),
+      ).toEqual(receipt);
+      const browserUrl = String(receipt.confirmation_url);
+      expect(browserUrl).toContain("/guest/delete?");
+      const preview = await exports.default.fetch(browserUrl, {
+        headers: { Cookie: owner.browserCookie },
+      });
+      expect(preview.status).toBe(200);
+      const html = await preview.text();
+      expect(html).toContain("both");
+      const csrf = html.match(/name="csrf" value="([A-Za-z0-9_-]{43})"/)?.[1];
+      const csrfCookie = preview.headers
+        .getSetCookie()
+        .find((value) => value.startsWith("__Host-agent_table_csrf="))
+        ?.split(";")[0];
+      if (!csrf || !csrfCookie)
+        throw new Error("Missing browser approval CSRF");
+      const before = await client.callTool({
+        name: "read_messages",
+        arguments: { table_id: tableId },
+      });
+      expect(output(before)).toMatchObject({
+        messages: [{ body: "Private content must survive preview" }],
+      });
+      const approval = new URLSearchParams({
+        ...operation,
+        csrf,
+        decision: "approve",
+      });
+      const post = (origin: string, token: string) =>
+        exports.default.fetch(`${ORIGIN}/guest/delete`, {
+          method: "POST",
+          headers: {
+            Origin: origin,
+            "Sec-Fetch-Site": "same-origin",
+            "Content-Type": "application/x-www-form-urlencoded",
+            Cookie: [owner.browserCookie, csrfCookie].join("; "),
+          },
+          body: new URLSearchParams({
+            ...operation,
+            csrf: token,
+            decision: "approve",
+          }),
+        });
+      expect((await post("https://evil.example", csrf)).status).toBe(403);
+      expect((await post(ORIGIN, "wrong")).status).toBe(403);
+      expect(
+        output(
+          await client.callTool({
+            name: "read_messages",
+            arguments: { table_id: tableId },
+          }),
+        ),
+      ).toMatchObject({ messages: [{ seq: 1 }] });
+      const accepted = await exports.default.fetch(`${ORIGIN}/guest/delete`, {
+        method: "POST",
+        headers: {
+          Origin: ORIGIN,
+          "Sec-Fetch-Site": "same-origin",
+          "Content-Type": "application/x-www-form-urlencoded",
+          Cookie: [owner.browserCookie, csrfCookie].join("; "),
+        },
+        body: approval,
+      });
+      expect(accepted.status).toBe(200);
+      expect(await accepted.text()).toContain("Deletion committed");
+      const table = env.TABLES.get(env.TABLES.idFromName(tableId));
+      await evictDurableObject(table);
+      expect(
+        output(
+          await client.callTool({
+            name: "delete_table",
+            arguments: operation,
+          }),
+        ),
+      ).toMatchObject({ confirmation_required: false, state: "deleted" });
+      const after = await client.callTool({
+        name: "read_messages",
+        arguments: { table_id: tableId },
+      });
+      expect(after.isError).toBe(true);
+      await runInDurableObject(table, async (_instance, state) => {
+        expect(
+          state.storage.sql
+            .exec("SELECT COUNT(*) AS n FROM table_messages")
+            .one(),
+        ).toEqual({ n: 0 });
+        expect(
+          state.storage.sql
+            .exec(
+              "SELECT guest_id, request_id FROM table_tombstone_delete_receipts",
+            )
+            .one(),
+        ).toEqual({
+          guest_id: owner.guestId,
+          request_id: operation.request_id,
+        });
+      });
+    } finally {
+      await client.close();
+      await withoutDeletion.close();
     }
   });
 });

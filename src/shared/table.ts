@@ -56,7 +56,11 @@ export type TableFailureCode =
   | "INVALID_REPLY"
   | "INVALID_CURSOR"
   | "LIMIT_REACHED"
-  | "RATE_LIMITED";
+  | "RATE_LIMITED"
+  | "CONFIRMATION_DENIED"
+  | "CONFIRMATION_EXPIRED"
+  | "NOT_AUTHORIZED"
+  | "NOT_FOUND";
 
 export type TableResult<T> =
   | { ok: true; value: T }

@@ -11,6 +11,12 @@ import {
 } from "../shared/creation";
 import { DurableDeadlineScheduler } from "../shared/deadlines";
 import {
+  type BrowserDeletionCredential,
+  DELETE_CONFIRMATION_MS,
+  type DeletionReceipt,
+  type DeletionView,
+} from "../shared/deletion";
+import {
   encodeInvitation,
   invitationLandingUrl,
   parseInvitation,
@@ -101,6 +107,13 @@ type PostReceiptRow = {
   request_digest: string;
   message_seq: number;
 };
+type DeleteConfirmationRow = {
+  guest_id: string;
+  request_id: string;
+  expires_at: number;
+  state: "pending" | "denied" | "expired";
+};
+
 type JoinReceiptRow = {
   guest_id: string;
   request_id: string;
@@ -146,6 +159,11 @@ export class TableDO extends DurableObject<Env> {
   private transcriptCommitBarrierOverlappedForTest = false;
   private transcriptCommitBarrierFirstWaitingForTest = false;
   private transcriptCommitBarrierReleaseForTest?: () => void;
+  private deletionCommitBarrierEnabledForTest = false;
+  private deletionCommitBarrierArrivalsForTest = 0;
+  private deletionCommitBarrierOverlappedForTest = false;
+  private deletionCommitBarrierFirstWaitingForTest = false;
+  private deletionCommitBarrierReleaseForTest?: () => void;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -197,7 +215,16 @@ export class TableDO extends DurableObject<Env> {
 
   private earliestLifecycleDeadline(): number | null {
     const table = this.metadataRow();
-    if (table) return table.expires_at;
+    if (table) {
+      const pending = this.ctx.storage.sql
+        .exec<{ deadline: number | null }>(
+          "SELECT MIN(expires_at) AS deadline FROM table_delete_confirmations WHERE state = 'pending'",
+        )
+        .one().deadline;
+      return pending === null
+        ? table.expires_at
+        : Math.min(pending, table.expires_at);
+    }
     return this.tombstoneRow()?.retain_until ?? null;
   }
 
@@ -226,6 +253,7 @@ export class TableDO extends DurableObject<Env> {
         member.guest_id,
       );
     }
+    this.ctx.storage.sql.exec("DELETE FROM table_delete_confirmations");
     this.ctx.storage.sql.exec("DELETE FROM table_post_receipts");
     this.ctx.storage.sql.exec("DELETE FROM table_messages");
     this.ctx.storage.sql.exec("DELETE FROM table_transcript_usage");
@@ -245,9 +273,25 @@ export class TableDO extends DurableObject<Env> {
     }
     const tombstone = this.tombstoneRow();
     if (tombstone && tombstone.retain_until <= now) {
+      this.ctx.storage.sql.exec("DELETE FROM table_tombstone_delete_receipts");
       this.ctx.storage.sql.exec("DELETE FROM table_tombstone_guests");
       this.ctx.storage.sql.exec("DELETE FROM table_tombstones");
       return 1;
+    }
+    if (table) {
+      this.ctx.storage.sql.exec(
+        `UPDATE table_delete_confirmations SET state = 'expired'
+         WHERE rowid IN (
+           SELECT rowid FROM table_delete_confirmations
+           WHERE state = 'pending' AND expires_at <= ?
+           ORDER BY expires_at LIMIT ?
+         )`,
+        now,
+        budget,
+      );
+      return this.ctx.storage.sql
+        .exec<{ changed: number }>("SELECT changes() AS changed")
+        .one().changed;
     }
     return 0;
   }
@@ -1168,6 +1212,295 @@ export class TableDO extends DurableObject<Env> {
               state: "deleted" as const,
             },
           } as const;
+        }),
+    );
+    return committed.value;
+  }
+
+  private deleteConfirmation(
+    guestId: string,
+    requestId: string,
+  ): DeleteConfirmationRow | undefined {
+    return this.ctx.storage.sql
+      .exec<DeleteConfirmationRow>(
+        "SELECT guest_id, request_id, expires_at, state FROM table_delete_confirmations WHERE guest_id = ? AND request_id = ?",
+        guestId,
+        requestId,
+      )
+      .toArray()[0];
+  }
+
+  private hasDeletionReceipt(guestId: string, requestId: string): boolean {
+    return (
+      this.ctx.storage.sql
+        .exec<{ guest_id: string }>(
+          "SELECT guest_id FROM table_tombstone_delete_receipts WHERE guest_id = ? AND request_id = ?",
+          guestId,
+          requestId,
+        )
+        .toArray().length !== 0
+    );
+  }
+
+  /** Validate the real browser session independently of an agent token or URL. */
+  private async verifyDeletionBrowser(
+    credential: BrowserDeletionCredential,
+  ): Promise<boolean> {
+    if (
+      !credential ||
+      typeof credential.guestId !== "string" ||
+      typeof credential.sessionId !== "string" ||
+      typeof credential.secret !== "string"
+    )
+      return false;
+    try {
+      const guest = this.env.GUESTS.get(
+        this.env.GUESTS.idFromName(credential.guestId),
+      );
+      const principal = await guest.validateSession(
+        credential.sessionId,
+        credential.secret,
+      );
+      return principal?.guestId === credential.guestId;
+    } catch {
+      return false;
+    }
+  }
+
+  private confirmationUrl(tableId: string, requestId: string): string {
+    const link = new URL("/guest/delete", this.env.PUBLIC_ORIGIN);
+    link.searchParams.set("table_id", tableId);
+    link.searchParams.set("request_id", requestId);
+    return link.toString();
+  }
+
+  /** Start an idempotent five-minute browser confirmation; never delete here. */
+  private async startDeletion(
+    guestId: string,
+    requestId: string,
+  ): Promise<TableResult<DeletionReceipt>> {
+    if (!validInvitationOperationId(requestId)) {
+      return { ok: false, code: "INVALID_REQUEST" };
+    }
+    const current = this.metadataRow();
+    if (!current) {
+      if (
+        this.tombstoneRow()?.terminal_state === "deleted" &&
+        this.hasDeletionReceipt(guestId, requestId)
+      ) {
+        return {
+          ok: true,
+          value: { confirmation_required: false, state: "deleted" },
+        };
+      }
+      return { ok: false, code: "TABLE_NOT_FOUND" };
+    }
+    const due = Math.min(
+      current.expires_at,
+      Date.now() + DELETE_CONFIRMATION_MS,
+    );
+    const committed = await this.deadlines.commitWithWakeup(due, () =>
+      this.ctx.storage.transactionSync(() => {
+        const table = this.metadataRow();
+        const now = Date.now();
+        if (!table || !this.memberFor(guestId)) {
+          return { ok: false, code: "TABLE_NOT_FOUND" } as const;
+        }
+        if (table.expires_at <= now || table.state === "expired") {
+          return { ok: false, code: "TABLE_EXPIRED" } as const;
+        }
+        if (table.state === "deleted") {
+          return { ok: false, code: "TABLE_NOT_FOUND" } as const;
+        }
+        const existing = this.deleteConfirmation(guestId, requestId);
+        if (existing) {
+          if (existing.state === "denied")
+            return { ok: false, code: "CONFIRMATION_DENIED" } as const;
+          if (existing.state === "expired" || existing.expires_at <= now) {
+            return { ok: false, code: "CONFIRMATION_EXPIRED" } as const;
+          }
+          return {
+            ok: true,
+            value: {
+              confirmation_required: true as const,
+              confirmation_url: this.confirmationUrl(table.table_id, requestId),
+              expires_at: new Date(existing.expires_at).toISOString(),
+            },
+          } as const;
+        }
+        const expiresAt = now + DELETE_CONFIRMATION_MS;
+        this.ctx.storage.sql.exec(
+          "INSERT INTO table_delete_confirmations (guest_id, request_id, expires_at, state) VALUES (?, ?, ?, 'pending')",
+          guestId,
+          requestId,
+          expiresAt,
+        );
+        return {
+          ok: true,
+          value: {
+            confirmation_required: true as const,
+            confirmation_url: this.confirmationUrl(table.table_id, requestId),
+            expires_at: new Date(expiresAt).toISOString(),
+          },
+        } as const;
+      }),
+    );
+    return committed.value;
+  }
+
+  /** Only a current tables:delete connection can request browser approval. */
+  async requestDeletion(
+    actor: VerifiedConnectionActor,
+    requestId: string,
+  ): Promise<TableResult<DeletionReceipt>> {
+    if (!(await this.verifyActor(actor, "tables:delete"))) {
+      return { ok: false, code: "TABLE_NOT_FOUND" };
+    }
+    return this.startDeletion(actor.guestId, requestId);
+  }
+
+  /** Browser-initiated deletion must use the same pending/approval ledger. */
+  async requestBrowserDeletion(
+    credential: BrowserDeletionCredential,
+    requestId: string,
+  ): Promise<TableResult<DeletionReceipt>> {
+    if (!(await this.verifyDeletionBrowser(credential))) {
+      return { ok: false, code: "NOT_AUTHORIZED" };
+    }
+    return this.startDeletion(credential.guestId, requestId);
+  }
+
+  /** Read-only preview: URL possession conveys no deletion authority. */
+  deletionView(guestId: string, requestId: string): TableResult<DeletionView> {
+    if (!validInvitationOperationId(requestId)) {
+      return { ok: false, code: "INVALID_REQUEST" };
+    }
+    const table = this.metadataRow();
+    if (table && table.expires_at <= Date.now()) {
+      return { ok: false, code: "TABLE_EXPIRED" };
+    }
+    if (table && this.memberFor(guestId)) {
+      const pending = this.deleteConfirmation(guestId, requestId);
+      if (!pending) return { ok: false, code: "NOT_FOUND" };
+      const state =
+        pending.state === "pending" && pending.expires_at <= Date.now()
+          ? "expired"
+          : pending.state;
+      return {
+        ok: true,
+        value: {
+          state,
+          expires_at: new Date(pending.expires_at).toISOString(),
+        },
+      };
+    }
+    if (
+      this.tombstoneRow()?.terminal_state === "deleted" &&
+      this.hasDeletionReceipt(guestId, requestId)
+    ) {
+      return { ok: true, value: { state: "deleted" } };
+    }
+    return { ok: false, code: "NOT_FOUND" };
+  }
+
+  /** A browser-only POST consumes approval and purges in one TableDO SQL commit. */
+  async resolveDeletion(
+    credential: BrowserDeletionCredential,
+    requestId: string,
+    decision: "approve" | "deny",
+  ): Promise<TableResult<{ state: "deleted" | "denied" }>> {
+    if (
+      !validInvitationOperationId(requestId) ||
+      (decision !== "approve" && decision !== "deny")
+    ) {
+      return { ok: false, code: "INVALID_REQUEST" };
+    }
+    if (!(await this.verifyDeletionBrowser(credential))) {
+      return { ok: false, code: "NOT_AUTHORIZED" };
+    }
+    const guestId = credential.guestId;
+    const previous = this.metadataRow();
+    if (!previous) {
+      if (
+        this.tombstoneRow()?.terminal_state === "deleted" &&
+        this.hasDeletionReceipt(guestId, requestId)
+      ) {
+        return { ok: true, value: { state: "deleted" } };
+      }
+      return { ok: false, code: "NOT_FOUND" };
+    }
+    // This in-object integration gate is never enabled by a production route.
+    // It observes real overlapping approval RPCs before the atomic SQL decision.
+    if (this.deletionCommitBarrierEnabledForTest) {
+      this.deletionCommitBarrierArrivalsForTest++;
+      if (this.deletionCommitBarrierArrivalsForTest === 1) {
+        this.deletionCommitBarrierFirstWaitingForTest = true;
+        await new Promise<void>((resolve) => {
+          let settled = false;
+          const finish = () => {
+            if (settled) return;
+            settled = true;
+            this.deletionCommitBarrierFirstWaitingForTest = false;
+            resolve();
+          };
+          this.deletionCommitBarrierReleaseForTest = finish;
+          setTimeout(finish, 700);
+        });
+      } else if (this.deletionCommitBarrierFirstWaitingForTest) {
+        this.deletionCommitBarrierOverlappedForTest = true;
+        this.deletionCommitBarrierReleaseForTest?.();
+      }
+    }
+    const committed = await this.deadlines.commitWithWakeup(
+      previous.expires_at + 24 * 60 * 60_000,
+      () =>
+        this.ctx.storage.transactionSync(() => {
+          const table = this.metadataRow();
+          const now = Date.now();
+          if (!table) {
+            // An overlapping approval can commit while this RPC waits. The
+            // minimal tombstone receipt is the authoritative idempotent result.
+            if (
+              this.tombstoneRow()?.terminal_state === "deleted" &&
+              this.hasDeletionReceipt(guestId, requestId)
+            ) {
+              return {
+                ok: true,
+                value: { state: "deleted" as const },
+              } as const;
+            }
+            return { ok: false, code: "NOT_FOUND" } as const;
+          }
+          if (!this.memberFor(guestId)) {
+            return { ok: false, code: "NOT_FOUND" } as const;
+          }
+          if (table.expires_at <= now || table.state === "expired") {
+            return { ok: false, code: "TABLE_EXPIRED" } as const;
+          }
+          const pending = this.deleteConfirmation(guestId, requestId);
+          if (!pending) return { ok: false, code: "NOT_FOUND" } as const;
+          if (pending.state === "denied")
+            return { ok: true, value: { state: "denied" as const } } as const;
+          if (pending.state === "expired" || pending.expires_at <= now) {
+            return { ok: false, code: "CONFIRMATION_EXPIRED" } as const;
+          }
+          if (decision === "deny") {
+            this.ctx.storage.sql.exec(
+              "UPDATE table_delete_confirmations SET state = 'denied' WHERE guest_id = ? AND request_id = ?",
+              guestId,
+              requestId,
+            );
+            return { ok: true, value: { state: "denied" as const } } as const;
+          }
+          // Tombstone and minimal replay receipt are committed with erasure.
+          const purged = this.purgeContent(now, "deleted");
+          if (!purged) return { ok: false, code: "NOT_FOUND" } as const;
+          this.ctx.storage.sql.exec(
+            "INSERT INTO table_tombstone_delete_receipts (guest_id, request_id) VALUES (?, ?)",
+            guestId,
+            requestId,
+          );
+          return { ok: true, value: { state: "deleted" as const } } as const;
         }),
     );
     return committed.value;
