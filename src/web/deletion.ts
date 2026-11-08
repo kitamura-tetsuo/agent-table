@@ -16,7 +16,8 @@ import type { TableResult } from "../shared/table";
 
 const headers = {
   "Cache-Control": "no-store",
-  "Referrer-Policy": "no-referrer",
+  // Preserve the Origin header on same-origin approval form POSTs.
+  "Referrer-Policy": "same-origin",
   "X-Content-Type-Options": "nosniff",
   "X-Frame-Options": "DENY",
   "Content-Security-Policy":

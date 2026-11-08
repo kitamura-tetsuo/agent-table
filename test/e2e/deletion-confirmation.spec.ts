@@ -207,6 +207,11 @@ test("official SDK deletion requires an explicit same-guest browser POST", async
     await expect(
       page.getByRole("button", { name: "Permanently delete shared content" }),
     ).toBeVisible();
+    const csrfInput = await page.locator('input[name="csrf"]').inputValue();
+    const csrfInBrowser = (await context.cookies(ORIGIN)).find(
+      (cookie) => cookie.name === "__Host-agent_table_csrf",
+    );
+    expect(csrfInBrowser?.value).toBe(csrfInput);
     expect(
       toolOutput(
         await client.callTool({
