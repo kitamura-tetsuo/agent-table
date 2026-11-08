@@ -15,8 +15,9 @@ async function guest() {
     Date.now() + 24 * 60 * 60_000,
   );
   if (!grant) throw new Error("Missing guest grant");
+  const connectionId = grant.connectionId;
   async function actor(scope: ConnectionScope) {
-    const decision = await authorizeGuestConnection(env, id, grant.connectionId, scope);
+    const decision = await authorizeGuestConnection(env, id, connectionId, scope);
     if (!decision.allowed) throw new Error("Missing test scope");
     return decision.actor;
   }

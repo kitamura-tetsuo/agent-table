@@ -90,7 +90,8 @@ export async function postDigest(value: PostMessageInput): Promise<string> {
   };
   const canonical: Record<string, string> = {};
   for (const key of Object.keys(data).sort()) {
-    canonical[key] = data[key as keyof typeof data];
+    const value = data[key as keyof typeof data];
+    if (value !== undefined) canonical[key] = value;
   }
   const hash = new Uint8Array(await crypto.subtle.digest(
     "SHA-256",
