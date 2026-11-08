@@ -154,9 +154,10 @@ diagnostic Worker never enables application callback delivery.
 
 As of 2026-11-09, Remote Preview tests with sanitized test IDs verified positive
 reachability through Cloudflare Tunnel, opaque query handling, redirect refusal,
-10-second deadline abort, 64 KiB response streaming cap, and TLS certificate
-hostname mismatch rejection (correlating OpenSSL mismatch with HTTP 526).
-However, connection-time private IP refusal and in-flight DNS rebinding remain
-unproven on hosted Workers due to lack of DNS write permissions (`Zone.DNS:Edit`)
-and absence of runtime socket IP inspection. REQ-002 and REQ-006 remain
+10-second deadline abort, 64 KiB response streaming cap, TLS certificate hostname
+mismatch rejection (correlating OpenSSL mismatch with HTTP 526), and active edge
+proxy refusal (HTTP 530) when an origin DNS record resolves to loopback (127.0.0.1)
+or RFC 1918 (10.0.0.1). However, in-flight TOCTOU DNS rebinding within a single
+attempt remains unproven on hosted Workers, and native `fetch` provides no API to
+inspect or assert the actual connected IP address. REQ-002 and REQ-006 remain
 BLOCKED; `ENABLE_OPENAI_EVENTS=false` and draft PR status are strictly preserved.

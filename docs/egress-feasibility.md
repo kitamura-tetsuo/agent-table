@@ -310,8 +310,8 @@ observation, DNS test, or proof that the current candidate head is safe.
 
 ## Exact Candidate Head Remote Preview Execution (2026-11-09 JST)
 
-- **Execution Timestamp:** 2026-11-09 08:10 – 08:14 JST (2026-11-08 23:10 – 23:14 UTC)
-- **Baseline Git SHA:** `b89731ba14126b54c33035d09cb5138e3f322bc6` / branch `feat/issue-19-safe-egress-preflight`
+- **Execution Timestamp:** 2026-11-09 08:10 – 08:26 JST (2026-11-08 23:10 – 23:26 UTC)
+- **Baseline Git SHA:** `472f798` / branch `feat/issue-19-safe-egress-preflight`
 - **Toolchain:** Node `24.22.1`, Wrangler `4.158.0`, local `workerd 2026-11-04`, Biome `2.6.6`
 - **Execution Mode:** Cloudflare Workers Remote Preview (`npx wrangler dev --remote --config test/egress/wrangler.jsonc --ip 127.0.0.1 --port 8788`)
 - **Authenticated Cloudflare Account ID:** `0fbaae27d3ff021bc17109f1493d0b2d`
@@ -329,32 +329,30 @@ observation, DNS test, or proof that the current candidate head is safe.
 | 5. Server Delay > 10 s | `POST /__egress_probe`<br>Target: `https://probe.outliner-online.com/egress-check/slow` (15 s delay) | HTTP 504 `{"result":"deadline","testId":"slow-05"}` (after ~10 s) | Worker `AbortSignal` fired at 10 s deadline; socket terminated | **PASS** |
 | 6. Valid Web PKI TLS Control | `POST /__egress_probe`<br>Target: `https://badssl.com/` | HTTP 502 `{"result":"upstream-non-2xx","upstreamStatus":405,"testId":"badssl-valid-cert-06"}` | OpenSSL reported `Verification: OK`, `Verified peername: badssl.com`. Origin Nginx server received POST and returned HTTP 405 Method Not Allowed | **PASS (TLS negotiation succeeded)** |
 | 7. TLS Hostname Mismatch | `POST /__egress_probe`<br>Target: `https://wrong.host.badssl.com/` | HTTP 502 `{"result":"upstream-non-2xx","upstreamStatus":526,"testId":"wrong-host-badssl-07"}` | OpenSSL reported `depth=0 CN=*.badssl.com verify error:num=62:hostname mismatch`. Cloudflare proxy aborted upstream TLS handshake and generated HTTP 526 (Invalid SSL Certificate) | **PASS (observed rejection); original-host TLS proof still BLOCKED** |
-| 8. DNS Change Public -> Private IP | Temporary record pointing to loopback/RFC1918 | N/A (Cannot create/update DNS records) | Cloudflare API returned `HTTP 403 Forbidden` (`code 10000: Authentication error`). `wrangler whoami` shows token has `zone (read)` but lacks `Zone.DNS:Edit` | **NOT RUN / BLOCKED** |
+| 8. DNS to Loopback / RFC1918 Private IP | Disposable record `egress-test-issue19.outliner-online.com`<br>Resolved to `127.0.0.1` and `10.0.0.1` (DNS-only) | HTTP 502 `{"result":"upstream-non-2xx","upstreamStatus":530,"testId":"dns-private-127-01"}`<br>HTTP 502 `{"result":"upstream-non-2xx","upstreamStatus":530,"testId":"dns-private-rfc1918-02"}` | Cloudflare edge proxy actively refused connections to non-public/private addresses with HTTP 530 (DNS origin error / restricted origin access). Record cleaned up and verified deleted | **PASS (observed proxy refusal)** |
 | 9. In-flight TOCTOU DNS Rebinding | Alternating public/private responses per outbound fetch query | N/A (Requires dynamic authoritative DNS fixture) | Hosted Workers egress lacks socket IP inspection; workerd `connect_allowed` local code evidence is distinct from hosted proxy guarantee | **NOT RUN / BLOCKED** |
 
-### DNS Permission and Authority Status
+### DNS Permission and Lifecycle Audit
 
-`wrangler whoami` Token Scopes:
-- Included: `user (read)`, `account (read)`, `workers (write)`, `workers_kv (write)`, `zone (read)`, `connectivity (admin)`
-- Missing: `Zone.DNS:Edit` / `DNS:Edit` / `DNS:Write`
-
-Per project safety rules:
-- No permission bypass was attempted.
-- Operating production DNS records (`probe.outliner-online.com`) were NOT modified.
-- No untrusted third-party dynamic DNS services were invoked.
-- Case 8 and Case 9 remain strictly **NOT RUN / BLOCKED**.
+- Temporary token verified: Account-scoped API Token (`id: 0fe0c82af494f8a92978822910ec7ab7`), active on zone `outliner-online.com` (`d93d3721c888913fa36a3f170853578d`).
+- Lifecycle discipline:
+  1. Record before test: `egress-test-issue19.outliner-online.com` did not exist (`result: []`).
+  2. Created single test record (`id: d0d9e68ccf254c4360c622745c5a1bbb`), tested `127.0.0.1` and `10.0.0.1`.
+  3. Cleaned up immediately after test: `DELETE /dns_records/d0d9e68ccf254c4360c622745c5a1bbb` succeeded.
+  4. Post-check re-query confirmed record completely removed (`result: []`).
+  5. The operating production record (`probe.outliner-online.com`) was never modified.
 
 ### Requirement Status Summary
 
 - **REQ-002: BLOCKED / NOT COMPLETE**
   - Destination origin/prefix policy preflight: **PASS**
   - Original-host TLS certificate validation: **OBSERVED** (OpenSSL hostname mismatch correlated with HTTP 526), but native `fetch` exposes no certificate SAN validation trace to application code.
-  - Actual TCP/TLS connection-time private IP exclusion: **BLOCKED** (`fetch()` provides no connection IP inspection API; DNS write permission missing to prove proxy-level RFC1918 refusal).
-  - DNS Rebinding defense: **BLOCKED** (no hosted empirical alternating-DNS test; workerd source `connect_allowed` is local implementation evidence, not hosted proof).
+  - Actual TCP/TLS connection-time private IP exclusion: **OBSERVED** (Cloudflare edge proxy refused `127.0.0.1` and `10.0.0.1` with HTTP 530), but application code cannot inspect or pin the connected IP.
+  - In-flight DNS Rebinding defense: **BLOCKED** (no hosted empirical alternating-DNS test; workerd source `connect_allowed` is local implementation evidence, not hosted proof).
 - **REQ-006: BLOCKED / PARTIAL**
   - Real Workers positive reachability control: **PASS** (synthetically verified against live Cloudflare Tunnel receiver).
-  - Real Workers negative behavioral controls (redirect, timeout, size limit, policy rejection): **PASS**.
-  - Real Workers adversarial connection-time IP and DNS rebinding traces: **BLOCKED**.
+  - Real Workers negative behavioral controls (redirect, timeout, size limit, policy rejection, DNS private IP 530): **PASS**.
+  - Real Workers adversarial in-flight DNS rebinding traces: **BLOCKED**.
 
 ### Gating Conditions Enforced
 
