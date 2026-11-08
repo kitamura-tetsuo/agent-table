@@ -68,7 +68,7 @@ describe("OAuth library and consent boundary", () => {
 
   it("rejects invalid redirect and PKCE downgrade before consent", async () => {
     const clientId = await register();
-    const attempts = [
+    const attempts: Record<string, string>[] = [
       { redirect_uri: "https://evil.example/callback" },
       { code_challenge_method: "plain" },
     ];
