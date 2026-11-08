@@ -6,18 +6,23 @@ const SESSION_COOKIE = "__Host-agent_table_session";
 
 function cookie(response: APIResponse, name: string): string {
   const header = response.headersArray().find(
-    (item) => item.name.toLowerCase() === "set-cookie" &&
-      item.value.startsWith(name + "="),
+    (item) =>
+      item.name.toLowerCase() === "set-cookie" &&
+      item.value.startsWith(`${name}=`),
   )?.value;
   if (!header) throw new Error("Missing test cookie");
   return header.split(";")[0];
 }
 
-test("live Worker connection management is session-only and POST+CSRF protected", async ({ request }) => {
+test("live Worker connection management requires a session and CSRF", async ({
+  request,
+}) => {
   expect((await request.get("/guest/connections")).status()).toBe(401);
   const first = await request.get("/guest");
   const csrfCookie = cookie(first, CSRF_COOKIE);
-  const csrf = (await first.text()).match(/name="csrf" value="([A-Za-z0-9_-]{43})"/)?.[1];
+  const csrf = (await first.text()).match(
+    /name="csrf" value="([A-Za-z0-9_-]{43})"/,
+  )?.[1];
   if (!csrf) throw new Error("Missing test CSRF");
   const created = await request.post("/guest/session", {
     headers: { Origin: ORIGIN, Cookie: csrfCookie },
