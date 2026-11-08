@@ -17,6 +17,7 @@ import {
   validInvitationOperationId,
   validTableId,
 } from "../shared/invitations";
+import { TABLE_LIMITS } from "../shared/limits";
 import { digestSessionSecret, randomBase64Url } from "../shared/random";
 import { ownInboxUri, parseOwnInboxUri } from "../shared/resources";
 import {
@@ -753,7 +754,10 @@ export class TableDO extends DurableObject<Env> {
           "SELECT body_bytes FROM table_transcript_usage WHERE singleton = 1",
         )
         .one();
-      if (table.last_seq >= 256 || usage.body_bytes + bytes > 2 * 1024 * 1024) {
+      if (
+        table.last_seq >= TABLE_LIMITS.maxMessages ||
+        usage.body_bytes + bytes > TABLE_LIMITS.transcriptBodyBytes
+      ) {
         return { ok: false, code: "LIMIT_REACHED" } as const;
       }
       const count = this.ctx.storage.sql
