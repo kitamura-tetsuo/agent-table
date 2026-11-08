@@ -49,20 +49,14 @@ test("official SDK negotiates against the authenticated live Wrangler HTTP serve
     /name="csrf" value="([A-Za-z0-9_-]{43})"/,
   )?.[1];
   if (!guestCsrf) throw new Error("Guest creation form CSRF missing");
-  const guestCsrfCookie = responseCookie(
-    guestPage,
-    "__Host-agent_table_csrf",
-  );
+  const guestCsrfCookie = responseCookie(guestPage, "__Host-agent_table_csrf");
   const created = await request.post("/guest/session", {
     headers: { Origin: ORIGIN, Cookie: guestCsrfCookie },
     form: { choice: "new", csrf: guestCsrf },
     maxRedirects: 0,
   });
   expect(created.status()).toBe(303);
-  const sessionCookie = responseCookie(
-    created,
-    "__Host-agent_table_session",
-  );
+  const sessionCookie = responseCookie(created, "__Host-agent_table_session");
 
   // Exercise the real provider's DCR, PKCE and browser consent over HTTP.
   const registration = await request.post("/oauth/register", {
@@ -77,9 +71,7 @@ test("official SDK negotiates against the authenticated live Wrangler HTTP serve
     client_id: string;
   };
   const verifier = randomBytes(32).toString("base64url");
-  const challenge = createHash("sha256")
-    .update(verifier)
-    .digest("base64url");
+  const challenge = createHash("sha256").update(verifier).digest("base64url");
   const authUrl = new URL(`${ORIGIN}/authorize`);
   for (const [key, value] of Object.entries({
     response_type: "code",
@@ -98,12 +90,8 @@ test("official SDK negotiates against the authenticated live Wrangler HTTP serve
   });
   expect(consent.status()).toBe(200);
   const html = await consent.text();
-  const handle = html.match(
-    /name="handle" type="hidden" value="([^"]+)"/,
-  )?.[1];
-  const csrf = html.match(
-    /name="csrf" type="hidden" value="([^"]+)"/,
-  )?.[1];
+  const handle = html.match(/name="handle" type="hidden" value="([^"]+)"/)?.[1];
+  const csrf = html.match(/name="csrf" type="hidden" value="([^"]+)"/)?.[1];
   if (!handle || !csrf) throw new Error("OAuth consent form is incomplete");
   const oauthCsrfCookie = responseCookie(
     consent,
