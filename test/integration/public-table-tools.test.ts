@@ -1,11 +1,17 @@
-import { evictDurableObject, runInDurableObject } from "cloudflare:test";
+import {
+  createExecutionContext,
+  evictDurableObject,
+  runInDurableObject,
+} from "cloudflare:test";
 import { env, exports } from "cloudflare:workers";
 import {
   Client,
   StreamableHTTPClientTransport,
 } from "@modelcontextprotocol/client";
 import { describe, expect, it } from "vitest";
-import { authorizeGuestConnection } from "../../src/shared/auth";
+import worker from "../../src/index";
+import type { CreationReservation } from "../../src/objects/guest";
+import { authorizeGuestConnection, type VerifiedConnectionActor } from "../../src/shared/auth";
 
 const ORIGIN = "http://localhost:8787";
 const REDIRECT = "https://client.example/callback";
@@ -155,6 +161,88 @@ function output(result: Awaited<ReturnType<Client["callTool"]>>) {
   return JSON.parse(block.text) as Record<string, unknown>;
 }
 
+type GuestStub = ReturnType<Env["GUESTS"]["get"]>;
+type TableStub = ReturnType<Env["TABLES"]["get"]>;
+type ReserveRpc = GuestStub["reserveCreation"];
+type InitializeRpc = TableStub["initializeTable"];
+
+/**
+ * Inject only at Worker-to-DO RPC bindings; the official SDK, OAuth handler,
+ * GuestDO/TableDO methods, and SQLite storage remain real. No final MCP tool
+ * response is replaced by a fixture.
+ */
+function withReservationRpc(
+  intercept: (
+    real: ReserveRpc,
+    actor: VerifiedConnectionActor,
+    input: unknown,
+  ) => ReturnType<ReserveRpc>,
+): Env {
+  const guests = {
+    idFromName: (name: string) => env.GUESTS.idFromName(name),
+    get: (id: DurableObjectId): GuestStub => {
+      const stub = env.GUESTS.get(id);
+      return new Proxy(stub, {
+        get(target, property) {
+          if (property === "reserveCreation") {
+            return (actor: VerifiedConnectionActor, request: unknown) =>
+              intercept(
+                (actor, request) => target.reserveCreation(actor, request),
+                actor,
+                request,
+              );
+          }
+          const value = Reflect.get(target, property, target);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+    },
+  };
+  return { ...env, GUESTS: guests as Env["GUESTS"] };
+}
+
+function withInitializationRpc(
+  intercept: (
+    real: InitializeRpc,
+    actor: VerifiedConnectionActor,
+    input: unknown,
+    receipt: CreationReservation,
+  ) => ReturnType<InitializeRpc>,
+): Env {
+  const tables = {
+    idFromName: (name: string) => env.TABLES.idFromName(name),
+    get: (id: DurableObjectId): TableStub => {
+      const stub = env.TABLES.get(id);
+      return new Proxy(stub, {
+        get(target, property) {
+          if (property === "initializeTable") {
+            return (
+              actor: VerifiedConnectionActor,
+              request: unknown,
+              receipt: CreationReservation,
+            ) =>
+              intercept(
+                (actor, request, receipt) =>
+                  target.initializeTable(actor, request, receipt),
+                actor,
+                request,
+                receipt,
+              );
+          }
+          const value = Reflect.get(target, property, target);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+    },
+  };
+  return { ...env, TABLES: tables as Env["TABLES"] };
+}
+
+function fetchThroughWorker(overlay: Env) {
+  return (request: Request) =>
+    worker.fetch(request, overlay, createExecutionContext());
+}
+
 describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () => {
   it("creates exactly one waiting table, checks membership, and rejects unexpected fields", async () => {
     const owner = await tokenForGuest("tables:read tables:write");
@@ -287,20 +375,14 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
       request_id: "sdk_reservation_response_loss_001",
     };
     let intercepted = 0;
-    await runInDurableObject(owner.guest, async (instance) => {
-      const internal = instance as unknown as {
-        reserveCreation: typeof instance.reserveCreation;
-      };
-      const original = internal.reserveCreation.bind(instance);
-      internal.reserveCreation = async (actor, request) => {
-        const result = await original(actor, request);
-        if (result.ok && intercepted++ === 0) {
-          throw new Error("Injected reservation reply loss after commit");
-        }
-        return result;
-      };
+    const overlay = withReservationRpc(async (real, actor, request) => {
+      const result = await real(actor, request);
+      if (result.ok && intercepted++ === 0) {
+        throw new Error("Injected reservation reply loss after commit");
+      }
+      return result;
     });
-    const client = await sdk(owner.token);
+    const client = await sdk(owner.token, fetchThroughWorker(overlay));
     try {
       const uncertain = await client.callTool({
         name: "create_table",
@@ -398,21 +480,15 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
       env.TABLES.idFromName(reserved.reservation.tableId),
     );
     let committed = false;
-    await runInDurableObject(table, async (instance) => {
-      const internal = instance as unknown as {
-        initializeTable: typeof instance.initializeTable;
-      };
-      const original = internal.initializeTable.bind(instance);
-      internal.initializeTable = async (actor, request, receipt) => {
-        const actual = await original(actor, request, receipt);
-        if (actual.ok) {
-          committed = true;
-          throw new Error("Injected reply loss after persisted initialization");
-        }
-        return actual;
-      };
+    const overlay = withInitializationRpc(async (real, actor, request, receipt) => {
+      const actual = await real(actor, request, receipt);
+      if (actual.ok) {
+        committed = true;
+        throw new Error("Injected reply loss after persisted initialization");
+      }
+      return actual;
     });
-    const client = await sdk(owner.token);
+    const client = await sdk(owner.token, fetchThroughWorker(overlay));
     try {
       const uncertain = await client.callTool({
         name: "create_table",
@@ -470,27 +546,23 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
       request_id: "sdk_parallel_reservation_001",
     };
     let entered = 0;
-    let signalBoth = () => {};
-    let release = () => {};
-    const ready = new Promise<void>((resolve) => {
-      signalBoth = resolve;
-    });
-    const gate = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    await runInDurableObject(owner.guest, async (instance) => {
-      const internal = instance as unknown as {
-        beforeReservationDecision: () => Promise<void>;
-      };
-      internal.beforeReservationDecision = async () => {
-        entered++;
-        if (entered === 2) signalBoth();
-        await gate;
-      };
+    let observedOverlap = false;
+    const overlay = withReservationRpc(async (real, actor, request) => {
+      entered++;
+      // Each request waits in its own Workers I/O context. A shared deferred
+      // Promise would cross Durable Object contexts and is not a valid barrier.
+      for (let attempt = 0; entered < 2 && attempt < 500; attempt++) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 10));
+      }
+      if (entered !== 2) {
+        throw new Error("Public SDK reservation attempts did not overlap");
+      }
+      observedOverlap = true;
+      return real(actor, request);
     });
     const [left, right] = await Promise.all([
-      sdk(owner.token),
-      sdk(owner.token),
+      sdk(owner.token, fetchThroughWorker(overlay)),
+      sdk(owner.token, fetchThroughWorker(overlay)),
     ]);
     try {
       const first = left.callTool({
@@ -501,24 +573,9 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
         name: "create_table",
         arguments: originalKey,
       });
-      try {
-        await Promise.race([
-          ready,
-          new Promise<never>((_resolve, reject) =>
-            setTimeout(
-              () =>
-                reject(
-                  new Error("Public SDK reservation attempts did not overlap"),
-                ),
-              5_000,
-            ),
-          ),
-        ]);
-        expect(entered).toBe(2);
-      } finally {
-        release();
-      }
       const [a, b] = await Promise.all([first, second]);
+      expect(entered).toBe(2);
+      expect(observedOverlap).toBe(true);
       expect(a.isError).not.toBe(true);
       expect(b.isError).not.toBe(true);
       expect(output(a)).toEqual(output(b));
@@ -541,7 +598,6 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
         ).toHaveLength(1);
       });
     } finally {
-      release();
       await left.close();
       await right.close();
     }
