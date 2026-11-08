@@ -132,7 +132,12 @@ async function sdk(token: string) {
   );
   const transport = new StreamableHTTPClientTransport(new URL(RESOURCE), {
     authProvider: { token: async () => token },
-    fetch: (url, init) => exports.default.fetch(new Request(url, init)),
+    fetch: (url, init) => {
+      const request = new Request(url, init);
+      // An in-process fetch needs the Host header a real HTTP client supplies.
+      request.headers.set("Host", new URL(request.url).host);
+      return exports.default.fetch(request);
+    },
   });
   await client.connect(transport);
   return client;
