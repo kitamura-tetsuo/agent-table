@@ -1,6 +1,6 @@
 # Authentication, authorization, and privacy
 
-Status: proposed security model, with the Workers-compatible, purpose-separated secret-envelope primitive (Issue #3) and explicit pseudonymous browser sessions (Issue #4) implemented and tested. Invitation, callback, OAuth, consent grants and other application consumers are not yet implemented. The remaining controls require verification before handling private conversations.
+Status: proposed security model, with the Workers-compatible, purpose-separated secret-envelope primitive (Issue #3) explicit pseudonymous browser sessions (Issue #4), and durable connection grant authority and browser revocation (Issue #5) implemented and tested. Invitation, callback, OAuth and consent issuance UI are not yet implemented. The remaining controls require verification before handling private conversations.
 
 ## Registration-free does not mean unauthenticated
 
@@ -30,6 +30,16 @@ The `/guest` page offers separate **Create a new guest** and, when a valid sessi
 The Worker resolves `/guest/me` only via a live `GuestDO.validateSession` call; it does not cache authorization. Explicit reuse rotates the secret atomically under the same guest ID, invalidating the old secret. Future sensitive consent changes **must also rotate** through `GuestDO.rotateSession`; an existing cookie alone must never count as new OAuth consent. `invalidateSession` and bounded `pruneExpiredSessions` are internal object RPCs for future revocation/cleanup integrations, not public recovery endpoints. Expiration is checked on reads even if physical cleanup has not run, and all operations continue to work correctly after Durable Object reconstruction.
 
 Losing the cookie means losing browser-only access unless the browser still has another independently valid session; no table ID, cosmetic name, or agent token can restore it. The browser-cookie lifecycle is deliberately separate from future agent grants, so a lost cookie is not a connection-revocation signal. No account-recovery or cross-device pairing path is provided.
+
+## Connection grants and revocation (implemented authority, not OAuth)
+
+A server-side consent consumer may call `GuestDO.createConnection(sessionId, secret, approvedScopes, expiresAt)` only after explicit authorization. It revalidates the browser session within the guest's Durable Object before committing a fresh random connection ID, guest ownership, a strictly validated scope set, expiry (at most 30 days), and active state. There is deliberately **no public grant-creation endpoint** or OAuth integration yet; a browser cookie alone does not silently connect an agent. Every distinct connection must be approved again. Grants remain separate from the browser cookie lifecycle and table membership.
+
+`authorizeGuestConnection` forwards every new operation/delivery decision to `GuestDO.authorizeConnection` using a guest identity supplied by a future validated OAuth actor, a connection ID, and its required scope. The helper denies invalid, unavailable, missing, mismatched, expired, revoked, or insufficiently scoped requests and never caches positive decisions. A grant permits only an operation **category**; table membership is a separate future authorization step. Never use raw unvalidated OAuth claims as the server-bound guest ID.
+
+`GET /guest/connections` lists only the browser session owner's safe grant metadata. `POST /guest/connections/revoke` requires a same-origin request, matching CSRF form/cookie, and a live owner session. GuestDO enforces ownership again at the mutation boundary, atomically revokes the connection and rotates the browser session secret; repeats against an already-revoked grant are idempotent when submitted with the current valid session. GET, cross-origin requests, and another guest's session cannot revoke the grant. Loss of the browser cookie alone does not revoke it.
+
+Revocation persists through object reconstruction, and authorization is checked afresh for subsequent operations and future dispatch attempts. It cannot recall a request authorized before the revocation commit or bytes already delivered. Third-party host disconnect callbacks are not relied upon. Until #6 integrates OAuth, this authority is exercised through internal GuestDO calls and the browser management surface, not real host tokens.
 
 ## OAuth implementation profile
 
