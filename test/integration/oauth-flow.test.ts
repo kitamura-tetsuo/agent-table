@@ -115,7 +115,6 @@ describe("OAuth library and consent boundary", () => {
   });
 });
 
-
 async function withBrowserGuest() {
   const guestId = crypto.randomUUID();
   const guest = env.GUESTS.get(env.GUESTS.idFromName(guestId));
