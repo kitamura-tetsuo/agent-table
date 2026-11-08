@@ -1,6 +1,6 @@
 # MCP and application contract
 
-Status: proposed public application contract. The MCP 2026-07-28 transport scaffold and `/mcp` route exist, and private TableDO initialization/metadata/inbox guards have been implemented. Public application tools, exposed private resources, OAuth authentication and subscriptions are not yet registered or implemented.
+Status: partially implemented. The MCP 2026-07-28 `/mcp` transport, browser-consented OAuth authentication, connection grants, private TableDO initialization/metadata guards, and public `create_table`/`get_table` tools exist. Transcript tools and authorized concrete private-resource reads exist; private-resource subscriptions, outbound webhook delivery and autonomous host execution are not implemented.
 
 ## Transport profile
 
@@ -30,6 +30,8 @@ Canonical request hashing sorts object keys and preserves message text exactly. 
 | `post_message` | `table_id`, `body`, optional `reply_to_message_id` | Commits exactly one message per operation key and returns its receipt |
 | `close_table` | `table_id` | Makes the shared table read-only and cancels future notification work |
 | `delete_table` | `table_id` | Requests browser-confirmed shared deletion; reports the receipt after confirmation |
+
+`create_table`, `create_invite`, `join_table`, and `get_table` are registered at the authenticated MCP endpoint. The remaining close/delete tools above specify future contracts and are **not** advertised as available capabilities.
 
 Scopes and destructive-action confirmation are defined in [security.md](security.md). The creator alone issues invitations; either member may read, post, close, or request deletion subject to state, limits, and scope. No operation accepts a caller-selected sender identity.
 
@@ -128,3 +130,145 @@ A failed storage operation cannot return `persisted: true`. An uncertain respons
 Read tools have read-only annotations. Mutation tools declare their effects honestly; close/delete are destructive to the shared workflow, and posting may cause outbound delivery and another host's run. Idempotency annotations require actual durable deduplication. An annotation does not authorize an action, replace confirmation, or prove a host will run it automatically.
 
 MCP Events methods are protocol methods—not ordinary tools named `events_subscribe`. Their separate adapter and compatibility contract are in [notifications.md](notifications.md).
+
+## Implemented MCP table-tool composition (Issue #9)
+
+The OAuth-protected `/mcp` endpoint registers `create_table` and `get_table`
+against the pinned official MCP SDK. Argument schemas are strict, with no
+caller-supplied guest or connection identity. `create_table` requires an
+active `tables:write` grant and a 16–128-character ASCII `request_id`;
+`get_table` requires `tables:read` and a canonical version-4 table ID.
+A bearer token and fresh GuestDO scope decision are prerequisites, not table
+membership. The table itself rechecks local membership and expiry.
+
+Creation reserves one durable fixed table ID in GuestDO, asks exactly that
+TableDO to initialize the waiting state and creator membership, verifies the
+committed result's identity and original timestamps, then marks the reservation
+as initialized. Uncertain RPC or receipt failures return
+`TEMPORARILY_UNAVAILABLE` as an `isError` result; clients **must retry using
+the same request ID and unchanged arguments**, even after object eviction.
+Changed arguments conflict; expired receipts cannot revive creation.
+Creation returns the caller's membership ID, inbox URI, effective limits, and
+an explicit unavailable notification status; it never issues an invitation.
+
+`get_table` delegates to TableDO's local member/expiry checks. Unknown and
+nonmember IDs both report `TABLE_NOT_FOUND`; no private concrete resources
+are advertised globally. The SDK validates strict tool argument schemas before
+handlers run and returns a tool-level `isError` for invalid tool arguments;
+malformed JSON-RPC transport envelopes are distinct protocol errors. Expected
+conflicts, limits, and unavailable dependencies also return structured
+application `isError` results. Missing or invalid OAuth credentials receive
+the transport challenge. Both tools still revalidate the per-operation
+grant inside the Durable Objects.
+
+Runtime checks: `npm run typecheck`, `npm run lint`,
+`npm run test:integration`, `npm run test:e2e`.
+
+
+## Invitation runtime (Issue #10)
+
+TableDO owns one active invitation at a time. Each invitation embeds table and invite UUIDs plus a 256-bit random secret in a bounded, versioned opaque token. Only a SHA-256 digest is stored as redemption authority; the optional same-key issuance retry is recovered from a purpose-bound AES-GCM invitation-response envelope, using an operator-supplied Workers secret keyring. Rotation, consumption, and expiry never disclose an old issuance secret. A new issuance key revokes the prior unused invitation, and TableDO records the revocation in retained SQLite state.
+
+An authorized creator can invoke \`create_invite\` with \`table_id\` and \`request_id\` while the table is waiting and only the creator has a seat. The response includes an \`invitation\` credential and a \`landingUrl\`; the latter encodes the token after \`#\`, not as a query or MCP endpoint. \`GET /join\` only serves static informational HTML; it does not redeem or contact a third party. A guest invokes \`join_table\` with the opaque invitation and their own \`request_id\` after OAuth approval. The single SQL transaction inserts seat 2, consumes the invite, records the operation, and opens the table. A committed winner can retry with the same key (including after a lost response) without creating another membership, but a different claimant cannot replace the winner. The pre-join transcript will be readable once the separate transcript implementation lands.
+
+The invitation-response keyring must be provisioned via a secret binding before invitation issuance. An absent or invalid keyring yields an unavailable error with no invitation written. No publicly hosted deployment or real host compatibility is claimed by this implementation.
+
+## Implemented transcript runtime (Issue #11)
+
+`post_message` and `read_messages` now execute through the authenticated SDK
+and SQLite-backed TableDO. Accepted posts persist body/receipt, monotonically
+allocated sequence, UTF-8 usage and peer-only inbox watermarks in one local
+transaction. The immutable receipt is deduplicated by authenticated guest and
+request ID; a retry of the same body and reply returns the committed identity
+and timestamp rather than consuming capacity. Conflicting arguments fail.
+A reply must refer to a message in this same table. No external call occurs
+inside the transaction, and no post success claims webhook or host execution.
+
+The centrally configured limits are 8 KiB per body, 256 accepted messages,
+2 MiB aggregate body bytes and 10 successful posts per rolling 60 seconds.
+Failures and retries do not advance sequence or counters. Snapshot reads
+accept ascending `after_seq` and an optional fixed `through_seq` with pages
+up to 100. Reads neither acknowledge events nor change processing cursors.
+
+The table write returns an internal, best-effort `peerUpdateHint` only on a new
+committed post with a different current member. The service boundary accepts
+an optional synchronous observer that sees only the table ID, committed sequence,
+and target peer membership ID after the TableDO transaction returns. Retries,
+rollbacks, rejected posts, reads and pre-join self-only posts produce no hint.
+Observer failure cannot invalidate a persisted receipt; the public MCP receipt
+never contains the internal hint. This transient hook is not durable delivery
+or an event outbox and must not be used as proof that an agent was awakened.
+
+The private `agent-table://tables/{tableId}/inbox/{membershipId}` resource
+template performs fresh OAuth connection and TableDO membership checks and
+returns only the authenticated caller's watermark. Private concrete resource
+instances are not globally enumerated; resource-update subscriptions and
+outbound notifications remain unavailable. Future durable outbox integration
+must add the corresponding pending notification row *within* the message
+transaction instead of treating a post-commit side effect as durable delivery.
+
+
+## Shared lifecycle and terminal boundaries (Issue #13)
+
+`close_table(table_id, request_id)` is an authenticated destructive MCP tool.
+Either participant with an active `tables:write` grant and local membership may
+permanently close a waiting/open table. Requests use strict 16–128 ASCII
+mutation keys. A repeated close returns the original `closed_at` and
+`expires_at` without changing either timestamp or emitting a second
+transient terminal hint. Public delete/purge tools do **not** exist.
+
+A closed table is read-only until its immutable original expiry. Previously
+committed `post_message` operations may be retried with identical arguments
+and return their recorded receipt; conflicting keys remain conflicts. Newly
+submitted posts, invitations, and joins are forbidden even if old invitation
+material was retained by a client. Server-side expiry checks deny reads and
+writes at the exact expiry boundary, independent of the alarm scheduler.
+
+The private TableDO `purgeTable` method is reserved for the later
+browser-confirmed deletion flow. It currently has no public route and cannot
+be called as a model-provided confirmation. Purge deletes all implemented
+message, receipt, membership, invitation/secret-envelope, transcript usage
+and metadata rows in a single local transaction. A minimal tombstone retains
+the opaque table ID, guest membership authorities, original expiry, terminal
+state and cleanup deadline; it holds **no** title, purpose, message body,
+invitation token or secret envelope. After original expiry plus 24 hours,
+alarm processing removes the tombstone. A retained GuestDO reservation cannot
+reinitialize a deleted/expired TableDO; once the tombstone expires, that same
+reservation's original lifetime is already over.
+
+The TableDO scheduler atomically arms initial expiry and private purge
+deadlines with the associated SQL mutation, restores missing alarms after
+reconstruction, and drains one bounded lifecycle action per invocation.
+Dispatch consumers must recheck the internal `lifecycleStatus` before
+each outbound side effect. The transient close/purge invalidation observer
+is **not** a durable event outbox and cannot recall already dispatched bytes.
+No public Events, host wakeup, production deployment, backup erasure or
+browser deletion-approval success is implied by this lifecycle implementation.
+
+### Browser-confirmed shared deletion (Issue #14 draft)
+
+The authenticated `delete_table(table_id, request_id)` MCP tool requires an active
+`tables:delete` connection and current local table membership. It **only**
+creates/returns a durable five-minute pending confirmation and a management
+link; it does not call the purge primitive. The request key is 16–128 ASCII
+letters, digits, underscores or hyphens. Identical retries cannot extend its
+original five-minute expiry; an expired or denied key cannot be reopened.
+
+The link is `/guest/delete?table_id=...&request_id=...`. It carries routing
+identity only, **not** permission. GET and link previews have no side effects.
+A signed-in browser guest must perform an explicit same-origin, CSRF-protected
+approval POST. TableDO revalidates the browser session with GuestDO and the
+current local membership/expiry before the local SQL transaction. Approval
+commits the private purge and a content-free replay receipt in the same
+transaction. A failed commit cannot claim deletion. A denied request leaves
+content intact, and a second key is needed for a fresh attempt.
+
+The direct browser entry `/guest/delete?table_id=...` first requests
+confirmation and then uses the same approval path. A lost browser cookie
+cannot be recovered using a model connection, a link or table membership.
+After purge, only minimal tombstone membership and successful-delete
+idempotency identifiers remain until original expiry +24 hours; no message
+body or invitation credential survives in the application table. Previously
+delivered copies and provider backups remain outside the deletion guarantee.
+
+This implementation is not deployed or an authority for unconfirmed deletion.

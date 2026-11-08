@@ -101,6 +101,22 @@ export function sessionCookie(session: NewGuestSession): string {
   return `${SESSION_COOKIE_NAME}=v1.${session.guestId}.${session.sessionId}.${session.secret}; Path=/; Max-Age=${seconds}; Secure; HttpOnly; SameSite=Lax`;
 }
 
+/** Issue a double-submit token without changing a valid browser session. */
+export function deletionCsrf(request: Request): {
+  token: string;
+  setCookie: string | null;
+} {
+  const existing = getCookie(request, CSRF_COOKIE_NAME);
+  const token =
+    existing && CSRF_TOKEN.test(existing) ? existing : randomBase64Url(32);
+  return { token, setCookie: token === existing ? null : csrfCookie(token) };
+}
+
+/** Compare the signed-in browser's CSRF cookie and explicitly submitted form. */
+export function validDeletionCsrf(request: Request, value: string): boolean {
+  return sameToken(value, getCookie(request, CSRF_COOKIE_NAME) ?? "");
+}
+
 function csrfCookie(token: string): string {
   return `${CSRF_COOKIE_NAME}=${token}; Path=/; Max-Age=600; Secure; HttpOnly; SameSite=Lax`;
 }

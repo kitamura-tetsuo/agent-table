@@ -120,6 +120,28 @@ Bound anonymous-session creation, DCR, failed invite attempts, request sizes, ta
 
 Keep operator switches for new admission, new tables, and outbound notifications. Disabling admission must not disable existing users' close/delete controls. Free service access is not an unlimited-compute promise.
 
+### Browser deletion approval boundary (Issue #14 draft)
+
+The OAuth `tables:delete` scope alone can request but never approve deletion.
+A model-supplied `confirmed` value is rejected by the strict MCP schema.
+The browser confirmation URL is not a bearer credential and a preview GET
+cannot consume the request. POST additionally requires a valid same-guest
+HttpOnly session cookie, a matching double-submit CSRF token and same-origin
+request checks. TableDO rechecks the GuestDO session and local membership at
+the destructive boundary. Closed tables remain eligible before original
+expiry; expiry and deleted tombstones take precedence over old requests.
+
+Deletion and the minimal success receipt are a single SQLite transaction.
+A refused or failed approval cannot be reported as deletion. The five-minute
+approval clock and original table expiration are independently checked, even
+when Durable Object alarms are delayed. Tombstones and replay IDs are
+physically removed at original expiry +24 hours; separate platform backups
+and already transmitted bytes cannot be recalled.
+
+This browser approval path is separate from outbound Events/callback egress.
+It provides no security evidence toward Issue #19 or REQ-002 safe HTTPS
+destinations, and it never enables public Events.
+
 ## Callback egress feasibility gate (Issue #19)
 
 A destination allowlist cannot enforce public-address policy at connection time. The preflight parser is implemented but outbound callback sending intentionally fails closed until measured Workers address/TLS enforcement exists. See [egress feasibility](egress-feasibility.md); this is not a completed webhook transport.

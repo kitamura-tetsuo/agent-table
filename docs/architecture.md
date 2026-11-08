@@ -1,6 +1,6 @@
 # Architecture
 
-Status: partial implementation on Cloudflare Workers and SQLite-backed Durable Objects. Guest identity, connection grants, the private creation-reservation ledger, and private TableDO initialization/membership authority are implemented. Public create_table orchestration, invitations, transcript operations, and notification delivery remain pending.
+Status: partial implementation on Cloudflare Workers and SQLite-backed Durable Objects. Guest identity, connection grants, creation reservations, invitations, ordered transcript, and authenticated table tools are implemented. This branch implements shared close and private deletion/expiry cleanup; browser-confirmed deletion and event delivery remain separate, unimplemented integrations.
 
 ## Topology
 
@@ -71,7 +71,7 @@ Message sequence is the transcript ordering authority. Use uniqueness constraint
 
 `schema/005_table_authority.ts` creates a single `table_metadata` row and at most two unique `table_memberships` seats. `TableDO.initializeTable` verifies the fixed table identity against its own Durable Object ID and independently re-reads the exact reservation and write grant from GuestDO before a local transaction inserts a `waiting` table and one random creator membership in seat 1. A matching replay returns the original creator membership across eviction. A different reservation or metadata, an expired reservation, or a retained terminal table cannot create another table. The other seat is not allocated by this stage.
 
-The private `getMetadata` and `readOwnInbox` boundaries require a fresh active read grant and local membership/expiry checks. An unknown or nonmember request receives `TABLE_NOT_FOUND` without application metadata; an authorized expired table receives no content. Metadata returns safe membership IDs/roles, fixed UTC timestamps, configured limits and only the caller's concrete inbox URI. The inbox's initial counters are zero. The in-memory Worker does not cache grants or memberships, and no public table route exists yet.
+The private `getMetadata` and `readOwnInbox` boundaries require a fresh active read grant and local membership/expiry checks. An unknown or nonmember request receives `TABLE_NOT_FOUND` without application metadata; an authorized expired table receives no content. Metadata returns safe membership IDs/roles, fixed UTC timestamps, configured limits and only the caller's concrete inbox URI. The inbox's initial counters are zero. The in-memory Worker does not cache grants or memberships. The only public application entry point for these tools is the OAuth-protected `/mcp` endpoint; no independent unauthenticated table route exists.
 
 ### `GuestDO`
 
@@ -85,11 +85,15 @@ A create-table reservation records its table ID, canonical request hash, origina
 
 ## Table creation without a distributed transaction
 
-`GuestDO` atomically reserves quota and a randomly generated table ID for a new idempotency key. It then calls a private `TableDO.initialize` operation with that fixed identity and original expiration. Initialization is idempotent for the same reservation and rejects conflicting metadata.
+`GuestDO` atomically reserves quota and a randomly generated table ID for a new idempotency key. The authenticated `create_table` MCP tool first checks the caller's live `tables:write` connection grant, then the server calls private `TableDO.initializeTable` with that fixed identity and original expiration. The initializer independently verifies the creator's live grant and the GuestDO reservation. Initialization is idempotent for the same reservation and rejects conflicting metadata.
 
-If initialization succeeds but its response is lost, a retry uses the same reservation and table ID. Do not allocate another table or consume quota again. Do not return success merely because a reservation exists: obtain the table's initialized result. A retry after the original table lifetime cannot recreate the conversation.
+A successful initializer response is checked against the GuestDO receipt (table identity, original creation time, original expiry and creator membership) before `recordCreationOutcome` annotates the receipt. Only the confirmed initialized TableDO result may become a successful MCP tool result. If initialization succeeds but its response is lost, the server returns an application `TEMPORARILY_UNAVAILABLE` result with `isError: true` and same-key retry guidance. A retry uses the same reservation and table ID. Do not allocate another table or consume quota again. Do not return success merely because a reservation exists: obtain the table's initialized result. A retry after the original table lifetime cannot recreate the conversation.
 
 The reservation is durable, not an in-memory promise. Quota reservations remain charged for the rolling window even on failure in the initial version; this deliberately favors a simple bounded admission rule over refund races.
+
+The read-only `get_table` tool independently checks a fresh `tables:read` connection grant and TableDO's local membership/expiry boundary, returns only safe caller-authorized metadata, and does not initialize unknown objects. No invitation is silently created by `create_table`. Private concrete inbox resources are not globally enumerated; the own inbox URI is returned as metadata, while subscription delivery is not yet implemented.
+
+`test/integration/public-table-tools.test.ts` exercises the official MCP SDK client and actual OAuth Worker-to-GuestDO-to-TableDO route. Worker-to-DO RPC wrappers inject a committed reservation reply loss, a committed TableDO initializer reply loss, overlapping public creation retries and lost Worker-to-SDK responses without replacing the final tool result or bypassing real SQLite state. Recovery checks original table ID/expiry, one quota charge and creator membership across Durable Object eviction. `test/integration/public-table-recovery.test.ts` independently tests service-level persistence boundaries. Execute `npm run typecheck`, `npm run lint`, `npm test`, `npm run test:integration`, `node scripts/verify-oauth-redemption-mutant.mjs`, `npm run build`, and `npm run test:e2e`; GitHub Actions Validation is the executed exact-head verification authority.
 
 ## Message commit boundary
 
@@ -110,7 +114,7 @@ Each object has one alarm slot, and alarm execution may be repeated. `src/shared
 
 GuestDO now schedules session and grant expiry plus the eight-day reservation-retention deadlines at their producing commits. Its constructor checks for missing alarms after reconstruction without replacing an earlier pending one. The real `alarm()` processes at most 100 due session, grant and reservation rows per invocation, retaining guest identity and all live records, then schedules the earliest remaining deadline. Before handling, a separate durable 60-second recovery wakeup is armed to survive a handler crash beyond Cloudflare's bounded automatic retries. A due backlog is rearmed at least one second later. Injected pre/post-arm, mutation, rearm and response-loss tests verify durable rollback/recovery and repeated alarms through eviction.
 
-TableDO owns an instance of the same helper and an alarm entry, but no table expiry, delivery lease or outbox consumer has been introduced yet. Those later features must register their **real** durable deadlines and handlers, including work-recovery safety, rather than interpreting a scheduled wakeup as successful cleanup, delivery or host execution. An alarm alone does not replace synchronous lifecycle authorization checks; `setTimeout`, an in-memory queue, and `waitUntil` are not durable schedulers.
+TableDO now arms its original expiry with table initialization and uses the same scheduler for private purge retention and bounded tombstone cleanup. Its constructor reconstructs a missing alarm, and its handler re-reads durable expiry/tombstone rows. No delivery lease or outbox consumer has been introduced; those later features must register their **real** durable deadlines and handlers rather than interpreting a scheduled wakeup as successful delivery or host execution. An alarm alone does not replace synchronous lifecycle authorization checks; `setTimeout`, an in-memory queue, and `waitUntil` are not durable schedulers.
 
 ## Lifecycle
 
@@ -124,7 +128,7 @@ TableDO owns an instance of the same helper and an alarm entry, but no table exp
 
 Expiration is enforced on every request and dispatch attempt; it does not depend on the alarm firing on time. Closing never extends expiration. A full transcript rejects additional posts but does not erase prior messages.
 
-Deletion retains only a minimal authorization/idempotency tombstone until the original expiry plus 24 hours. No title, purpose, message body, callback secret, or invitation secret remains in that tombstone. Then remove the object's remaining storage. A missing object is never recreated by read, post, join, subscribe, or a stale delivery result. Platform backups and already delivered copies have separate retention boundaries. [CF-TTL]
+The private purge implementation retains a minimal opaque-ID/membership tombstone until original expiry plus 24 hours. No title, purpose, message body, callback secret, or invitation secret remains. The tombstone and retained guest ID rows are then removed by the scheduler. Internal schema metadata remains as empty tables; browser approval and physical platform-storage reclamation are later integration/operations requirements. Platform backups are a separate boundary. A missing object is never recreated by read, post, join, subscribe, or a stale delivery result. Platform backups and already delivered copies have separate retention boundaries. [CF-TTL]
 
 ## Notification placement
 
