@@ -273,6 +273,7 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
         "create_table",
         "get_table",
         "join_table",
+        "close_table",
         "post_message",
         "read_messages",
       ]);
