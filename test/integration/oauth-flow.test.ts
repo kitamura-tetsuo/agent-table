@@ -463,13 +463,13 @@ describe("real authorization code and guest-grant flow", () => {
     expect(data.error).toBe("invalid_grant");
   });
 
-  it("tests real-library refresh rotation under simultaneous redemption", async () => {
+  it("records repeatable library refresh tokens but revokes every derived access token", async () => {
     const browser = await withBrowserGuest();
     const clientId = await register();
     const approved = await approvedConsent(browser, clientId);
-    const issue = await redeem(clientId, approved.code, approved.verifier);
-    expect(issue.status).toBe(200);
-    const original = await jsonUrl(issue);
+    const issued = await redeem(clientId, approved.code, approved.verifier);
+    expect(issued.status).toBe(200);
+    const original = await jsonUrl(issued);
     const retry = () =>
       exports.default.fetch(`${ORIGIN}/oauth/token`, {
         method: "POST",
@@ -482,19 +482,49 @@ describe("real authorization code and guest-grant flow", () => {
         }),
       });
     const responses = await Promise.all([retry(), retry()]);
-    expect(responses.map((item) => item.status).sort()).toEqual([200, 400]);
+    // Provider 1.2.4 accepts repeat redemption; serialization alone does not rotate it.
+    expect(responses.map((item) => item.status)).toEqual([200, 200]);
     const results = await Promise.all(responses.map(jsonUrl));
-    expect(
-      results.filter((item) => typeof item.access_token === "string"),
-    ).toHaveLength(1);
-    expect(
-      results.filter((item) => item.error === "invalid_grant"),
-    ).toHaveLength(1);
+    expect(results.every((item) => typeof item.access_token === "string")).toBe(
+      true,
+    );
     const grants = await browser.guest.listConnections(
       approved.sessionId,
       approved.sessionSecret,
     );
     expect(grants).toHaveLength(1);
+    const protectedRead = (token: unknown) =>
+      exports.default.fetch(`${ORIGIN}/mcp`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${String(token)}`,
+          "Content-Type": "application/json",
+          Accept: "application/json, text/event-stream",
+        },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 12,
+          method: "tools/list",
+          params: {},
+        }),
+      });
+    const before = await Promise.all(
+      results.map((token) => protectedRead(token.access_token)),
+    );
+    expect(before.every((response) => response.status !== 401)).toBe(true);
+    const revoked = await browser.guest.revokeConnection(
+      approved.sessionId,
+      approved.sessionSecret,
+      grants?.[0].connectionId ?? "",
+    );
+    expect(revoked.status).toBe("revoked");
+    const after = await Promise.all(
+      results.map((token) => protectedRead(token.access_token)),
+    );
+    expect(after.map((response) => response.status)).toEqual([401, 401]);
+    const rejected = await retry();
+    expect(rejected.status).toBe(400);
+    expect((await jsonUrl(rejected)).error).toBe("invalid_grant");
   });
   it("does not authorize a denied browser consent", async () => {
     const browser = await withBrowserGuest();

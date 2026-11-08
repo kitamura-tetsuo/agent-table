@@ -1,6 +1,6 @@
 # Authentication, authorization, and privacy
 
-Status: proposed security model, with the Workers-compatible, purpose-separated secret-envelope primitive (Issue #3) explicit pseudonymous browser sessions (Issue #4), and durable connection grant authority and browser revocation (Issue #5) implemented and tested. Invitation, callback, OAuth and consent issuance UI are not yet implemented. The remaining controls require verification before handling private conversations.
+Status: proposed security model. Purpose-separated secret envelopes (#3), browser guest sessions (#4), and revocable connection grants (#5) have merged. OAuth/consent is implemented in the unmerged draft PR #31 and verified by local runtime tests only. Invitations, callback support, public table operations and real-host compatibility remain unverified. Do not infer readiness for private conversations from these tests.
 
 ## Registration-free does not mean unauthenticated
 
@@ -42,6 +42,8 @@ A server-side consent consumer may call `GuestDO.createConnection(sessionId, sec
 Revocation persists through object reconstruction, and authorization is checked afresh for subsequent operations and future dispatch attempts. It cannot recall a request authorized before the revocation commit or bytes already delivered. Third-party host disconnect callbacks are not relied upon. Until #6 integrates OAuth, this authority is exercised through internal GuestDO calls and the browser management surface, not real host tokens.
 
 ## OAuth implementation profile
+
+Draft PR #31 pins `@cloudflare/workers-oauth-provider@1.2.4`, delegates code/token handling to the maintained provider, and serializes token requests in one Durable Object. Actual-library workerd tests found that two concurrent refresh requests with the *same* refresh token both succeed (HTTP 200); this pinned version does **not** provide single-use refresh rotation via our serializer. Every issued access token remains subject to a fresh GuestDO connection/scope decision, and revocation is tested against both derived tokens. This observed behavior is not evidence of one-time token rotation, strict KV atomicity or compatibility with a named external agent host. Review the refresh reuse semantics and original authorized expiry before release.
 
 Target authorization code with PKCE S256, protected-resource metadata, authorization-server metadata, exact redirect-URI validation, resource/audience binding, and refresh handling through the selected library. The initial client-registration method is DCR; CIMD is a later option unless the pinned library and test client already support it safely. Do not advertise unsupported authentication methods or OIDC scopes.
 
