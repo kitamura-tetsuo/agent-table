@@ -70,7 +70,10 @@ export class AdmissionDO extends DurableObject<Env> {
       if (window.count >= maximum) {
         return {
           allowed: false,
-          retryAfterMs: Math.max(1_000, (window.oldest ?? now) + WINDOW_MS - now),
+          retryAfterMs: Math.max(
+            1_000,
+            (window.oldest ?? now) + WINDOW_MS - now,
+          ),
         };
       }
       this.ctx.storage.sql.exec(
