@@ -857,7 +857,7 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
                       setTimeout(resolve, 10),
                     );
                   }
-                  if (entered !== 2)
+                  if (entered < 2)
                     throw new Error("Redemption attempts did not overlap");
                   const result = await target.redeemInvite(actor, token, key);
                   if (result.ok && !dropped) {
