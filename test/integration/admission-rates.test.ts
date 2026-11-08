@@ -72,13 +72,7 @@ describe("cross-isolate admission policy", () => {
     const ip = "192.0.2.31";
     const results = await Promise.all(
       Array.from({ length: 6 }, (_, index) =>
-        createGuest(
-          limited,
-          csrf,
-          csrfCookie,
-          ip,
-          `198.51.100.${index + 10}`,
-        ),
+        createGuest(limited, csrf, csrfCookie, ip, `198.51.100.${index + 10}`),
       ),
     );
     expect(results.filter((result) => result.status === 303)).toHaveLength(2);
@@ -116,7 +110,9 @@ describe("cross-isolate admission policy", () => {
     const denied = await checkPrincipalAdmission(limited, principal);
     expect(denied?.status).toBe(429);
     expect(denied?.headers.get("Retry-After")).toMatch(/^[1-9][0-9]*$/);
-    expect(await checkPrincipalAdmission(limited, crypto.randomUUID())).toBeNull();
+    expect(
+      await checkPrincipalAdmission(limited, crypto.randomUUID()),
+    ).toBeNull();
 
     const stub = await admissionStub(limited, `principal-v1:${principal}`);
     await runInDurableObject(stub, async (_instance, state) => {
@@ -129,6 +125,8 @@ describe("cross-isolate admission policy", () => {
       ).toBe(2);
     });
     const invalid: Env = { ...env, PRINCIPAL_RATE_PER_MINUTE: "0" };
-    expect((await checkPrincipalAdmission(invalid, principal))?.status).toBe(503);
+    expect((await checkPrincipalAdmission(invalid, principal))?.status).toBe(
+      503,
+    );
   });
 });
