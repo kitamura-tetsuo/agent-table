@@ -15,7 +15,7 @@ const bindings: Env = { ...env, ALLOW_NEW_GUESTS: "true" };
 
 function dispatch(path: string, init?: RequestInit): Promise<Response> {
   return worker.fetch(
-    new Request(${ORIGIN}${path}`, init) as Parameters<typeof worker.fetch>[0],
+    new Request(`${ORIGIN}${path}`, init) as Parameters<typeof worker.fetch>[0],
     bindings,
     {} as ExecutionContext,
   );
