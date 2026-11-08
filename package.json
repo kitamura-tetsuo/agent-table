@@ -10,7 +10,7 @@
   "scripts": {
     "dev": "wrangler dev --local --ip 127.0.0.1",
     "typecheck": "tsc --noEmit",
-    "lint": "biome check src schema test || (node scripts/_format_diagnostic.mjs; exit 1)",
+    "lint": "biome check src schema test",
     "test": "vitest run",
     "test:integration": "vitest run test/integration",
     "test:e2e": "playwright test",

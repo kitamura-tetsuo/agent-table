@@ -256,11 +256,17 @@ function newServer(env: Env, identity: AuthenticatedMcpIdentity) {
     },
     async ({ table_id, request_id }) => {
       const actor = await scopedActor("tables:delete");
-      if (!actor) return toolResult({ error: { code: "NOT_AUTHORIZED" } }, true);
+      if (!actor)
+        return toolResult({ error: { code: "NOT_AUTHORIZED" } }, true);
       if (!validTableId(table_id)) {
         return toolResult({ error: { code: "INVALID_REQUEST" } }, true);
       }
-      const result = await requestTableDeletion(env, actor, table_id, request_id);
+      const result = await requestTableDeletion(
+        env,
+        actor,
+        table_id,
+        request_id,
+      );
       return result.ok
         ? toolResult(result.value)
         : toolResult({ error: { code: result.code } }, true);

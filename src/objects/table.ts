@@ -11,6 +11,12 @@ import {
 } from "../shared/creation";
 import { DurableDeadlineScheduler } from "../shared/deadlines";
 import {
+  type BrowserDeletionCredential,
+  DELETE_CONFIRMATION_MS,
+  type DeletionReceipt,
+  type DeletionView,
+} from "../shared/deletion";
+import {
   encodeInvitation,
   invitationLandingUrl,
   parseInvitation,
@@ -48,7 +54,6 @@ import {
   validReadInput,
 } from "../shared/transcript";
 import type { CreationLookupResult, CreationReservation } from "./guest";
-import { DELETE_CONFIRMATION_MS, type BrowserDeletionCredential, type DeletionReceipt, type DeletionView } from "../shared/deletion";
 
 type MetadataRow = {
   table_id: string;
@@ -211,7 +216,9 @@ export class TableDO extends DurableObject<Env> {
           "SELECT MIN(expires_at) AS deadline FROM table_delete_confirmations WHERE state = 'pending'",
         )
         .one().deadline;
-      return pending === null ? table.expires_at : Math.min(pending, table.expires_at);
+      return pending === null
+        ? table.expires_at
+        : Math.min(pending, table.expires_at);
     }
     return this.tombstoneRow()?.retain_until ?? null;
   }
@@ -277,7 +284,9 @@ export class TableDO extends DurableObject<Env> {
         now,
         budget,
       );
-      return this.ctx.storage.sql.exec<{ changed: number }>("SELECT changes() AS changed").one().changed;
+      return this.ctx.storage.sql
+        .exec<{ changed: number }>("SELECT changes() AS changed")
+        .one().changed;
     }
     return 0;
   }
@@ -1203,8 +1212,10 @@ export class TableDO extends DurableObject<Env> {
     return committed.value;
   }
 
-
-  private deleteConfirmation(guestId: string, requestId: string): DeleteConfirmationRow | undefined {
+  private deleteConfirmation(
+    guestId: string,
+    requestId: string,
+  ): DeleteConfirmationRow | undefined {
     return this.ctx.storage.sql
       .exec<DeleteConfirmationRow>(
         "SELECT guest_id, request_id, expires_at, state FROM table_delete_confirmations WHERE guest_id = ? AND request_id = ?",
@@ -1215,26 +1226,36 @@ export class TableDO extends DurableObject<Env> {
   }
 
   private hasDeletionReceipt(guestId: string, requestId: string): boolean {
-    return this.ctx.storage.sql
-      .exec<{ guest_id: string }>(
-        "SELECT guest_id FROM table_tombstone_delete_receipts WHERE guest_id = ? AND request_id = ?",
-        guestId,
-        requestId,
-      )
-      .toArray().length !== 0;
+    return (
+      this.ctx.storage.sql
+        .exec<{ guest_id: string }>(
+          "SELECT guest_id FROM table_tombstone_delete_receipts WHERE guest_id = ? AND request_id = ?",
+          guestId,
+          requestId,
+        )
+        .toArray().length !== 0
+    );
   }
 
   /** Validate the real browser session independently of an agent token or URL. */
-  private async verifyDeletionBrowser(credential: BrowserDeletionCredential): Promise<boolean> {
+  private async verifyDeletionBrowser(
+    credential: BrowserDeletionCredential,
+  ): Promise<boolean> {
     if (
       !credential ||
       typeof credential.guestId !== "string" ||
       typeof credential.sessionId !== "string" ||
       typeof credential.secret !== "string"
-    ) return false;
+    )
+      return false;
     try {
-      const guest = this.env.GUESTS.get(this.env.GUESTS.idFromName(credential.guestId));
-      const principal = await guest.validateSession(credential.sessionId, credential.secret);
+      const guest = this.env.GUESTS.get(
+        this.env.GUESTS.idFromName(credential.guestId),
+      );
+      const principal = await guest.validateSession(
+        credential.sessionId,
+        credential.secret,
+      );
       return principal?.guestId === credential.guestId;
     } catch {
       return false;
@@ -1249,18 +1270,30 @@ export class TableDO extends DurableObject<Env> {
   }
 
   /** Start an idempotent five-minute browser confirmation; never delete here. */
-  private async startDeletion(guestId: string, requestId: string): Promise<TableResult<DeletionReceipt>> {
+  private async startDeletion(
+    guestId: string,
+    requestId: string,
+  ): Promise<TableResult<DeletionReceipt>> {
     if (!validInvitationOperationId(requestId)) {
       return { ok: false, code: "INVALID_REQUEST" };
     }
     const current = this.metadataRow();
     if (!current) {
-      if (this.tombstoneRow()?.terminal_state === "deleted" && this.hasDeletionReceipt(guestId, requestId)) {
-        return { ok: true, value: { confirmation_required: false, state: "deleted" } };
+      if (
+        this.tombstoneRow()?.terminal_state === "deleted" &&
+        this.hasDeletionReceipt(guestId, requestId)
+      ) {
+        return {
+          ok: true,
+          value: { confirmation_required: false, state: "deleted" },
+        };
       }
       return { ok: false, code: "TABLE_NOT_FOUND" };
     }
-    const due = Math.min(current.expires_at, Date.now() + DELETE_CONFIRMATION_MS);
+    const due = Math.min(
+      current.expires_at,
+      Date.now() + DELETE_CONFIRMATION_MS,
+    );
     const committed = await this.deadlines.commitWithWakeup(due, () =>
       this.ctx.storage.transactionSync(() => {
         const table = this.metadataRow();
@@ -1276,7 +1309,8 @@ export class TableDO extends DurableObject<Env> {
         }
         const existing = this.deleteConfirmation(guestId, requestId);
         if (existing) {
-          if (existing.state === "denied") return { ok: false, code: "CONFIRMATION_DENIED" } as const;
+          if (existing.state === "denied")
+            return { ok: false, code: "CONFIRMATION_DENIED" } as const;
           if (existing.state === "expired" || existing.expires_at <= now) {
             return { ok: false, code: "CONFIRMATION_EXPIRED" } as const;
           }
@@ -1343,15 +1377,22 @@ export class TableDO extends DurableObject<Env> {
     if (table && this.memberFor(guestId)) {
       const pending = this.deleteConfirmation(guestId, requestId);
       if (!pending) return { ok: false, code: "NOT_FOUND" };
-      const state = pending.state === "pending" && pending.expires_at <= Date.now()
-        ? "expired"
-        : pending.state;
+      const state =
+        pending.state === "pending" && pending.expires_at <= Date.now()
+          ? "expired"
+          : pending.state;
       return {
         ok: true,
-        value: { state, expires_at: new Date(pending.expires_at).toISOString() },
+        value: {
+          state,
+          expires_at: new Date(pending.expires_at).toISOString(),
+        },
       };
     }
-    if (this.tombstoneRow()?.terminal_state === "deleted" && this.hasDeletionReceipt(guestId, requestId)) {
+    if (
+      this.tombstoneRow()?.terminal_state === "deleted" &&
+      this.hasDeletionReceipt(guestId, requestId)
+    ) {
       return { ok: true, value: { state: "deleted" } };
     }
     return { ok: false, code: "NOT_FOUND" };
@@ -1363,7 +1404,10 @@ export class TableDO extends DurableObject<Env> {
     requestId: string,
     decision: "approve" | "deny",
   ): Promise<TableResult<{ state: "deleted" | "denied" }>> {
-    if (!validInvitationOperationId(requestId) || (decision !== "approve" && decision !== "deny")) {
+    if (
+      !validInvitationOperationId(requestId) ||
+      (decision !== "approve" && decision !== "deny")
+    ) {
       return { ok: false, code: "INVALID_REQUEST" };
     }
     if (!(await this.verifyDeletionBrowser(credential))) {
@@ -1372,46 +1416,51 @@ export class TableDO extends DurableObject<Env> {
     const guestId = credential.guestId;
     const previous = this.metadataRow();
     if (!previous) {
-      if (this.tombstoneRow()?.terminal_state === "deleted" && this.hasDeletionReceipt(guestId, requestId)) {
+      if (
+        this.tombstoneRow()?.terminal_state === "deleted" &&
+        this.hasDeletionReceipt(guestId, requestId)
+      ) {
         return { ok: true, value: { state: "deleted" } };
       }
       return { ok: false, code: "NOT_FOUND" };
     }
     const committed = await this.deadlines.commitWithWakeup(
       previous.expires_at + 24 * 60 * 60_000,
-      () => this.ctx.storage.transactionSync(() => {
-        const table = this.metadataRow();
-        const now = Date.now();
-        if (!table || !this.memberFor(guestId)) {
-          return { ok: false, code: "NOT_FOUND" } as const;
-        }
-        if (table.expires_at <= now || table.state === "expired") {
-          return { ok: false, code: "TABLE_EXPIRED" } as const;
-        }
-        const pending = this.deleteConfirmation(guestId, requestId);
-        if (!pending) return { ok: false, code: "NOT_FOUND" } as const;
-        if (pending.state === "denied") return { ok: true, value: { state: "denied" as const } } as const;
-        if (pending.state === "expired" || pending.expires_at <= now) {
-          return { ok: false, code: "CONFIRMATION_EXPIRED" } as const;
-        }
-        if (decision === "deny") {
+      () =>
+        this.ctx.storage.transactionSync(() => {
+          const table = this.metadataRow();
+          const now = Date.now();
+          if (!table || !this.memberFor(guestId)) {
+            return { ok: false, code: "NOT_FOUND" } as const;
+          }
+          if (table.expires_at <= now || table.state === "expired") {
+            return { ok: false, code: "TABLE_EXPIRED" } as const;
+          }
+          const pending = this.deleteConfirmation(guestId, requestId);
+          if (!pending) return { ok: false, code: "NOT_FOUND" } as const;
+          if (pending.state === "denied")
+            return { ok: true, value: { state: "denied" as const } } as const;
+          if (pending.state === "expired" || pending.expires_at <= now) {
+            return { ok: false, code: "CONFIRMATION_EXPIRED" } as const;
+          }
+          if (decision === "deny") {
+            this.ctx.storage.sql.exec(
+              "UPDATE table_delete_confirmations SET state = 'denied' WHERE guest_id = ? AND request_id = ?",
+              guestId,
+              requestId,
+            );
+            return { ok: true, value: { state: "denied" as const } } as const;
+          }
+          // Tombstone and minimal replay receipt are committed with erasure.
+          const purged = this.purgeContent(now, "deleted");
+          if (!purged) return { ok: false, code: "NOT_FOUND" } as const;
           this.ctx.storage.sql.exec(
-            "UPDATE table_delete_confirmations SET state = 'denied' WHERE guest_id = ? AND request_id = ?",
+            "INSERT INTO table_tombstone_delete_receipts (guest_id, request_id) VALUES (?, ?)",
             guestId,
             requestId,
           );
-          return { ok: true, value: { state: "denied" as const } } as const;
-        }
-        // Tombstone and minimal replay receipt are committed with erasure.
-        const purged = this.purgeContent(now, "deleted");
-        if (!purged) return { ok: false, code: "NOT_FOUND" } as const;
-        this.ctx.storage.sql.exec(
-          "INSERT INTO table_tombstone_delete_receipts (guest_id, request_id) VALUES (?, ?)",
-          guestId,
-          requestId,
-        );
-        return { ok: true, value: { state: "deleted" as const } } as const;
-      }),
+          return { ok: true, value: { state: "deleted" as const } } as const;
+        }),
     );
     return committed.value;
   }

@@ -8,7 +8,11 @@ export type BrowserDeletionCredential = {
 };
 
 export type DeletionReceipt =
-  | { confirmation_required: true; confirmation_url: string; expires_at: string }
+  | {
+      confirmation_required: true;
+      confirmation_url: string;
+      expires_at: string;
+    }
   | { confirmation_required: false; state: "deleted" };
 
 export type DeletionView = {

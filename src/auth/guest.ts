@@ -102,9 +102,13 @@ export function sessionCookie(session: NewGuestSession): string {
 }
 
 /** Issue a double-submit token without changing a valid browser session. */
-export function deletionCsrf(request: Request): { token: string; setCookie: string | null } {
+export function deletionCsrf(request: Request): {
+  token: string;
+  setCookie: string | null;
+} {
   const existing = getCookie(request, CSRF_COOKIE_NAME);
-  const token = existing && CSRF_TOKEN.test(existing) ? existing : randomBase64Url(32);
+  const token =
+    existing && CSRF_TOKEN.test(existing) ? existing : randomBase64Url(32);
   return { token, setCookie: token === existing ? null : csrfCookie(token) };
 }
 
