@@ -777,6 +777,7 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
       const rotated = await issue("invitation_issue_key_two_001");
       expect(rotated.isError).not.toBe(true);
       expect(output(rotated).invitation).not.toBe(secret);
+      const rotatedSecret = String(output(rotated).invitation);
       const oldRetry = await issue("invitation_issue_key_one_001");
       expect(oldRetry.isError).toBe(true);
       expect(JSON.stringify(output(oldRetry))).not.toContain(secret);
@@ -803,6 +804,45 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
           state.storage.sql.exec("SELECT * FROM table_memberships").toArray(),
         ).toHaveLength(1);
       });
+      await runInDurableObject(table, async (_instance, state) => {
+        state.storage.sql.exec(
+          "UPDATE table_invitations SET expires_at = ? WHERE state = 'active'",
+          Date.now() - 1,
+        );
+      });
+      const expiredRetry = await issue("invitation_issue_key_two_001");
+      expect(expiredRetry.isError).toBe(true);
+      expect(output(expiredRetry)).toMatchObject({
+        error: { code: "INVITATION_EXPIRED" },
+      });
+      expect(JSON.stringify(output(expiredRetry))).not.toContain(rotatedSecret);
+      await runInDurableObject(table, async (_instance, state) => {
+        const terminal = state.storage.sql
+          .exec<{ state: string; response_envelope: string | null }>(
+            "SELECT state, response_envelope FROM table_invitations WHERE request_id = ?",
+            "invitation_issue_key_two_001",
+          )
+          .one();
+        expect(terminal.state).toBe("revoked");
+        expect(terminal.response_envelope).toBeNull();
+      });
+      const expiredGuest = await tokenForGuest("tables:read tables:write");
+      const expiredClient = await sdk(expiredGuest.token);
+      try {
+        const expiredJoin = await expiredClient.callTool({
+          name: "join_table",
+          arguments: {
+            invitation: rotatedSecret,
+            request_id: "expired_invitation_join_key_001",
+          },
+        });
+        expect(expiredJoin.isError).toBe(true);
+        expect(output(expiredJoin)).toMatchObject({
+          error: { code: "INVITATION_INVALID" },
+        });
+      } finally {
+        await expiredClient.close();
+      }
       const landing = await exports.default.fetch(`${ORIGIN}/join`);
       expect(landing.status).toBe(200);
       expect(await landing.text()).not.toContain(secret);
@@ -822,6 +862,7 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
       arguments: { ...input, request_id: "join_contenders_creator_001" },
     });
     const tableId = String(output(initial).tableId);
+    const originalExpiry = String(output(initial).expiresAt);
     const issued = await creator.callTool({
       name: "create_invite",
       arguments: {
@@ -937,6 +978,13 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
         limits: { participants: 2 },
       });
       const membership = String(output(recovered).ownMembershipId);
+      expect(output(recovered).expiresAt).toBe(originalExpiry);
+      await runInDurableObject(table, async (_instance, state) => {
+        state.storage.sql.exec(
+          "UPDATE table_invitations SET expires_at = ? WHERE state = 'consumed'",
+          Date.now() - 1,
+        );
+      });
       const again = await winningClient.callTool({
         name: "join_table",
         arguments: { invitation, request_id: winningKey },
@@ -952,6 +1000,19 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
         arguments: { invitation: "at1.invalid", request_id: winningKey },
       });
       expect(changedKey.isError).toBe(true);
+      const alteredInvitation = invitation.slice(0, -1) +
+        (invitation.endsWith("A") ? "B" : "A");
+      const conflicting = await winningClient.callTool({
+        name: "join_table",
+        arguments: {
+          invitation: alteredInvitation,
+          request_id: winningKey,
+        },
+      });
+      expect(conflicting.isError).toBe(true);
+      expect(output(conflicting)).toMatchObject({
+        error: { code: "IDEMPOTENCY_CONFLICT" },
+      });
       const creatorRetry = await creator.callTool({
         name: "create_invite",
         arguments: {
@@ -966,6 +1027,18 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
         arguments: { table_id: tableId },
       });
       expect(output(read).ownMembershipId).toBe(membership);
+      await runInDurableObject(table, async (_instance, state) => {
+        state.storage.sql.exec(
+          "UPDATE table_metadata SET state = 'closed' WHERE singleton = 1",
+        );
+      });
+      const afterClose = await winningClient.callTool({
+        name: "join_table",
+        arguments: { invitation, request_id: winningKey },
+      });
+      expect(afterClose.isError).not.toBe(true);
+      expect(output(afterClose).ownMembershipId).toBe(membership);
+      expect(output(afterClose).state).toBe("closed");
     } finally {
       await a.close();
       await b.close();
