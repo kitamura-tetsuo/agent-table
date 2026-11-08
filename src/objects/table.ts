@@ -37,8 +37,8 @@ import {
   POST_WINDOW_MS,
   type PostReceipt,
   postDigest,
-  type TransientPeerUpdateHint,
   type TranscriptPage,
+  type TransientPeerUpdateHint,
   validPostInput,
   validReadInput,
 } from "../shared/transcript";

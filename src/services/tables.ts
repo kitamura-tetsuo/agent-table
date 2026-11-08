@@ -9,8 +9,8 @@ import type {
   PostMessageInput,
   PostReceipt,
   ReadMessagesInput,
-  TransientPeerUpdateHint,
   TranscriptPage,
+  TransientPeerUpdateHint,
 } from "../shared/transcript";
 
 export type PublicTableResult =

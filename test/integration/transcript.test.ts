@@ -315,9 +315,9 @@ describe("TableDO committed transcript and reads", () => {
         peerMembershipId: joined.value.ownMembershipId,
       },
     ]);
-    expect(
-      await servicePostMessage(env, creator, id, second, capture),
-    ).toEqual(accepted);
+    expect(await servicePostMessage(env, creator, id, second, capture)).toEqual(
+      accepted,
+    );
     expect(
       await servicePostMessage(
         env,
