@@ -2,6 +2,7 @@ import { evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it, vi } from "vitest";
 import { SESSION_COOKIE_NAME } from "../../src/auth/guest";
+import { deletionSdkForBrowserGuest } from "./deletion-sdk";
 import worker from "../../src/index";
 import {
   authorizeGuestConnection,
@@ -336,101 +337,113 @@ describe("browser-confirmed deletion through real TableDO and GuestDO", () => {
 
   it("a purge failure rolls back content and receipt, and a same-key approval retry can finish", async () => {
     const f = await fixture();
-    const key = "browser_failure_retry_0001";
-    expect(
-      (await f.table.requestDeletion(await f.owner.actor("tables:delete"), key))
-        .ok,
-    ).toBe(true);
-    await runInDurableObject(f.table, async (_instance, state) => {
-      state.storage.sql.exec(
-        `CREATE TRIGGER reject_delete BEFORE DELETE ON table_messages
-         BEGIN SELECT RAISE(ABORT, 'injected-delete-failure'); END`,
+    const sdk = await deletionSdkForBrowserGuest(f.owner.id, f.owner.cookie);
+    try {
+        const key = "browser_failure_retry_0001";
+      const initiated = await sdk.client.callTool({
+        name: "delete_table",
+        arguments: { table_id: f.id, request_id: key },
+      });
+      expect(initiated.isError).not.toBe(true);
+      const content = initiated.content.find((entry) => entry.type === "text");
+      if (content?.type !== "text")
+        throw new Error("SDK deletion initiation has no textual result");
+      expect(JSON.parse(content.text)).toMatchObject({
+        confirmation_required: true,
+      });
+      await runInDurableObject(f.table, async (_instance, state) => {
+        state.storage.sql.exec(
+          `CREATE TRIGGER reject_delete BEFORE DELETE ON table_messages
+           BEGIN SELECT RAISE(ABORT, 'injected-delete-failure'); END`,
+        );
+      });
+      // Run inside the DO: the Vitest Worker RPC bridge leaks an expected
+      // rejecting RPC as an additional, unhandled rejection (workers-sdk #14736).
+      await runInDurableObject(f.table, async (instance) => {
+        await expect(
+          instance.resolveDeletion(sdk.credential, key, "approve"),
+        ).rejects.toThrow();
+      });
+      // The public browser approval must not report a successful purge when
+      // the TableDO storage transaction rejects. Exercise the Worker response
+      // boundary as well as the direct in-object rollback assertion above.
+      const page = await csrfPage(f.id, key, sdk.cookie);
+      const failedApproval = await confirm(
+        f.id,
+        key,
+        "approve",
+        sdk.cookie,
+        page,
       );
-    });
-    // Run inside the DO: the Vitest Worker RPC bridge leaks an expected
-    // rejecting RPC as an additional, unhandled rejection (workers-sdk #14736).
-    await runInDurableObject(f.table, async (instance) => {
-      await expect(
-        instance.resolveDeletion(f.owner.credential, key, "approve"),
-      ).rejects.toThrow();
-    });
-    // The public browser approval must not report a successful purge when
-    // the TableDO storage transaction rejects. Exercise the Worker response
-    // boundary as well as the direct in-object rollback assertion above.
-    const page = await csrfPage(f.id, key, f.owner.cookie);
-    const failedApproval = await confirm(
-      f.id,
-      key,
-      "approve",
-      f.owner.cookie,
-      page,
-    );
-    expect(failedApproval.status).toBe(503);
-    expect(await failedApproval.text()).not.toContain("Deletion committed");
-    expect(await f.table.deletionView(f.owner.id, key)).toMatchObject({
-      ok: true,
-      value: { state: "pending" },
-    });
-    await runInDurableObject(f.table, async (_instance, state) => {
-      expect(
-        state.storage.sql
-          .exec("SELECT COUNT(*) AS n FROM table_tombstone_delete_receipts")
-          .one(),
-      ).toEqual({ n: 0 });
-    });
-    await runInDurableObject(f.table, async (_instance, state) => {
-      expect(
-        state.storage.sql
-          .exec("SELECT COUNT(*) AS n FROM table_messages")
-          .one(),
-      ).toEqual({ n: 1 });
-      expect(
-        state.storage.sql
-          .exec("SELECT COUNT(*) AS n FROM table_tombstones")
-          .one(),
-      ).toEqual({ n: 0 });
-      expect(
-        state.storage.sql
-          .exec("SELECT COUNT(*) AS n FROM table_delete_confirmations")
-          .one(),
-      ).toEqual({ n: 1 });
-      state.storage.sql.exec("DROP TRIGGER reject_delete");
-    });
-    await evictDurableObject(f.table);
-    await runInDurableObject(f.table, async (instance) => {
-      const testInstance = instance as unknown as {
-        deletionCommitBarrierEnabledForTest: boolean;
-      };
-      testInstance.deletionCommitBarrierEnabledForTest = true;
-    });
-    const [a, b] = await Promise.all([
-      f.table.resolveDeletion(f.owner.credential, key, "approve"),
-      f.table.resolveDeletion(f.owner.credential, key, "approve"),
-    ]);
-    const observed = await runInDurableObject(f.table, async (instance) => {
-      const testInstance = instance as unknown as {
-        deletionCommitBarrierArrivalsForTest: number;
-        deletionCommitBarrierOverlappedForTest: boolean;
-      };
-      return {
-        count: testInstance.deletionCommitBarrierArrivalsForTest,
-        overlapped: testInstance.deletionCommitBarrierOverlappedForTest,
-      };
-    });
-    expect(observed).toEqual({ count: 2, overlapped: true });
-    expect(a).toEqual({ ok: true, value: { state: "deleted" } });
-    expect(b).toEqual({ ok: true, value: { state: "deleted" } });
-    await runInDurableObject(f.table, async (_instance, state) => {
-      expect(
-        state.storage.sql
-          .exec("SELECT COUNT(*) AS n FROM table_messages")
-          .one(),
-      ).toEqual({ n: 0 });
-      expect(
-        state.storage.sql
-          .exec("SELECT COUNT(*) AS n FROM table_tombstone_delete_receipts")
-          .one(),
-      ).toEqual({ n: 1 });
-    });
+      expect(failedApproval.status).toBe(503);
+      expect(await failedApproval.text()).not.toContain("Deletion committed");
+      expect(await f.table.deletionView(f.owner.id, key)).toMatchObject({
+        ok: true,
+        value: { state: "pending" },
+      });
+      await runInDurableObject(f.table, async (_instance, state) => {
+        expect(
+          state.storage.sql
+            .exec("SELECT COUNT(*) AS n FROM table_tombstone_delete_receipts")
+            .one(),
+        ).toEqual({ n: 0 });
+      });
+      await runInDurableObject(f.table, async (_instance, state) => {
+        expect(
+          state.storage.sql
+            .exec("SELECT COUNT(*) AS n FROM table_messages")
+            .one(),
+        ).toEqual({ n: 1 });
+        expect(
+          state.storage.sql
+            .exec("SELECT COUNT(*) AS n FROM table_tombstones")
+            .one(),
+        ).toEqual({ n: 0 });
+        expect(
+          state.storage.sql
+            .exec("SELECT COUNT(*) AS n FROM table_delete_confirmations")
+            .one(),
+        ).toEqual({ n: 1 });
+        state.storage.sql.exec("DROP TRIGGER reject_delete");
+      });
+      await evictDurableObject(f.table);
+      await runInDurableObject(f.table, async (instance) => {
+        const testInstance = instance as unknown as {
+          deletionCommitBarrierEnabledForTest: boolean;
+        };
+        testInstance.deletionCommitBarrierEnabledForTest = true;
+      });
+      const [a, b] = await Promise.all([
+        f.table.resolveDeletion(sdk.credential, key, "approve"),
+        f.table.resolveDeletion(sdk.credential, key, "approve"),
+      ]);
+      const observed = await runInDurableObject(f.table, async (instance) => {
+        const testInstance = instance as unknown as {
+          deletionCommitBarrierArrivalsForTest: number;
+          deletionCommitBarrierOverlappedForTest: boolean;
+        };
+        return {
+          count: testInstance.deletionCommitBarrierArrivalsForTest,
+          overlapped: testInstance.deletionCommitBarrierOverlappedForTest,
+        };
+      });
+      expect(observed).toEqual({ count: 2, overlapped: true });
+      expect(a).toEqual({ ok: true, value: { state: "deleted" } });
+      expect(b).toEqual({ ok: true, value: { state: "deleted" } });
+      await runInDurableObject(f.table, async (_instance, state) => {
+        expect(
+          state.storage.sql
+            .exec("SELECT COUNT(*) AS n FROM table_messages")
+            .one(),
+        ).toEqual({ n: 0 });
+        expect(
+          state.storage.sql
+            .exec("SELECT COUNT(*) AS n FROM table_tombstone_delete_receipts")
+            .one(),
+        ).toEqual({ n: 1 });
+      });
+    } finally {
+      await sdk.client.close();
+    }
   });
 });
