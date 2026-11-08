@@ -1,14 +1,20 @@
 /**
- * Safe callback destination preflight.
+ * Reviewed callback URL policy and bounded native Workers HTTPS transport.
  *
- * This layer deliberately performs no network I/O. The Workers runtime has
- * not yet demonstrated address policy at the connection boundary and TLS
- * validation against the intended hostname. An allowlist is never proof of
- * either requirement; do not replace the fail-closed sender with fetch().
+ * Hosted Workers public-network proxy behavior is the transport premise, not
+ * proof of REQ-002's DNS-rebinding and TLS connection-boundary acceptance.
+ * Public Events must remain gated off until real-host adversarial evidence
+ * verifies that boundary. This sender makes no DNS preflight or IP override.
  */
 export type CallbackFailure =
   | "destination-rejected"
   | "request-too-large"
+  | "invalid-headers"
+  | "redirect-refused"
+  | "response-too-large"
+  | "deadline"
+  | "transport-error"
+  | "upstream-non-2xx"
   | "connection-boundary-unverified";
 
 export interface ReviewedCallbackTarget {
@@ -27,11 +33,13 @@ export type CallbackDestinationDecision =
 
 export type CallbackTransportOutcome =
   | { ok: true; status: number; body: Uint8Array }
-  | { ok: false; reason: CallbackFailure };
+  | { ok: false; reason: CallbackFailure; status?: number };
 
 export interface CallbackRequest {
   body: Uint8Array;
   method: "POST";
+  /** Only explicitly supported callback-control and signed-event headers. */
+  headers?: Readonly<Record<string, string>>;
 }
 
 /** This is a policy cap, not an assertion that network requests are enabled. */
@@ -151,10 +159,94 @@ export function validateReviewedCallbackDestination(
   return { ok: true, url };
 }
 
+const ALLOWED_HEADER_NAMES = new Set([
+  "content-type",
+  "webhook-id",
+  "webhook-timestamp",
+  "webhook-signature",
+  "x-mcp-signature",
+]);
+const HEADER_VALUE = /^[\x20-\x7e]{1,2048}$/;
+
+/** Refuse arbitrary headers that could change HTTP routing or leak credentials. */
+function callbackHeaders(
+  input: Readonly<Record<string, string>> | undefined,
+): Headers | null {
+  const result = new Headers({
+    "Content-Type": "application/json",
+    "Cache-Control": "no-store",
+  });
+  if (input === undefined) return result;
+  if (typeof input !== "object" || input === null || Array.isArray(input)) {
+    return null;
+  }
+  const entries = Object.entries(input);
+  if (entries.length > 8) return null;
+  for (const [key, value] of entries) {
+    if (
+      !ALLOWED_HEADER_NAMES.has(key.toLowerCase()) ||
+      typeof value !== "string" ||
+      !HEADER_VALUE.test(value)
+    ) return null;
+    result.set(key, value);
+  }
+  return result;
+}
+
 /**
- * Explicit safety gate. Neither global fetch nor cloudflare:sockets currently
- * has verified connection-time IP policy and intended-host TLS proof here.
- * Never replace this stub with an implicit outbound request or a mock result.
+ * Read a response within one total request deadline, with no unbounded
+ * arrayBuffer()/text() and no response-header or body logging.
+ */
+async function readBoundedResponse(
+  response: Response,
+  deadline: Promise<never>,
+): Promise<Uint8Array | null> {
+  const length = response.headers.get("Content-Length");
+  if (
+    length !== null &&
+    (!/^\d{1,10}$/.test(length) ||
+      Number(length) > PLANNED_MAX_CALLBACK_RESPONSE_BYTES)
+  ) return null;
+  if (!response.body) return new Uint8Array();
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let bytes = 0;
+  let completed = false;
+  try {
+    while (true) {
+      const next = await Promise.race([reader.read(), deadline]);
+      if (next.done) {
+        completed = true;
+        break;
+      }
+      bytes += next.value.byteLength;
+      if (bytes > PLANNED_MAX_CALLBACK_RESPONSE_BYTES) return null;
+      chunks.push(next.value);
+    }
+    const result = new Uint8Array(bytes);
+    let offset = 0;
+    for (const chunk of chunks) {
+      result.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return result;
+  } finally {
+    if (!completed) {
+      // Do not wait indefinitely for an untrusted peer to finish cancellation.
+      void reader.cancel().catch(() => undefined);
+    }
+    reader.releaseLock();
+  }
+}
+
+/**
+ * Candidate production sender. Only an explicitly reviewed destination may
+ * reach the global Workers fetch; no per-request proxy, resolveOverride,
+ * socket fallback, automatic redirect or retry is permitted.
+ *
+ * This function is exercised by the isolated diagnostic and SDK-side tests,
+ * but is NOT evidence of final-IP/TLS safety on hosted Workers. The separate
+ * capability readiness gate stays false until REQ-002/006 are proven.
  */
 export async function sendVerifiedHttps(
   raw: string,
@@ -162,16 +254,62 @@ export async function sendVerifiedHttps(
   request: CallbackRequest,
 ): Promise<CallbackTransportOutcome> {
   const destination = validateReviewedCallbackDestination(raw, reviewed);
-  if (!destination.ok) {
-    return destination;
+  if (!destination.ok) return destination;
+  if (
+    !(request.body instanceof Uint8Array) ||
+    request.method !== "POST" ||
+    request.body.byteLength > MAX_CALLBACK_REQUEST_BYTES
+  ) return { ok: false, reason: "request-too-large" };
+  const headers = callbackHeaders(request.headers);
+  if (!headers) return { ok: false, reason: "invalid-headers" };
+
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      controller.abort();
+      reject(new Error("callback-deadline"));
+    }, PLANNED_CALLBACK_TIMEOUT_MS);
+  });
+  try {
+    const response = await Promise.race([
+      fetch(destination.url.toString(), {
+        method: "POST",
+        body: request.body,
+        headers,
+        redirect: "manual",
+        signal: controller.signal,
+      }),
+      deadline,
+    ]);
+    if (
+      response.type === "opaqueredirect" ||
+      (response.status >= 300 && response.status < 400)
+    ) return { ok: false, reason: "redirect-refused" };
+    if (response.status < 200 || response.status >= 300) {
+      // Refuse non-successful statuses without parsing or echoing error bodies.
+      controller.abort();
+      return { ok: false, reason: "upstream-non-2xx", status: response.status };
+    }
+    const body = await readBoundedResponse(response, deadline);
+    if (!body) {
+      controller.abort();
+      return { ok: false, reason: "response-too-large" };
+    }
+    return { ok: true, status: response.status, body };
+  } catch {
+    // Never surface platform exception text (it may include secrets or URL).
+    return {
+      ok: false,
+      reason: controller.signal.aborted ? "deadline" : "transport-error",
+    };
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+    controller.abort();
   }
-  if (request.body.byteLength > MAX_CALLBACK_REQUEST_BYTES) {
-    return { ok: false, reason: "request-too-large" };
-  }
-  return { ok: false, reason: "connection-boundary-unverified" };
 }
 
-/** Release capability is fixed off until REQ-002 and REQ-006 are proven. */
+/** Public Events remain unavailable while REQ-002/006 are not verified. */
 export function callbackTransportReadiness(): {
   enabled: false;
   reason: "connection-boundary-unverified";

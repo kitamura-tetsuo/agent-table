@@ -2,8 +2,10 @@
 
 Status as of 2026-11-08: **blocked for public webhook delivery**. This is
 partial Issue #19 work, not an accepted outbound HTTPS transport. The
-application sender still makes **zero network requests**. A separate opt-in
-diagnostic Worker can exercise native `fetch` without changing that gate.
+production sender now contains a bounded native-fetch **candidate**. The
+separate opt-in diagnostic Worker executes **that same sender**, not a separate
+HTTP algorithm. Public Events remain disabled; a working sender is not an
+accepted connection-boundary security proof.
 
 ## Production topology and preflight
 
@@ -31,10 +33,12 @@ for the original allowed hostname. DNS preflight followed by a separate
 `fetch` is susceptible to rebinding; a URL allowlist does not enforce an
 address policy. Disabling redirects alone does not repair this gap.
 
-The application sender returns `connection-boundary-unverified` even for an
-otherwise reviewed URL. Requests above 16 KiB are rejected before that gate.
-Its planned 10 s deadline and 64 KiB response-size constants are **not**
-production transport guarantees; they are not exercised by this stub.
+The application sender now uses native global fetch, an exact reviewed URL,
+manual redirects, finite overall deadline, a 16 KiB request cap, and streamed
+64 KiB response cap, with typed safe outcomes and no retries. The public
+`callbackTransportReadiness()` gate **still returns disabled** because the
+hosted final-IP/rebinding proof is absent. This code change is not an
+authorization to call it from public Events.
 
 ## Supported runtime APIs and unresolved connection boundary
 
@@ -46,7 +50,7 @@ production transport guarantees; they are not exercised by this stub.
   [Hosted Workers security model](https://developers.cloudflare.com/workers/reference/security-model/)
 - Without `global_fetch_strictly_public`, the hosted global `fetch` may route
   same-zone requests to the zone origin, bypassing the public front door.
-  The isolated probe opts into this compatibility flag; it is a necessary
+  The isolated probe **and application wrangler configuration** opt into this compatibility flag; it is a necessary
   routing defense for the probe, **not proof of connection-time IP policy or
   DNS-rebinding refusal**. It does not affect local workerd's global fetch.
   [Global fetch compatibility flag](https://developers.cloudflare.com/workers/configuration/compatibility-flags/)
@@ -87,9 +91,10 @@ It only sends a fixed synthetic POST after all four probe bindings are present:
 Store these as local `.dev.vars`/remote secrets for the isolated probe; **never
 commit, paste into reports, or log the token or callback URL**. With bindings
 missing, the probe returns `disabled` and does not call `fetch`. Unauthenticated
-requests return 404. The authenticated `POST /__egress_probe` invokes native
-`fetch` with `redirect: "manual"`, an abort deadline of 10 s, a fixed synthetic
-request body, and streaming response counting up to 64 KiB. It returns only a
+requests return 404. The authenticated `POST /__egress_probe` invokes **sendVerifiedHttps**
+from the application source with native `fetch`, `redirect: "manual"`, an abort
+deadline of 10 s, a fixed synthetic request body, and streaming response
+counting up to 64 KiB. It returns only a
 safe result category. There is no retry, body echo, redirect follow, or generic
 caller-supplied target. Its success category is deliberately named
 `reachable`, **not** `ssrf-safe` or `verified-transport`.
@@ -241,3 +246,33 @@ Status remains: **blocked for public webhook delivery**.
 - PR #33 remains in draft status.
 - P1 review thread on unmet runtime security proof remains open.
 - Issue #19 remains open.
+
+
+## Current candidate head: evidence to obtain before release
+
+The new candidate source and opt-in probe are code, not independently
+verified deployed results. All hosted observations above apply **only to their
+recorded earlier probe commits**. They are not reclassified as exact-head
+production-sender results. CI unit/integration tests now use the same sender
+as the isolated probe, with a positive control that fails if the sender again
+rejects every URL without network I/O. Such mock-backed tests remain
+insufficient for production SSRF/DNS/TLS acceptance.
+
+The production `wrangler.jsonc` now also opts into
+`global_fetch_strictly_public`; the public Events flag remains false.
+Required next receipts: an authorized hosted run against the already
+authorized Cloudflare Tunnel or test provider callback with the exact code
+head and deployment identity; observed private-resolution rejection; an
+eligible controlled DNS-changing/rebinding fixture; original-host TLS
+mismatch; redirect; timeout; oversized response. The existing hosted probe
+evidence is a useful baseline, **not** proof for this revised sender.
+DNS permissions were previously refused with 403, so the DNS-specific cases
+remain **NOT RUN / BLOCKED** rather than silently passed. Do not request or
+provision a public-IPv4 VPS, escalate authorization, or turn on Events.
+
+Cloudflare documents hosted outbound HTTP proxy restrictions on private
+destinations, and workerd's public PeerFilter/dial architecture is useful
+implementation evidence, but neither alone proves the exact hosted
+Cloudflare proxy's address-at-connect behavior for adversarial dynamic DNS.
+A successful 526 response is an observed HTTP/TLS-related symptom, not
+unambiguous packet-level proof of the internal TLS failure step.
