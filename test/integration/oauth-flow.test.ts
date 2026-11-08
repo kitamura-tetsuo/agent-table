@@ -452,6 +452,48 @@ describe("real authorization code and guest-grant flow", () => {
     expect(unaffected.status).not.toBe(401);
   });
 
+  it("rejects a wrong PKCE verifier for an actual consented code", async () => {
+    const browser = await withBrowserGuest();
+    const clientId = await register();
+    const approved = await approvedConsent(browser, clientId);
+    const rejected = await redeem(clientId, approved.code, "B".repeat(43));
+    expect(rejected.status).toBe(400);
+    const data = await jsonUrl(rejected);
+    expect(data.access_token).toBeUndefined();
+    expect(data.error).toBe("invalid_grant");
+  });
+
+  it("tests real-library refresh rotation under simultaneous redemption", async () => {
+    const browser = await withBrowserGuest();
+    const clientId = await register();
+    const approved = await approvedConsent(browser, clientId);
+    const issue = await redeem(clientId, approved.code, approved.verifier);
+    expect(issue.status).toBe(200);
+    const original = await jsonUrl(issue);
+    const retry = () =>
+      exports.default.fetch(`${ORIGIN}/oauth/token`, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          grant_type: "refresh_token",
+          client_id: clientId,
+          refresh_token: String(original.refresh_token),
+          resource: RESOURCE,
+        }),
+      });
+    const responses = await Promise.all([retry(), retry()]);
+    expect(responses.map((item) => item.status).sort()).toEqual([200, 400]);
+    const results = await Promise.all(responses.map(jsonUrl));
+    expect(results.filter((item) => typeof item.access_token === "string"))
+      .toHaveLength(1);
+    expect(results.filter((item) => item.error === "invalid_grant"))
+      .toHaveLength(1);
+    const grants = await browser.guest.listConnections(
+      approved.sessionId,
+      approved.sessionSecret,
+    );
+    expect(grants).toHaveLength(1);
+  });
   it("does not authorize a denied browser consent", async () => {
     const browser = await withBrowserGuest();
     const clientId = await register();
