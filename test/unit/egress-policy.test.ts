@@ -9,17 +9,46 @@ import {
 const reviewed = [
   {
     origin: "https://events.provider.example.org",
-    pathname: "/callback",
+    pathPrefix: "/callback",
   },
 ] as const;
 
 describe("callback egress preflight", () => {
-  it("recognizes only exact reviewed HTTPS origin and path", () => {
+  it("recognizes an exact reviewed origin with an opaque callback path", () => {
     const decision = validateReviewedCallbackDestination(
-      "https://events.provider.example.org/callback?challenge=synthetic",
+      "https://events.provider.example.org/callback/sub-opaque-123?challenge=synthetic",
       reviewed,
     );
     expect(decision.ok).toBe(true);
+  });
+
+  it("requires explicit root policy for unrelated provider-generated paths", () => {
+    const callback =
+      "https://events.provider.example.org/opaque/sub-123?key=synthetic";
+    expect(validateReviewedCallbackDestination(callback, reviewed).ok).toBe(
+      false,
+    );
+    expect(
+      validateReviewedCallbackDestination(callback, [
+        { origin: "https://events.provider.example.org", pathPrefix: "/" },
+      ]).ok,
+    ).toBe(true);
+  });
+
+  it("rejects non-canonical review policy rather than broadening it", () => {
+    const callback = "https://events.provider.example.org/admin";
+    for (const pathPrefix of [
+      "/callback/../admin",
+      "//admin",
+      "/admin?x=1",
+      "",
+    ]) {
+      expect(
+        validateReviewedCallbackDestination(callback, [
+          { origin: "https://events.provider.example.org", pathPrefix },
+        ]).ok,
+      ).toBe(false);
+    }
   });
 
   it.each([
@@ -27,6 +56,7 @@ describe("callback egress preflight", () => {
     "https://events.provider.example.org:444/callback",
     "https://user:pass@events.provider.example.org/callback",
     "https://events.provider.example.org/other",
+    "https://events.provider.example.org/callback-impersonator",
     "https://events.provider.example.org.evil.org/callback",
     "https://127.0.0.1/callback",
     "https://[::1]/callback",

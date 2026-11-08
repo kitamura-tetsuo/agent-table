@@ -1,0 +1,8 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "agent-table-egress-probe",
+  "main": "./probe-worker.ts",
+  "compatibility_date": "2026-11-07",
+  "compatibility_flags": ["global_fetch_strictly_public"],
+  "workers_dev": false
+}

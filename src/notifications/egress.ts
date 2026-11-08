@@ -14,8 +14,11 @@ export type CallbackFailure =
 export interface ReviewedCallbackTarget {
   /** Canonical HTTPS origin, reviewed by the operator. */
   origin: string;
-  /** Exact callback path, reviewed by the operator. */
-  pathname: string;
+  /**
+   * Canonical path prefix on that origin, with a path-segment boundary.
+   * Use "/" only when the provider generates unrelated opaque paths.
+   */
+  pathPrefix: string;
 }
 
 export type CallbackDestinationDecision =
@@ -76,9 +79,44 @@ function isPublicDnsName(hostname: string): boolean {
   return hostname.split(".").every((label) => DNS_LABEL.test(label));
 }
 
+function matchesReviewedTarget(
+  url: URL,
+  target: ReviewedCallbackTarget,
+): boolean {
+  if (
+    typeof target.origin !== "string" ||
+    typeof target.pathPrefix !== "string" ||
+    url.origin !== target.origin ||
+    !target.pathPrefix.startsWith("/") ||
+    target.pathPrefix.startsWith("//") ||
+    target.pathPrefix.length > MAX_URL_LENGTH ||
+    hasUnsafeRawCharacters(target.pathPrefix) ||
+    target.pathPrefix.includes("?")
+  ) {
+    return false;
+  }
+
+  // Reject non-canonical policy paths so URL normalization cannot widen them.
+  const policyPath = new URL(target.pathPrefix, target.origin);
+  if (
+    policyPath.origin !== target.origin ||
+    policyPath.pathname !== target.pathPrefix
+  ) {
+    return false;
+  }
+
+  const prefix = target.pathPrefix;
+  return (
+    prefix === "/" ||
+    url.pathname === prefix ||
+    url.pathname.startsWith(prefix.endsWith("/") ? prefix : `${prefix}/`)
+  );
+}
+
 /**
- * Reject unexpected origins and paths before any I/O. Successful preflight
- * does not imply that DNS, IP, or TLS policy can be enforced at connection.
+ * Reject unexpected origins and paths before any I/O. A provider may supply
+ * an opaque per-subscription suffix or query without individual path review.
+ * Successful preflight does not prove connection-time DNS/IP/TLS safety.
  */
 export function validateReviewedCallbackDestination(
   raw: string,
@@ -106,10 +144,7 @@ export function validateReviewedCallbackDestination(
     url.password !== "" ||
     url.port !== "" ||
     !isPublicDnsName(url.hostname) ||
-    !reviewed.some(
-      (target) =>
-        target.origin === url.origin && target.pathname === url.pathname,
-    )
+    !reviewed.some((target) => matchesReviewedTarget(url, target))
   ) {
     return { ok: false, reason: "destination-rejected" };
   }

@@ -132,7 +132,7 @@ Numeric defaults, routes, tool names, and schema targets are project proposals. 
 ## Explicitly unresolved before release
 
 - Future SDK/DO streaming and notification routing integration (the pinned stateless MCP handshake has been tested locally; subscriptions have not).
-- OAuth library replay/refresh behavior under concurrency, and any required supported storage/serialization integration.
+- OAuth concurrency: draft #31 pins `@cloudflare/workers-oauth-provider@1.2.4`. Actual workerd tests show one authorization-code redemption succeeds across two same-code requests through a serializing DO, while **both** same-refresh-token exchanges succeed. The latter is observed token reuse, not refresh rotation. Required strong-consistency proof at the authorization-code consumption boundary and the original authorized refresh lifetime remains bounded by GuestDO: a workerd test expires the persisted connection and observes both bearer denial and real-provider refresh rejection after Durable Object reconstruction. This is a local enforcement test, not a 30-day live-host run, and KV must not be described as atomic.
 - A production Workers egress mechanism that enforces callback address validation at connection time.
 - Real guest-OAuth and autonomous-reply compatibility for each target host/account.
 - Production origin, Cloudflare plan, operator privacy/backup/log-retention policy, and abuse thresholds.
@@ -142,3 +142,7 @@ Resolve these through implementation evidence and deployment decisions. Unknown 
 
 - [Workers Request API](https://developers.cloudflare.com/workers/runtime-apis/request/) — redirect, abort and limited same-zone resolveOverride (checked 2026-11-08).
 - [Workers TCP sockets](https://developers.cloudflare.com/workers/runtime-apis/tcp-sockets/) — documented hostname/port/secureTransport interface and connection restrictions (checked 2026-11-08).
+- [Workers security model](https://developers.cloudflare.com/workers/reference/security-model/) — hosted outbound HTTP proxy public-service restrictions, not an explicit per-callback DNS rebinding guarantee (checked 2026-11-08).
+- [Local Worker security](https://developers.cloudflare.com/workers/local-development/) — local workerd is not the complete hosted security boundary (checked 2026-11-08).
+- [Workers known issues](https://developers.cloudflare.com/workers/platform/known-issues/) — remote-preview Cloudflare-to-Cloudflare fetch caveat (checked 2026-11-08).
+- [Global fetch strictly public](https://developers.cloudflare.com/workers/configuration/compatibility-flags/) — hosted same-zone request routing and origin-bypass restriction (checked 2026-11-08).

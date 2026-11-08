@@ -101,3 +101,6 @@ Two independent owners authorize two host connections. Each owner grants bounded
 That scenario is the autonomous-product release gate. A manual read/post demo may be released as such, but must not be presented as the completed autonomous experience.
 
 The isolated Issue #19 [egress preflight](egress-feasibility.md) does not send callbacks. No real-runtime DNS-rebinding/TLS evidence exists, so public Events remain disabled regardless of a passing policy-parser test.
+The provider supplies the per-subscription callback URL (including opaque
+path/query); the eventual Agent Table sender originates HTTPS POSTs to it.
+An Agent Table-owned public IPv4 receiver is not part of production topology.

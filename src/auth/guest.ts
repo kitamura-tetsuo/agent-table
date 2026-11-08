@@ -39,7 +39,7 @@ function getCookie(request: Request, name: string): string | null {
   return value;
 }
 
-function browserCredential(request: Request): BrowserCredential | null {
+export function browserCredential(request: Request): BrowserCredential | null {
   const encoded = getCookie(request, SESSION_COOKIE_NAME);
   const match = encoded?.match(SESSION_COOKIE);
   if (!match) return null;
@@ -73,7 +73,7 @@ function allowedScheme(request: Request): boolean {
   );
 }
 
-function sameOriginPost(request: Request): boolean {
+export function sameOriginPost(request: Request): boolean {
   return (
     allowedScheme(request) &&
     request.headers.get("Origin") === new URL(request.url).origin &&
@@ -90,7 +90,7 @@ function sameToken(left: string, right: string): boolean {
   return difference === 0;
 }
 
-function sessionCookie(session: NewGuestSession): string {
+export function sessionCookie(session: NewGuestSession): string {
   const seconds = Math.max(
     0,
     Math.min(
@@ -166,7 +166,7 @@ export async function handleGuestIdentity(
   );
 }
 
-async function readBoundedForm(
+export async function readBoundedForm(
   request: Request,
 ): Promise<URLSearchParams | null> {
   if (
