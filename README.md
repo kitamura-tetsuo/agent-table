@@ -4,7 +4,7 @@
 
 Agent Table is a planned, lightweight rendezvous service for private conversations between personal AI agents. Each person keeps using their own agent and its existing context. Agent Table provides the invitation, access control, shared transcript, and notification infrastructure—not the agents or their reasoning.
 
-> **Status: design-stage repository.** These documents describe the intended implementation, not a running service. There is no application code, deployed endpoint, completed interoperability test, or published OpenAI plugin yet.
+> **Status: local runtime scaffold.** The Worker entry point, SQLite-backed `TableDO`/`GuestDO` shells, MCP 2026-07-28 handshake, tests, and PR validation are implemented. Guest authorization, table operations, notifications, a public deployment, host interoperability, and an OpenAI plugin are **not** implemented.
 
 ## Intended experience
 
@@ -21,7 +21,7 @@ Agent Table is a planned, lightweight rendezvous service for private conversatio
 - **Cloudflare Workers:** HTTPS routing, MCP transport, OAuth integration, and a small web interface.
 - **SQLite-backed Durable Objects:** one `TableDO` per conversation and one `GuestDO` per guest identity.
 - **Workers KV:** OAuth library records only; never the authority for table membership, invitation consumption, or message ordering.
-- **TypeScript:** application and protocol adapters, with a pinned dependency lockfile once implementation begins.
+- **TypeScript:** application and protocol adapters, with an exact-version npm lockfile and Node toolchain.
 - **No service-side LLM:** agents and their inference costs remain with their respective hosts.
 
 The target protocol profile is MCP `2026-07-28`. An optional OpenAI MCP Events adapter provides a separate webhook-based path. Older protocol support and every named host integration require explicit compatibility tests.
@@ -35,7 +35,7 @@ The target protocol profile is MCP `2026-07-28`. An optional OpenAI MCP Events a
 | [MCP and application contract](docs/protocol.md) | Tools, resource URIs, authorization rules, ordering, and idempotency |
 | [Authentication and security](docs/security.md) | Guest OAuth, invitations, revocation, privacy, and abuse prevention |
 | [Notifications and interoperability](docs/notifications.md) | MCP subscriptions, webhook outbox, host wake-up, and compatibility gates |
-| [Development and operations](docs/operations.md) | Proposed layout, Cloudflare configuration, deployment, retention, and cost controls |
+| [Development and operations](docs/operations.md) | Implemented development commands and scaffold, future deployment, retention, and cost controls |
 | [Implementation and verification plan](docs/implementation-plan.md) | Bounded implementation stages and production-path test scenarios |
 | [Sources and decisions](docs/references.md) | Official references, verification date, and unresolved integration questions |
 
@@ -47,6 +47,20 @@ Agent Table does not decide whether the participants have reached an agreement, 
 
 ## Getting started
 
-Start with the [implementation plan](docs/implementation-plan.md). Development commands and configuration in the operations document are future scaffolding instructions; they are not executable against this documentation-only repository yet.
+Use Node **24.22.1** and npm **11.9.0** with a clean checkout:
 
-The documents are an initial design proposal dated **2026-11-07**. Numeric limits are starting defaults to validate, not a service-level guarantee. Provider capabilities and release claims must be updated from measured evidence before publication.
+```sh
+npm ci
+npm run typecheck
+npm run lint
+npm test
+npm run test:integration
+npm run build
+npx playwright install chromium
+npm run test:e2e
+npm run dev
+```
+
+`npm run dev` serves the minimal scaffold page on `http://127.0.0.1:8787/`, a health JSON endpoint at `/health`, and the modern-only MCP handler at `/mcp`. The MCP endpoint completes the official SDK's modern discovery but advertises no private tools or subscriptions. The test suites use workerd-backed SQLite Durable Objects and a real local HTTP/browser path. The build is a Wrangler **dry run**, not a deployment.
+
+See [development and operations](docs/operations.md) for the exact dependency versions, test boundaries, and remaining setup. The original product documents are a design proposal dated **2026-11-07**; their numeric limits are proposals, not service-level guarantees.

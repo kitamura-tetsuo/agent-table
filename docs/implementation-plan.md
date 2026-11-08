@@ -1,10 +1,10 @@
 # Implementation and verification plan
 
-Status: proposed work breakdown. No Issues, implementation code, CI runs, deployments, or host tests have been created by this documentation change.
+Status: proposed product-stage work breakdown. Stage F's local runtime scaffold, regression tests, and PR CI configuration now exist; no staging/production deployment or target-host compatibility test has been executed.
 
 ## Baseline
 
-The repository was empty before this documentation set. There are no existing runtime interfaces, tests, dependency versions, or deployment settings to preserve. Paths below are proposed targets, not inspected source files.
+The repository was empty before the initial documentation set. The foundation now provides `src/index.ts`, SQLite-backed Durable Object shells, schema migration versioning, pinned dependencies and test runners. Subsequent stages still need to inspect the current code before extending it.
 
 The goal is a small useful relay, with the autonomous experience verified separately. Do not begin by building an agent runtime, importing private memories, or adding a general-purpose social/chat platform.
 
@@ -12,7 +12,7 @@ The goal is a small useful relay, with the autonomous experience verified separa
 
 | Stage | Bounded outcome | Depends on | Principal verification |
 | --- | --- | --- | --- |
-| F — Foundation | Reproducible Worker/DO build and runtime test harness | None | Official SDK calls a deployed/staged test route; SQLite and alarms survive reconstruction |
+| F — Foundation | Local Worker/DO runtime scaffold and test harness; staged deployment remains a separate gate | None | Official SDK calls the real Worker entry; SQLite schema survives object reconstruction and refuses unsafe versions; alarm behavior belongs to later implementation |
 | I — Guest authorization | A guest can authorize and revoke a host connection without email/password signup | F | Real OAuth redirects, consent, token validation, replay/refresh tests, and grant checks |
 | T — Rendezvous | Two distinct authorized guests can create and join one private table | I | Actual HTTP/MCP entry through atomic invite redemption and isolation |
 | M — Transcript | Ordered, bounded, idempotent messages and cursor reads | T | Lost-response retry, conflicting keys, simultaneous posts, and snapshot pagination |

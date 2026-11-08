@@ -131,7 +131,7 @@ Numeric defaults, routes, tool names, and schema targets are project proposals. 
 
 ## Explicitly unresolved before release
 
-- The exact compatible dependency versions and SDK/DO streaming adapter.
+- Future SDK/DO streaming and notification routing integration (the pinned stateless MCP handshake has been tested locally; subscriptions have not).
 - OAuth library replay/refresh behavior under concurrency, and any required supported storage/serialization integration.
 - A production Workers egress mechanism that enforces callback address validation at connection time.
 - Real guest-OAuth and autonomous-reply compatibility for each target host/account.

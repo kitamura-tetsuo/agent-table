@@ -1,8 +1,25 @@
 # Development and operations
 
-Status: implementation guide, not an existing runbook. The repository currently contains documentation only. The commands below become usable after the implementation plan creates the referenced source files, package scripts, lockfile, and Cloudflare configuration.
+Status: local foundation runbook plus future deployment plan. The Worker/DO scaffold, dependency lockfile, test scripts, and PR-only validation workflow exist. No public or staging deployment, guest authorization, tables, event delivery, or host interoperability has been completed.
 
-## Proposed repository layout
+## Implemented foundation (Issue #2)
+
+The committed `wrangler.jsonc` binds `TABLES` to `TableDO` and `GUESTS` to `GuestDO`, using the SQLite backend selected by Cloudflare class migration `v1`. It sets the local `PUBLIC_ORIGIN` and disables guest admission, MCP subscriptions, and OpenAI Events. `/` is a minimal HTML status page, `/health` is a JSON health check, and `/mcp` is a modern-only stateless MCP handler advertising **no** application operations. Internal Durable Object methods are not public HTTP routes.
+
+The application schema has a separate per-object `__agent_table_schema` version row, initialized by the classes using a local SQLite transaction. `schema/001_initial.ts` is version 1. Object eviction preserves it; a newer version aborts reconstruction instead of resetting storage. Additional business tables will be future, numbered migrations.
+
+Exact direct dependency pins (also recorded in `package-lock.json`):
+
+| Component | Version |
+| --- | --- |
+| Node / npm | `24.22.1` / `11.9.0` |
+| `agents` / MCP SDK server and client | `0.33.0` / `2.4.0` / `2.4.0` |
+| `wrangler` / `@cloudflare/vitest-plugin` / `vitest` | `4.158.0` / `1.6.0` / `4.1.0` |
+| TypeScript / Biome / Playwright | `6.0.3` / `2.6.6` / `1.65.0` |
+
+The pinned Agents release declares the MCP SDK `2.4.0` optional peer version. Tests pin the official modern `2026-07-28` SDK client and use Cloudflare's workerd test plugin with a real SQLite Durable Object namespace; no Node-only storage mocks are the runtime oracle. The browser smoke suite uses a live Wrangler dev server and Chromium. The local test harness and CI perform no Cloudflare deployment.
+
+## Future repository layout
 
 ```text
 src/
@@ -31,7 +48,7 @@ test/
 docs/
 ```
 
-Use TypeScript with a pinned Node/toolchain version and package lockfile. Candidate dependencies are the current Cloudflare Agents MCP handler, MCP server SDK, Cloudflare OAuth provider library, a schema validator, and a maintained Standard Webhooks implementation. Verify compatible versions together rather than mixing examples from different SDK generations.
+The implemented subset has `src/index.ts`, `src/mcp/server.ts`, `src/objects/{table,guest}.ts`, `src/shared/schema.ts`, `schema/001_initial.ts`, `test/{unit,integration,e2e}/`, and `.github/workflows/ci.yml`. OAuth provider, webhook, and browser-management dependencies will be selected by their respective implementation issues after reviewing compatibility.
 
 Tests should run in Cloudflare's workerd-based harness for storage, bindings, alarms, and streams. Browser tests cover consent and invitation handling. Pure Node unit tests alone are not an adequate production oracle. [CF-TEST]
 
@@ -48,43 +65,13 @@ Initial bindings:
 | `OAUTH_KV` | Selected OAuth library's protocol storage |
 | `ASSETS` | Optional Worker static-assets binding |
 
-The following is a **scaffolding example** for a single staging deployment. Replace the placeholders, implement the exported classes, and validate the installed Wrangler schema before using it. It is intentionally not committed as a runnable deployment configuration.
-
-```sh
-tee wrangler.jsonc > /dev/null <<'EOF'
-{
-  "$schema": "./node_modules/wrangler/config-schema.json",
-  "name": "agent-table-staging",
-  "main": "src/index.ts",
-  "compatibility_date": "2026-11-07",
-  "compatibility_flags": ["nodejs_compat"],
-  "durable_objects": {
-    "bindings": [
-      { "name": "TABLES", "class_name": "TableDO" },
-      { "name": "GUESTS", "class_name": "GuestDO" }
-    ]
-  },
-  "migrations": [
-    { "tag": "v1", "new_sqlite_classes": ["TableDO", "GuestDO"] }
-  ],
-  "kv_namespaces": [
-    { "binding": "OAUTH_KV", "id": "REPLACE_WITH_STAGING_NAMESPACE_ID" }
-  ],
-  "vars": {
-    "PUBLIC_ORIGIN": "https://REPLACE_WITH_STAGING_HOST",
-    "ENABLE_MCP_SUBSCRIPTIONS": "false",
-    "ENABLE_OPENAI_EVENTS": "false",
-    "ALLOW_NEW_GUESTS": "false"
-  }
-}
-EOF
-```
+`wrangler.jsonc` is the committed local development/dry-run configuration. It contains **no** real account, namespace, KV, or secret identifiers. `PUBLIC_ORIGIN` must be changed to the intended HTTPS hostname in a separately reviewed staging/production configuration before deployment. The MCP handler uses that origin's hostname as its accepted Host/Origin allowlist (with loopback aliases only for local development). OAuth library KV bindings are not present yet because OAuth itself is not implemented. Do not deploy the local scaffold as a public guest service.
 
 Cloudflare class migrations and application SQL schema migrations are different mechanisms. `new_sqlite_classes` provisions the backend; application schema upgrades still need version tracking and tests. Do not rename or delete namespaces as a shortcut to migrating private data. [CF-SQL] [CF-TTL]
 
-## Local development after scaffolding
+## Local development and checks
 
-The implementation should provide these scripts: `dev`, `typecheck`, `lint`, `test`, `test:integration`, and `test:e2e`. They do not exist yet.
+Use the Node version from `.node-version`, then run the implemented commands:
 
 ```sh
 npm ci
@@ -92,14 +79,19 @@ npm run typecheck
 npm run lint
 npm test
 npm run test:integration
+npm run build
+npx playwright install chromium
+npm run test:e2e
 npm run dev
 ```
 
-Local credentials belong in ignored local secret files. Use synthetic transcripts and test identities. Bind local mock receivers explicitly; a production callback validator must not gain a localhost exemption from test configuration.
+`npm test` runs the workerd-backed unit and integration tests; `npm run test:integration` explicitly runs the two Worker/SQLite integration files. MCP tests use the official SDK client with requests dispatched through the real Worker export and assert that obsolete clients and private operations are unavailable. Integration tests invoke actual `TABLES`/`GUESTS` bindings and inspect SQLite, including preserving storage over instance eviction. `npm run test:e2e` starts `wrangler dev` and uses the official SDK over live HTTP plus Playwright Chromium for a visible page and health smoke test. `npm run build` is only `wrangler deploy --dry-run --outdir dist`; it does not publish.
+
+The GitHub Actions PR workflow repeats clean `npm ci`, type checking, linting, workerd tests, dry-run build, and browser smoke tests. It requests read-only repository permissions and no production secrets. Use local ignored `.dev.vars` for any future local credentials. Tests must use synthetic identities; a production callback validator must not receive a localhost exemption from a test configuration.
 
 ## Deployment procedure after implementation
 
-Authenticate Wrangler, provision the staging KV namespace, and add its returned ID to staging configuration. Store application encryption keys with `wrangler secret put`, not in JSON or shell history. Use separate versioned keys for encrypted callback credentials and any other encryption purpose. Configure any additional secrets required by the chosen OAuth library according to its pinned documentation.
+After the guest/OAuth and later application stages have been implemented, separately approve staging publication, provision the OAuth KV binding if the selected library requires it, and set real staging origin/namespace configuration outside the committed local scaffold. Store encryption keys with `wrangler secret put`, not in JSON or shell history. Use separate versioned keys for encrypted callback credentials and any other encryption purpose. Configure additional secrets from the chosen OAuth library's pinned documentation. The following commands are a future operator workflow, **not** part of PR CI:
 
 ```sh
 npx wrangler login

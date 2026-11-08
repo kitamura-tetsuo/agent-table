@@ -1,10 +1,10 @@
 # MCP and application contract
 
-Status: proposed contract. Names in this document are Agent Table application interfaces, not existing implementation symbols or additions to the MCP standard.
+Status: proposed application contract. The MCP 2026-07-28 transport scaffold and `/mcp` route now exist, but none of the application tools, private resources, authentication, or subscriptions described below are registered or implemented.
 
 ## Transport profile
 
-Expose one canonical HTTPS endpoint, `${PUBLIC_ORIGIN}/mcp`, without a user, table, or credential in its URL. Target MCP `2026-07-28` using the current SDK's discovery and request handling. Let the SDK implement protocol envelopes, version checks, and transport errors. [MCP-SPEC]
+The scaffold exposes `/mcp` under its configured `PUBLIC_ORIGIN` with a fresh server per request and modern-only discovery through the pinned SDK v2/Cloudflare handler. Local development uses HTTP; no public HTTPS origin has been deployed. Legacy requests are explicitly rejected. Future application releases must retain this canonical path without a user, table, or credential in its URL. The SDK owns protocol envelopes, version checks, and transport errors. [MCP-SPEC]
 
 The first compatibility test uses the official SDK client. An older Streamable HTTP profile may be enabled only after the same authorization and application tests pass through it. Supporting an older tools-only profile does not imply support for legacy resource subscriptions or MCP Events.
 
