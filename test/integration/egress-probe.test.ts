@@ -77,9 +77,9 @@ describe("isolated diagnostic fetch probe (not connection-boundary proof)", () =
   });
 
   it("refuses invalid response statuses without exposing bodies", async () => {
-    const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response("secret body", { status: 401 }),
-    );
+    const spy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response("secret body", { status: 401 }));
     try {
       const response = await probe.fetch(request(), config);
       expect(await response.json()).toEqual({

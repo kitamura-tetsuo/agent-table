@@ -3,8 +3,8 @@
  * Never import this handler from the application Worker or log raw errors.
  */
 import {
-  sendVerifiedHttps,
   type CallbackFailure,
+  sendVerifiedHttps,
 } from "../../src/notifications/egress";
 
 export interface EgressProbeEnv {
@@ -48,25 +48,28 @@ export default {
       return result(503, "disabled");
     }
     if (
-      request.headers.get("Authorization") !== "Bearer " + env.PROBE_AUTH_TOKEN
+      request.headers.get("Authorization") !== `Bearer ${env.PROBE_AUTH_TOKEN}`
     ) {
       return new Response(null, { status: 404 });
     }
 
     const outcome = await sendVerifiedHttps(
       env.PROBE_CALLBACK_URL,
-      [{
-        origin: env.PROBE_REVIEWED_ORIGIN,
-        pathPrefix: env.PROBE_REVIEWED_PATH_PREFIX,
-      }],
+      [
+        {
+          origin: env.PROBE_REVIEWED_ORIGIN,
+          pathPrefix: env.PROBE_REVIEWED_PATH_PREFIX,
+        },
+      ],
       { method: "POST", body: SYNTHETIC_BODY },
     );
     if (outcome.ok) return result(200, "reachable");
-    const status = outcome.reason === "deadline"
-      ? 504
-      : outcome.reason === "destination-rejected"
-        ? 422
-        : 502;
+    const status =
+      outcome.reason === "deadline"
+        ? 504
+        : outcome.reason === "destination-rejected"
+          ? 422
+          : 502;
     return result(status, outcome.reason, outcome.status);
   },
 };

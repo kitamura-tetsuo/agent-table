@@ -74,7 +74,9 @@ describe("callback egress preflight", () => {
   });
 
   it("exercises the bounded production sender without enabling public Events", async () => {
-    const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("ok"));
+    const spy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response("ok"));
     try {
       expect(
         await sendVerifiedHttps(
@@ -103,7 +105,10 @@ describe("callback egress preflight", () => {
     const spy = vi.spyOn(globalThis, "fetch");
     try {
       spy.mockResolvedValueOnce(
-        new Response(null, { status: 302, headers: { Location: "http://127.0.0.1" } }),
+        new Response(null, {
+          status: 302,
+          headers: { Location: "http://127.0.0.1" },
+        }),
       );
       const args = [
         "https://events.provider.example.org/callback",
@@ -128,15 +133,17 @@ describe("callback egress preflight", () => {
   it("rejects caller-controlled routing headers before I/O", async () => {
     const spy = vi.spyOn(globalThis, "fetch");
     try {
-      expect(await sendVerifiedHttps(
-        "https://events.provider.example.org/callback",
-        reviewed,
-        {
-          method: "POST",
-          body: new Uint8Array(),
-          headers: { Host: "127.0.0.1" },
-        },
-      )).toEqual({ ok: false, reason: "invalid-headers" });
+      expect(
+        await sendVerifiedHttps(
+          "https://events.provider.example.org/callback",
+          reviewed,
+          {
+            method: "POST",
+            body: new Uint8Array(),
+            headers: { Host: "127.0.0.1" },
+          },
+        ),
+      ).toEqual({ ok: false, reason: "invalid-headers" });
       expect(spy).not.toHaveBeenCalled();
     } finally {
       spy.mockRestore();

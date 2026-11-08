@@ -187,7 +187,8 @@ function callbackHeaders(
       !ALLOWED_HEADER_NAMES.has(key.toLowerCase()) ||
       typeof value !== "string" ||
       !HEADER_VALUE.test(value)
-    ) return null;
+    )
+      return null;
     result.set(key, value);
   }
   return result;
@@ -206,7 +207,8 @@ async function readBoundedResponse(
     length !== null &&
     (!/^\d{1,10}$/.test(length) ||
       Number(length) > PLANNED_MAX_CALLBACK_RESPONSE_BYTES)
-  ) return null;
+  )
+    return null;
   if (!response.body) return new Uint8Array();
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
@@ -259,7 +261,8 @@ export async function sendVerifiedHttps(
     !(request.body instanceof Uint8Array) ||
     request.method !== "POST" ||
     request.body.byteLength > MAX_CALLBACK_REQUEST_BYTES
-  ) return { ok: false, reason: "request-too-large" };
+  )
+    return { ok: false, reason: "request-too-large" };
   const headers = callbackHeaders(request.headers);
   if (!headers) return { ok: false, reason: "invalid-headers" };
 
@@ -285,7 +288,8 @@ export async function sendVerifiedHttps(
     if (
       response.type === "opaqueredirect" ||
       (response.status >= 300 && response.status < 400)
-    ) return { ok: false, reason: "redirect-refused" };
+    )
+      return { ok: false, reason: "redirect-refused" };
     if (response.status < 200 || response.status >= 300) {
       // Refuse non-successful statuses without parsing or echoing error bodies.
       controller.abort();
