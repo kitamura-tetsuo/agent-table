@@ -4,10 +4,13 @@ import * as z from "zod/v4";
 import {
   createTable,
   getTable,
+  createInvite,
+  joinTable,
   type PublicTableResult,
 } from "../services/tables";
 import { authorizeGuestConnection, type ConnectionScope } from "../shared/auth";
 import { CREATION_LIMITS } from "../shared/limits";
+import { validTableId } from "../shared/invitations";
 
 export type AuthenticatedMcpIdentity = {
   readonly guestId: string;
@@ -30,6 +33,8 @@ const createInput = z.strictObject({
     .optional(),
 });
 const getInput = z.strictObject({ table_id: z.string().regex(TABLE_ID) });
+const inviteInput = z.strictObject({ table_id: z.string().regex(TABLE_ID), request_id: z.string().regex(/^[A-Za-z0-9_-]{16,128}$/) });
+const joinInput = z.strictObject({ invitation: z.string().min(1).max(160), request_id: z.string().regex(/^[A-Za-z0-9_-]{16,128}$/) });
 
 function toolResult(value: unknown, isError = false) {
   return {
@@ -120,6 +125,35 @@ function newServer(env: Env, identity: AuthenticatedMcpIdentity) {
       if (!actor)
         return toolResult({ error: { code: "NOT_AUTHORIZED" } }, true);
       return appResult(await getTable(env, actor, table_id));
+    },
+  );
+  server.registerTool(
+    "create_invite",
+    {
+      description: "Creator-only one-hour single-use invitation. A different key revokes the former unused invitation; retries never reveal terminal secrets.",
+      inputSchema: inviteInput,
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    async ({ table_id, request_id }) => {
+      const actor = await scopedActor("tables:write");
+      if (!actor) return toolResult({ error: { code: "NOT_AUTHORIZED" } }, true);
+      if (!validTableId(table_id)) return toolResult({ error: { code: "INVALID_REQUEST" } }, true);
+      const result = await createInvite(env, actor, table_id, request_id);
+      return result.ok ? toolResult(result.value) :
+        toolResult({ error: { code: result.code, retry: result.code === "TEMPORARILY_UNAVAILABLE" ? "Retry with the same request_id and unchanged arguments." : undefined } }, true);
+    },
+  );
+  server.registerTool(
+    "join_table",
+    {
+      description: "Consume an opaque invitation to atomically claim the single available second seat.",
+      inputSchema: joinInput,
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    async ({ invitation, request_id }) => {
+      const actor = await scopedActor("tables:write");
+      if (!actor) return toolResult({ error: { code: "NOT_AUTHORIZED" } }, true);
+      return appResult(await joinTable(env, actor, invitation, request_id));
     },
   );
   // No concrete private resources are globally listed or registered.

@@ -94,3 +94,34 @@ export async function getTable(
     return unavailable();
   }
 }
+
+/** Invite issue results contain a short-lived secret; callers must not log them. */
+export async function createInvite(
+  env: Env,
+  actor: VerifiedConnectionActor,
+  tableId: string,
+  requestId: string,
+) {
+  try {
+    return await env.TABLES.get(env.TABLES.idFromName(tableId)).issueInvite(actor, requestId);
+  } catch {
+    return { ok: false as const, code: "TEMPORARILY_UNAVAILABLE" };
+  }
+}
+
+export async function joinTable(
+  env: Env,
+  actor: VerifiedConnectionActor,
+  invitation: string,
+  requestId: string,
+): Promise<PublicTableResult> {
+  const { parseInvitation } = await import("../shared/invitations");
+  const parsed = parseInvitation(invitation);
+  if (!parsed) return { ok: false, code: "INVITATION_INVALID" };
+  try {
+    return await env.TABLES.get(env.TABLES.idFromName(parsed.tableId))
+      .redeemInvite(actor, invitation, requestId);
+  } catch {
+    return { ok: false, code: "TEMPORARILY_UNAVAILABLE" };
+  }
+}

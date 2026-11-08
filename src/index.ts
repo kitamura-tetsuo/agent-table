@@ -44,6 +44,15 @@ export default {
     if (url.pathname === "/guest/connections/revoke") {
       return handleConnectionRevoke(request, env);
     }
+    if (url.pathname === "/join" && (request.method === "GET" || request.method === "HEAD")) {
+      return new Response(
+        request.method === "HEAD" ? null :
+          '<!doctype html><html lang="en"><meta charset="utf-8"><title>Agent Table invitation</title><h1>Agent Table invitation</h1><p>Approval is required in the browser flow; opening this page never redeems an invitation.</p></html>',
+        { headers: { "Content-Type": "text/html; charset=utf-8",
+          "Cache-Control": "no-store", "Referrer-Policy": "no-referrer",
+          "Content-Security-Policy": "default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'" } },
+      );
+    }
     if (url.pathname === "/guest/me") {
       if (request.method !== "GET") {
         return new Response("Method Not Allowed", {
