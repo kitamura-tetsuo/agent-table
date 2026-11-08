@@ -2071,6 +2071,162 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
   });
 });
 
+describe("paused ingress preserves authenticated MCP terminal operations", () => {
+  it("denies new SDK tables but permits close, delete initiation and browser approval", async () => {
+    const owner = await tokenForGuest("tables:read tables:write tables:delete");
+    let requestEnv: Env = env;
+    const client = await sdk(owner.token, (request) =>
+      fetchThroughWorker(requestEnv)(request),
+    );
+    try {
+      const created = await client.callTool({
+        name: "create_table",
+        arguments: {
+          ...input,
+          request_id: "sdk_pause_initial_create_0001",
+        },
+      });
+      expect(created.isError).not.toBe(true);
+      const tableId = String(output(created).tableId);
+      const table = env.TABLES.get(env.TABLES.idFromName(tableId));
+      const saved = await client.callTool({
+        name: "post_message",
+        arguments: {
+          table_id: tableId,
+          request_id: "sdk_pause_initial_post_0001",
+          body: "Synthetic private content before admission pause",
+        },
+      });
+      expect(saved.isError).not.toBe(true);
+
+      const paused: Env = {
+        ...env,
+        ALLOW_NEW_GUESTS: "false",
+        ALLOW_NEW_TABLES: "false",
+        ALLOW_OUTBOUND_NOTIFICATIONS: "false",
+      };
+      requestEnv = paused;
+
+      const blocked = await client.callTool({
+        name: "create_table",
+        arguments: {
+          ...input,
+          request_id: "sdk_pause_blocked_create_0001",
+        },
+      });
+      expect(blocked.isError).toBe(true);
+      expect(output(blocked)).toMatchObject({
+        error: { code: "ADMISSION_DISABLED" },
+      });
+      await runInDurableObject(owner.guest, async (_instance, state) => {
+        expect(
+          state.storage.sql
+            .exec("SELECT COUNT(*) AS n FROM guest_creation_reservations")
+            .one(),
+        ).toEqual({ n: 1 });
+      });
+
+      const closed = await client.callTool({
+        name: "close_table",
+        arguments: {
+          table_id: tableId,
+          request_id: "sdk_pause_close_existing_0001",
+        },
+      });
+      expect(closed.isError).not.toBe(true);
+      expect(output(closed)).toMatchObject({
+        table_id: tableId,
+        state: "closed",
+      });
+      const afterClose = await client.callTool({
+        name: "get_table",
+        arguments: { table_id: tableId },
+      });
+      expect(output(afterClose)).toMatchObject({
+        tableId,
+        state: "closed",
+      });
+
+      const operation = {
+        table_id: tableId,
+        request_id: "sdk_pause_delete_existing_0001",
+      };
+      const pending = await client.callTool({
+        name: "delete_table",
+        arguments: operation,
+      });
+      expect(pending.isError).not.toBe(true);
+      const receipt = output(pending);
+      expect(receipt).toMatchObject({ confirmation_required: true });
+      const preview = await worker.fetch(
+        new Request(String(receipt.confirmation_url), {
+          headers: { Cookie: owner.browserCookie },
+        }) as Parameters<typeof worker.fetch>[0],
+        paused,
+        createExecutionContext(),
+      );
+      expect(preview.status).toBe(200);
+      const html = await preview.text();
+      const csrf = html.match(/name="csrf" value="([A-Za-z0-9_-]{43})"/)?.[1];
+      const csrfCookie = preview.headers
+        .getSetCookie()
+        .find((item) => item.startsWith("__Host-agent_table_csrf="))
+        ?.split(";")[0];
+      if (!csrf || !csrfCookie) {
+        throw new Error("Paused browser confirmation did not issue CSRF");
+      }
+
+      const approved = await worker.fetch(
+        new Request(`${ORIGIN}/guest/delete`, {
+          method: "POST",
+          headers: {
+            Origin: ORIGIN,
+            "Sec-Fetch-Site": "same-origin",
+            "Content-Type": "application/x-www-form-urlencoded",
+            Cookie: [owner.browserCookie, csrfCookie].join("; "),
+          },
+          body: new URLSearchParams({
+            ...operation,
+            csrf,
+            decision: "approve",
+          }),
+        }) as Parameters<typeof worker.fetch>[0],
+        paused,
+        createExecutionContext(),
+      );
+      expect(approved.status).toBe(200);
+      expect(await approved.text()).toContain("Deletion committed");
+      await evictDurableObject(table);
+      const deletionReceipt = await client.callTool({
+        name: "delete_table",
+        arguments: operation,
+      });
+      expect(deletionReceipt.isError).not.toBe(true);
+      expect(output(deletionReceipt)).toMatchObject({
+        confirmation_required: false,
+        state: "deleted",
+      });
+      await runInDurableObject(table, async (_instance, state) => {
+        expect(
+          state.storage.sql
+            .exec("SELECT COUNT(*) AS n FROM table_metadata")
+            .one(),
+        ).toEqual({ n: 0 });
+        expect(
+          state.storage.sql
+            .exec("SELECT guest_id, request_id FROM table_tombstone_delete_receipts")
+            .one(),
+        ).toEqual({
+          guest_id: owner.guestId,
+          request_id: operation.request_id,
+        });
+      });
+    } finally {
+      await client.close();
+    }
+  });
+});
+
 describe("authenticated public SDK admission quota", () => {
   it("charges real OAuth-authenticated SDK MCP traffic in the principal's SQLite window", async () => {
     const principal = await tokenForGuest("tables:read tables:write");
