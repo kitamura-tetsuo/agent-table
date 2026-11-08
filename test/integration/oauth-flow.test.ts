@@ -341,11 +341,7 @@ describe("real authorization code and guest-grant flow", () => {
       // A third sequential exchange must observe the provider's durable
       // consumed-code state, independently of the two overlapping responses.
       // Do not use KV.list() as an immediate consistency oracle.
-      const replay = await redeem(
-        clientId,
-        approved.code,
-        approved.verifier,
-      );
+      const replay = await redeem(clientId, approved.code, approved.verifier);
       expect(replay.status).toBe(400);
       const replayBody = await jsonUrl(replay);
       expect(replayBody.error).toBe("invalid_grant");
