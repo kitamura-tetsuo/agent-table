@@ -191,4 +191,67 @@ describe("cross-isolate admission policy", () => {
       ]);
     });
   });
+
+  it("shares an edge budget across equivalent IPv6 source spellings", async () => {
+    const limited: Env = { ...env, EDGE_DCR_RATE_PER_MINUTE: "1" };
+    const register = (source: string, forwardedFor: string) =>
+      dispatch(limited, "/oauth/register", {
+        method: "POST",
+        headers: {
+          "CF-Connecting-IP": source,
+          "X-Forwarded-For": forwardedFor,
+          "Content-Type": "application/json",
+        },
+        body: "{}",
+      });
+    const first = await register(
+      "2001:0db8:0:0:0:0:0:beef",
+      "198.51.100.10",
+    );
+    expect(first.status).not.toBe(429);
+    const second = await register("2001:db8::beef", "198.51.100.11");
+    expect(second.status).toBe(429);
+    expect(second.headers.get("Retry-After")).toMatch(/^[1-9][0-9]*$/);
+
+    const stub = await admissionStub(limited, "edge-v1:[2001:db8::beef]");
+    await runInDurableObject(stub, async (_instance, state) => {
+      expect(
+        state.storage.sql
+          .exec<{ count: number }>(
+            "SELECT COUNT(*) AS count FROM admission_hits WHERE category = 'dcr'",
+          )
+          .one().count,
+      ).toBe(1);
+    });
+  });
+
+  it("buckets malformed edge identities together despite forwarded headers", async () => {
+    const limited: Env = { ...env, EDGE_DCR_RATE_PER_MINUTE: "1" };
+    const register = (source: string, forwardedFor: string) =>
+      dispatch(limited, "/oauth/register", {
+        method: "POST",
+        headers: {
+          "CF-Connecting-IP": source,
+          "X-Forwarded-For": forwardedFor,
+          "Content-Type": "application/json",
+        },
+        body: "{}",
+      });
+    const first = await register("deadcafe", "198.51.100.12");
+    expect(first.status).not.toBe(429);
+    const second = await register("999.999.999.999", "198.51.100.13");
+    expect(second.status).toBe(429);
+
+    const stub = await admissionStub(limited, "edge-v1:unknown-source");
+    await runInDurableObject(stub, async (_instance, state) => {
+      expect(
+        state.storage.sql
+          .exec<{ count: number }>(
+            "SELECT COUNT(*) AS count FROM admission_hits WHERE category = 'dcr'",
+          )
+          .one().count,
+      ).toBe(1);
+    });
+  });
+
 });
