@@ -146,7 +146,9 @@ async function approvedConsent(
   const guestId = /name="guest_id" type="hidden" value="([^"]+)"/.exec(
     html,
   )?.[1];
-  const binding = /name="binding" type="hidden" value="([^"]+)"/.exec(html)?.[1];
+  const binding = /name="binding" type="hidden" value="([^"]+)"/.exec(
+    html,
+  )?.[1];
   if (!handle || !csrf || !binding || guestId !== browser.guestId)
     throw Error("Consent form missing bound guest or values");
   const cookies = response.headers
@@ -309,7 +311,9 @@ describe("real authorization code and guest-grant flow", () => {
       html,
     )?.[1];
     const csrf = /name="csrf" type="hidden" value="([^"]+)"/.exec(html)?.[1];
-    const binding = /name="binding" type="hidden" value="([^"]+)"/.exec(html)?.[1];
+    const binding = /name="binding" type="hidden" value="([^"]+)"/.exec(
+      html,
+    )?.[1];
     const cookies = form.headers
       .getSetCookie()
       .map((line) => line.split(";")[0]);
