@@ -169,10 +169,12 @@ test("official SDK negotiates against the authenticated live Wrangler HTTP serve
       "create_table",
       "get_table",
     ]);
-    expect(listed.tools.find((tool) => tool.name === "create_table")?.annotations)
-      .toMatchObject({ readOnlyHint: false, idempotentHint: true });
-    expect(listed.tools.find((tool) => tool.name === "get_table")?.annotations)
-      .toMatchObject({ readOnlyHint: true, idempotentHint: true });
+    expect(
+      listed.tools.find((tool) => tool.name === "create_table")?.annotations,
+    ).toMatchObject({ readOnlyHint: false, idempotentHint: true });
+    expect(
+      listed.tools.find((tool) => tool.name === "get_table")?.annotations,
+    ).toMatchObject({ readOnlyHint: true, idempotentHint: true });
     // A read-only OAuth grant cannot create a table, even if the tool is listed.
     const rejected = await client.callTool({
       name: "create_table",
@@ -183,7 +185,9 @@ test("official SDK negotiates against the authenticated live Wrangler HTTP serve
     });
     expect(rejected.isError).toBe(true);
     const message = rejected.content.find((entry) => entry.type === "text");
-    expect(message?.type === "text" ? JSON.parse(message.text) : null).toMatchObject({
+    expect(
+      message?.type === "text" ? JSON.parse(message.text) : null,
+    ).toMatchObject({
       error: { code: "NOT_AUTHORIZED" },
     });
   } finally {
