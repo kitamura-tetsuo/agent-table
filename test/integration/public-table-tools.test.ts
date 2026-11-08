@@ -9,6 +9,7 @@ import {
   StreamableHTTPClientTransport,
 } from "@modelcontextprotocol/client";
 import { describe, expect, it } from "vitest";
+import { TABLE_LIMITS } from "../../src/shared/limits";
 import worker from "../../src/index";
 import type {
   CreationReservation,
@@ -1512,6 +1513,179 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
       });
     } finally {
       await primary.close();
+    }
+  });
+  it("keeps the 256-message and 2 MiB ceiling under competing authenticated SDK posts", async () => {
+    const owner = await tokenForGuest("tables:read tables:write");
+    const peer = await tokenForGuest("tables:read tables:write");
+    const creator = await sdk(owner.token);
+    const invitee = await sdk(peer.token);
+    try {
+      const created = await creator.callTool({
+        name: "create_table",
+        arguments: {
+          ...input,
+          request_id: "sdk_capacity_table_create_0001",
+        },
+      });
+      const tableId = String(output(created).tableId);
+      const invited = await creator.callTool({
+        name: "create_invite",
+        arguments: {
+          table_id: tableId,
+          request_id: "sdk_capacity_invite_0001",
+        },
+      });
+      const joined = await invitee.callTool({
+        name: "join_table",
+        arguments: {
+          invitation: output(invited).invitation,
+          request_id: "sdk_capacity_join_000001",
+        },
+      });
+      expect(joined.isError).not.toBe(true);
+
+      const table = env.TABLES.get(env.TABLES.idFromName(tableId));
+      const ownerMembershipId = String(output(created).ownMembershipId);
+      const peerMembershipId = String(output(joined).ownMembershipId);
+      const historicalBody = "H".repeat(TABLE_LIMITS.messageBodyBytes);
+      const historicalTime = Date.now() - 120_000;
+      // Seed the equivalent of 255 old committed posts in SQLite, rather than
+      // running 255 expensive OAuth/SDK calls. Keep the receipt and byte
+      // ledgers consistent; only the final competing posts use the live SDK.
+      await runInDurableObject(table, async (_instance, state) => {
+        state.storage.sql.exec(
+          `WITH RECURSIVE seed(n) AS (
+             SELECT 1 UNION ALL SELECT n + 1 FROM seed WHERE n < 255
+           )
+           INSERT INTO table_messages
+             (seq, message_id, sender_membership_id, body, body_bytes, created_at, reply_to_message_id)
+           SELECT n, printf('00000000-0000-4000-8000-%012d', n), ?, ?, ?, ?, NULL
+           FROM seed`,
+          ownerMembershipId,
+          historicalBody,
+          TABLE_LIMITS.messageBodyBytes,
+          historicalTime,
+        );
+        state.storage.sql.exec(
+          `WITH RECURSIVE seed(n) AS (
+             SELECT 1 UNION ALL SELECT n + 1 FROM seed WHERE n < 255
+           )
+           INSERT INTO table_post_receipts (guest_id, request_id, request_digest, message_seq)
+           SELECT ?, printf('sdk_seed_capacity_%04d', n), ?, n FROM seed`,
+          owner.guestId,
+          "0".repeat(64),
+        );
+        state.storage.sql.exec(
+          "UPDATE table_metadata SET last_seq = 255 WHERE singleton = 1",
+        );
+        state.storage.sql.exec(
+          "UPDATE table_transcript_usage SET body_bytes = ? WHERE singleton = 1",
+          255 * TABLE_LIMITS.messageBodyBytes,
+        );
+        state.storage.sql.exec(
+          "UPDATE table_memberships SET latest_peer_seq = 255 WHERE membership_id = ?",
+          peerMembershipId,
+        );
+      });
+
+      let arrived = 0;
+      const overlay: Env = {
+        ...env,
+        TABLES: {
+          idFromName: (name: string) => env.TABLES.idFromName(name),
+          get: (id: DurableObjectId): TableStub => {
+            const stub = env.TABLES.get(id);
+            return new Proxy(stub, {
+              get(target, property) {
+                if (property === "postMessage") {
+                  return async (
+                    actor: VerifiedConnectionActor,
+                    value: unknown,
+                  ) => {
+                    arrived++;
+                    for (let spin = 0; arrived < 2 && spin < 500; spin++) {
+                      await new Promise<void>((resolve) =>
+                        setTimeout(resolve, 10),
+                      );
+                    }
+                    if (arrived < 2) throw new Error("SDK posts did not overlap");
+                    return target.postMessage(actor, value);
+                  };
+                }
+                return Reflect.get(target, property, target);
+              },
+            });
+          },
+        } as Env["TABLES"],
+      };
+      const [a, b] = await Promise.all([
+        sdk(owner.token, fetchThroughWorker(overlay)),
+        sdk(peer.token, fetchThroughWorker(overlay)),
+      ]);
+      const argsA = {
+        table_id: tableId,
+        request_id: "sdk_capacity_final_owner_0001",
+        body: "🧪".repeat(2048),
+      };
+      const argsB = {
+        table_id: tableId,
+        request_id: "sdk_capacity_final_peer_0001",
+        body: "B".repeat(TABLE_LIMITS.messageBodyBytes),
+      };
+      try {
+        const results = await Promise.all([
+          a.callTool({ name: "post_message", arguments: argsA }),
+          b.callTool({ name: "post_message", arguments: argsB }),
+        ]);
+        expect(arrived).toBe(2);
+        expect(results.filter((result) => !result.isError)).toHaveLength(1);
+        const winnerIndex = results.findIndex((result) => !result.isError);
+        const winner = winnerIndex === 0 ? creator : invitee;
+        const winnerArgs = winnerIndex === 0 ? argsA : argsB;
+        const accepted = output(results[winnerIndex]);
+        expect(accepted).toMatchObject({ seq: 256, persisted: true });
+        expect(output(results[1 - winnerIndex])).toMatchObject({
+          error: { code: "LIMIT_REACHED" },
+        });
+        await evictDurableObject(table);
+        const replay = await winner.callTool({
+          name: "post_message",
+          arguments: winnerArgs,
+        });
+        expect(output(replay)).toEqual(accepted);
+        await runInDurableObject(table, async (_instance, state) => {
+          expect(
+            state.storage.sql.exec("SELECT last_seq FROM table_metadata").one(),
+          ).toEqual({ last_seq: 256 });
+          expect(
+            state.storage.sql
+              .exec("SELECT body_bytes FROM table_transcript_usage")
+              .one(),
+          ).toEqual({ body_bytes: TABLE_LIMITS.transcriptBodyBytes });
+          expect(
+            state.storage.sql
+              .exec("SELECT COUNT(*) AS total FROM table_messages")
+              .one(),
+          ).toEqual({ total: 256 });
+          expect(
+            state.storage.sql
+              .exec("SELECT COUNT(*) AS total FROM table_post_receipts")
+              .one(),
+          ).toEqual({ total: 256 });
+          expect(
+            state.storage.sql
+              .exec("SELECT message_id FROM table_messages WHERE seq = 256")
+              .one(),
+          ).toEqual({ message_id: accepted.message_id });
+        });
+      } finally {
+        await a.close();
+        await b.close();
+      }
+    } finally {
+      await creator.close();
+      await invitee.close();
     }
   });
 });
