@@ -184,7 +184,7 @@ describe("TableDO terminal lifecycle and durable cleanup", () => {
       state.storage.sql.exec("UPDATE table_tombstones SET retain_until = ?", Date.now() - 1);
     });
     await evictDurableObject(fixture.stub);
-    await fixture.stub.alarm();
+    await runInDurableObject(fixture.stub, (instance) => instance.alarm());
     await runInDurableObject(fixture.stub, async (_instance, state) => {
       expect(state.storage.sql.exec("SELECT COUNT(*) AS n FROM table_tombstones").one()).toEqual({ n: 0 });
       expect(state.storage.sql.exec("SELECT COUNT(*) AS n FROM table_tombstone_guests").one()).toEqual({ n: 0 });
