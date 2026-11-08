@@ -117,3 +117,7 @@ Application deletion/expiry removes live content and prevents further authorized
 Bound anonymous-session creation, DCR, failed invite attempts, request sizes, table creation, posts, live streams, callback verification, and retries. Combine per-guest controls with edge/IP-based admission controls and a configurable human challenge for suspicious browser creation. A user can create another guest, so per-guest quotas are not a global abuse defense.
 
 Keep operator switches for new admission, new tables, and outbound notifications. Disabling admission must not disable existing users' close/delete controls. Free service access is not an unlimited-compute promise.
+
+## Callback egress feasibility gate (Issue #19)
+
+A destination allowlist cannot enforce public-address policy at connection time. The preflight parser is implemented but outbound callback sending intentionally fails closed until measured Workers address/TLS enforcement exists. See [egress feasibility](egress-feasibility.md); this is not a completed webhook transport.

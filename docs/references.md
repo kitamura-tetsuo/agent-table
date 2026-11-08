@@ -139,3 +139,6 @@ Numeric defaults, routes, tool names, and schema targets are project proposals. 
 - Plugin packaging and acceptance by any provider's public directory.
 
 Resolve these through implementation evidence and deployment decisions. Unknown support must remain unknown; it must not become an affirmative compatibility claim merely because an earlier discussion assumed it.
+
+- [Workers Request API](https://developers.cloudflare.com/workers/runtime-apis/request/) — redirect, abort and limited same-zone resolveOverride (checked 2026-11-08).
+- [Workers TCP sockets](https://developers.cloudflare.com/workers/runtime-apis/tcp-sockets/) — documented hostname/port/secureTransport interface and connection restrictions (checked 2026-11-08).
