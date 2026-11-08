@@ -3,8 +3,15 @@ import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { SESSION_COOKIE_NAME } from "../../src/auth/guest";
 import worker from "../../src/index";
-import { closeTable, createTable, requestTableDeletion } from "../../src/services/tables";
-import { allowNewTables, allowOutboundNotifications } from "../../src/shared/admission";
+import {
+  closeTable,
+  createTable,
+  requestTableDeletion,
+} from "../../src/services/tables";
+import {
+  allowNewTables,
+  allowOutboundNotifications,
+} from "../../src/shared/admission";
 import {
   authorizeGuestConnection,
   type ConnectionScope,
