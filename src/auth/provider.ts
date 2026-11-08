@@ -250,7 +250,13 @@ export async function handleAuthorize(
     if (!form || request.headers.get("Content-Length") === "0") {
       return safeError("Invalid consent", 400);
     }
-    const allowedKeys = new Set(["handle", "csrf", "decision", "scope", "guest_id"]);
+    const allowedKeys = new Set([
+      "handle",
+      "csrf",
+      "decision",
+      "scope",
+      "guest_id",
+    ]);
     if ([...form.keys()].some((key) => !allowedKeys.has(key)))
       return safeError("Invalid consent", 400);
     if (

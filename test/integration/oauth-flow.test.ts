@@ -143,7 +143,9 @@ async function approvedConsent(
   expect(html).toContain("lose your browser session"); // The page states the loss-of-access limitation.
   const handle = /name="handle" type="hidden" value="([^"]+)"/.exec(html)?.[1];
   const csrf = /name="csrf" type="hidden" value="([^"]+)"/.exec(html)?.[1];
-  const guestId = /name="guest_id" type="hidden" value="([^"]+)"/.exec(html)?.[1];
+  const guestId = /name="guest_id" type="hidden" value="([^"]+)"/.exec(
+    html,
+  )?.[1];
   if (!handle || !csrf || guestId !== browser.guestId)
     throw Error("Consent form missing bound guest or values");
   const cookies = response.headers
@@ -291,7 +293,6 @@ describe("real authorization code and guest-grant flow", () => {
     ).toHaveLength(1);
   });
 
-
   it("rejects an approval submitted after the selected browser guest changed", async () => {
     const browserA = await withBrowserGuest();
     const browserB = await withBrowserGuest();
@@ -302,9 +303,13 @@ describe("real authorization code and guest-grant flow", () => {
     });
     expect(form.status).toBe(200);
     const html = await form.text();
-    const handle = /name="handle" type="hidden" value="([^"]+)"/.exec(html)?.[1];
+    const handle = /name="handle" type="hidden" value="([^"]+)"/.exec(
+      html,
+    )?.[1];
     const csrf = /name="csrf" type="hidden" value="([^"]+)"/.exec(html)?.[1];
-    const cookies = form.headers.getSetCookie().map((line) => line.split(";")[0]);
+    const cookies = form.headers
+      .getSetCookie()
+      .map((line) => line.split(";")[0]);
     if (!handle || !csrf) throw Error("Consent handle missing");
     const stale = await exports.default.fetch(`${ORIGIN}/authorize`, {
       method: "POST",
@@ -383,13 +388,12 @@ describe("real authorization code and guest-grant flow", () => {
         }),
       });
     expect((await protectedRead()).status).not.toBe(401);
-    expect(
-      (await browser.guest.revokeConnection(
-        approved.sessionId,
-        approved.sessionSecret,
-        before?.[0].connectionId ?? "",
-      )).status,
-    ).toBe("revoked");
+    const revoked = await browser.guest.revokeConnection(
+      approved.sessionId,
+      approved.sessionSecret,
+      before?.[0].connectionId ?? "",
+    );
+    expect(revoked.status).toBe("revoked");
     expect((await protectedRead()).status).toBe(401);
     const rejected = await refresh(String(renewal.refresh_token));
     expect(rejected.status).toBe(400);
@@ -434,13 +438,12 @@ describe("real authorization code and guest-grant flow", () => {
       consentA.sessionSecret,
     );
     expect(grantsA).toHaveLength(1);
-    expect(
-      (await first.guest.revokeConnection(
-        consentA.sessionId,
-        consentA.sessionSecret,
-        grantsA?.[0].connectionId ?? "",
-      )).status,
-    ).toBe("revoked");
+    const revoked = await first.guest.revokeConnection(
+      consentA.sessionId,
+      consentA.sessionSecret,
+      grantsA?.[0].connectionId ?? "",
+    );
+    expect(revoked.status).toBe("revoked");
     const [denied, unaffected] = await Promise.all([
       request(tokenA.access_token),
       request(tokenB.access_token),
