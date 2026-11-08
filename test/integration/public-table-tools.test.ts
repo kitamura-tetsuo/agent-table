@@ -41,7 +41,11 @@ async function tokenForGuest(scope: string) {
   const cookie = `__Host-agent_table_session=v1.${guestId}.${session.sessionId}.${session.secret}`;
   const registered = await exports.default.fetch(`${ORIGIN}/oauth/register`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      // Model distinct trusted edge sources in the Workers integration fixture.
+      "CF-Connecting-IP": `2001:db8:${guestId.slice(0, 4)}:${guestId.slice(5, 9)}::1`,
+    },
     body: JSON.stringify({
       client_name: "SDK table client",
       redirect_uris: [REDIRECT],
