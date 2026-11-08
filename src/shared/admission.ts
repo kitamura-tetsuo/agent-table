@@ -96,7 +96,7 @@ export async function rejectOversizedIngress(
   const limit = bodyLimit(new URL(request.url));
   const declared = request.headers.get("Content-Length");
   if (declared !== null) {
-    if (!/^\\d{1,12}$/.test(declared)) return reject(400);
+    if (!/^\d{1,12}$/.test(declared)) return reject(400);
     if (Number(declared) > limit) return reject(413);
   }
   let consumed = 0;
