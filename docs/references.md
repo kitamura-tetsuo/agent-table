@@ -112,6 +112,18 @@ Recheck pricing and included quotas at deployment time. No cost guarantee is mad
 
 Runtime integration tests should exercise real Worker/DO behavior, not only Node mocks.
 
+### CF-EGRESS
+
+[Cloudflare Workers Node.js TLS compatibility](https://developers.cloudflare.com/workers/runtime-apis/nodejs/tls/)
+
+[Cloudflare Workers Node.js DNS compatibility](https://developers.cloudflare.com/workers/runtime-apis/nodejs/dns/)
+
+[Cloudflare Workers TCP sockets and address restrictions](https://developers.cloudflare.com/workers/runtime-apis/tcp-sockets/)
+
+[Cloudflare Workers outbound fetch known issues](https://developers.cloudflare.com/workers/platform/known-issues/)
+
+Documented APIs and platform limitations for the explicitly unverified [Issue #19 candidate](egress-probe.md). These source pages are not a substitute for measured connection-time address and TLS evidence on a deployed Worker.
+
 ## Decisions recorded by this design
 
 | Decision | Rationale |

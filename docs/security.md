@@ -84,6 +84,8 @@ Unsubscribe cancels pending work for that subscription. Closing/deleting a table
 
 Callback URLs are an SSRF boundary. The public pilot accepts only operator-reviewed provider destinations, never arbitrary user-entered hosts. Require HTTPS, reject credentials/IP literals/unexpected ports, forbid redirects, and verify callback control before sending application metadata. Destination validation must cover the actual connection, including DNS changes—not just URL syntax. A secure Workers-compatible egress implementation is a release gate for webhook support. Do not claim that a hostname allowlist alone implements IP pinning. [OPENAI-EVENTS]
 
+Issue #19 has a non-production candidate using a reviewed exact-host policy, DNS A-record validation and an explicitly pinned-IP `node:tls` connection with expected-host certificate checking. The candidate is **not connected to the application or approved for public use**: pinned remote-address and TLS behavior still need a positive controlled HTTPS and adversarial proof on the deployed Workers runtime. The [egress probe runbook](egress-probe.md) names the external prerequisites and required evidence. A parser test, locally mocked connector, or successful dry-run does not authorize webhook capability.
+
 Store callback secrets and retry envelopes encrypted with a versioned application key in Workers secrets. Never place OAuth tokens, signing keys, or invite secrets in committed configuration. Encrypting these stored credentials does not make the transcript end-to-end encrypted.
 
 ## Encrypted retained credentials (implemented primitive)

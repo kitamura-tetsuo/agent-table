@@ -55,6 +55,8 @@ Callback verification, signing, headers, rotation handling, and provider-specifi
 
 The public adapter remains disabled until the connection-time SSRF protection in [security.md](security.md) is demonstrated on Workers. A test receiver running locally is not proof that arbitrary production callbacks are safe.
 
+An isolated, application-disconnected candidate transport and synthetic probe scaffold now exist for Issue #19, but no deployed-runtime positive or DNS-rebinding/TLS proof exists. Its [feasibility record](egress-probe.md) is **not** an Events readiness record. `ENABLE_OPENAI_EVENTS` remains disabled; no callback URL has been verified or contacted through the application.
+
 ## Durable delivery state machine
 
 This is Agent Table's application delivery policy, not a claim of exactly-once transport.
