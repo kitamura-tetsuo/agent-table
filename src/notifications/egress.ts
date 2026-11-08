@@ -47,6 +47,21 @@ const RESERVED_SUFFIXES = [
   ".invalid",
 ];
 
+function hasUnsafeRawCharacters(raw: string): boolean {
+  for (const character of raw) {
+    const code = character.charCodeAt(0);
+    if (
+      code <= 31 ||
+      code === 127 ||
+      character === "#" ||
+      character === "\\"
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function isPublicDnsName(hostname: string): boolean {
   if (
     hostname.length > 253 ||
@@ -80,7 +95,7 @@ export function validateReviewedCallbackDestination(
     raw.length > MAX_URL_LENGTH ||
     !raw.startsWith("https://") ||
     raw !== raw.trim() ||
-    /[\u0000-\u001f\u007f#\\]/.test(raw)
+    hasUnsafeRawCharacters(raw)
   ) {
     return { ok: false, reason: "destination-rejected" };
   }
@@ -98,8 +113,7 @@ export function validateReviewedCallbackDestination(
     !isPublicDnsName(url.hostname) ||
     !reviewed.some(
       (target) =>
-        target.origin === url.origin &&
-        target.pathname === url.pathname,
+        target.origin === url.origin && target.pathname === url.pathname,
     )
   ) {
     return { ok: false, reason: "destination-rejected" };

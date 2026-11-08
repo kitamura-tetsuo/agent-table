@@ -62,7 +62,10 @@ describe("callback egress preflight", () => {
       await sendVerifiedHttps(
         "https://events.provider.example.org/callback",
         reviewed,
-        { method: "POST", body: new Uint8Array(MAX_CALLBACK_REQUEST_BYTES + 1) },
+        {
+          method: "POST",
+          body: new Uint8Array(MAX_CALLBACK_REQUEST_BYTES + 1),
+        },
       ),
     ).toEqual({ ok: false, reason: "request-too-large" });
   });
