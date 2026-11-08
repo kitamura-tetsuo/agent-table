@@ -244,6 +244,13 @@ describe("TableDO terminal lifecycle and durable cleanup", () => {
     const fixture = await tableFixture();
     const expiresAt = fixture.reserved.reservation.expiresAt;
     const retainUntil = expiresAt + 24 * 60 * 60_000;
+    const peer = await guest();
+    const invite = await fixture.stub.issueInvite(
+      fixture.writer,
+      "lifecycle_expiry_invite_0001",
+    );
+    if (!invite.ok) throw new Error("Expected active invitation");
+    const staleJoinKey = "lifecycle_expiry_join_0001";
     const post = {
       request_id: "lifecycle_expiry_post_0001",
       body: "Expiring synthetic content",
@@ -305,6 +312,13 @@ describe("TableDO terminal lifecycle and durable cleanup", () => {
           fixture.reserved.reservation,
         ),
       ).toEqual({ ok: false, code: "TABLE_EXPIRED" });
+      expect(
+        await fixture.stub.redeemInvite(
+          await peer.actor("tables:write"),
+          invite.value.invitation,
+          staleJoinKey,
+        ),
+      ).toEqual({ ok: false, code: "INVITATION_INVALID" });
 
       vi.setSystemTime(expiresAt + 1);
       await runInDurableObject(fixture.stub, (instance) => instance.alarm());
@@ -362,6 +376,13 @@ describe("TableDO terminal lifecycle and durable cleanup", () => {
         ok: false,
         code: "TABLE_NOT_FOUND",
       });
+      expect(
+        await fixture.stub.redeemInvite(
+          await peer.actor("tables:write"),
+          invite.value.invitation,
+          staleJoinKey,
+        ),
+      ).toEqual({ ok: false, code: "INVITATION_INVALID" });
     } finally {
       vi.useRealTimers();
     }
