@@ -178,9 +178,9 @@ describe("create_table recovery at actual GuestDO/TableDO persistence boundaries
         ready,
         new Promise<never>((_resolve, reject) =>
           setTimeout(
-              () => reject(new Error("Initializer did not overlap")),
-              5_000,
-            ),
+            () => reject(new Error("Initializer did not overlap")),
+            5_000,
+          ),
         ),
       ]);
       expect(entered).toBe(2);

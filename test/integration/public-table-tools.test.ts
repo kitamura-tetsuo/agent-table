@@ -325,11 +325,17 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
       expect(rows).toHaveLength(1);
       expect(rows[0].outcome).toBe("reserved");
       const table = env.TABLES.get(env.TABLES.idFromName(rows[0].table_id));
-      expect((await table.getMetadata(
-        (await authorizeGuestConnection(
-          env, owner.guestId, owner.connectionId, "tables:read",
-        )) as { allowed: true; actor: Parameters<typeof table.getMetadata>[0] }).actor,
-      )).toMatchObject({ ok: false, code: "TABLE_NOT_FOUND" });
+      const readDecision = await authorizeGuestConnection(
+        env,
+        owner.guestId,
+        owner.connectionId,
+        "tables:read",
+      );
+      if (!readDecision.allowed) throw new Error("Read grant unavailable");
+      expect(await table.getMetadata(readDecision.actor)).toMatchObject({
+        ok: false,
+        code: "TABLE_NOT_FOUND",
+      });
       await evictDurableObject(owner.guest);
       await evictDurableObject(table);
       const recovered = await client.callTool({
