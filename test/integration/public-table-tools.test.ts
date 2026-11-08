@@ -207,7 +207,7 @@ function withReservationRpc(
               );
           }
           const value = Reflect.get(target, property, target);
-          return typeof value === "function" ? value.bind(target) : value;
+          return value;
         },
       });
     },
@@ -244,7 +244,7 @@ function withInitializationRpc(
               );
           }
           const value = Reflect.get(target, property, target);
-          return typeof value === "function" ? value.bind(target) : value;
+          return value;
         },
       });
     },
@@ -501,7 +501,7 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
     const overlay = withInitializationRpc(
       async (real, actor, request, receipt) => {
         const actual = await real(actor, request, receipt);
-        if (actual.ok) {
+        if (actual.ok && !committed) {
           committed = true;
           throw new Error("Injected reply loss after persisted initialization");
         }
