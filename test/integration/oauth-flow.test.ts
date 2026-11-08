@@ -321,9 +321,12 @@ describe("real authorization code and guest-grant flow", () => {
       // The first request has already read the real pre-consumption KV grant,
       // but cannot change it until the probe releases that exact read.
       const second = redeem(clientId, approved.code, approved.verifier);
-      const held = await waitFor(2, 1);
-      // A no-serializer mutant would reach the grant read a second time while
-      // the first is held; response-status-only racing would miss that defect.
+      await waitFor(2, 1);
+      // Give the second request a scheduling turn. Without serialization it
+      // would enter the real provider and read the unconsumed KV grant.
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      const held = await tokenDO.redemptionReadProbeState();
+      expect(held.providerEntries).toBe(1);
       expect(held.grantReads).toBe(1);
       await tokenDO.releaseRedemptionReadProbe();
       const results = await Promise.all([first, second]);
