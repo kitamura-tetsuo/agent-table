@@ -200,3 +200,139 @@ export async function verifyGuestChallenge(
     return false;
   }
 }
+
+
+/** All requests from one edge source share one durable rate authority. */
+export type EdgeAdmissionCategory =
+  | "guest"
+  | "dcr"
+  | "protocol"
+  | "application"
+  | "invitation";
+
+const EDGE_DEFAULTS = {
+  guest: 30,
+  dcr: 30,
+  protocol: 120,
+  application: 600,
+  invitation: 60,
+} as const;
+
+const EDGE_RATE_SETTINGS = {
+  guest: "EDGE_GUEST_RATE_PER_MINUTE",
+  dcr: "EDGE_DCR_RATE_PER_MINUTE",
+  protocol: "EDGE_PROTOCOL_RATE_PER_MINUTE",
+  application: "EDGE_APPLICATION_RATE_PER_MINUTE",
+  invitation: "EDGE_INVITATION_RATE_PER_MINUTE",
+} as const;
+
+type RateSetting = (typeof EDGE_RATE_SETTINGS)[EdgeAdmissionCategory];
+
+/** Invalid operator limits fail closed rather than silently disabling quotas. */
+function configuredRate(
+  env: Env,
+  setting: RateSetting | "PRINCIPAL_RATE_PER_MINUTE",
+  defaultLimit: number,
+): number | null {
+  const raw = env[setting];
+  if (raw === undefined) return defaultLimit;
+  if (!/^[1-9][0-9]{0,4}$/.test(raw)) return null;
+  const count = Number(raw);
+  return count <= 10_000 ? count : null;
+}
+
+function admissionResponse(
+  status: 429 | 503,
+  retryAfterMs?: number,
+): Response {
+  const headers = new Headers({
+    "Cache-Control": "no-store",
+    "Content-Type": "text/plain; charset=utf-8",
+    "X-Content-Type-Options": "nosniff",
+  });
+  if (retryAfterMs !== undefined) {
+    headers.set("Retry-After", String(Math.max(1, Math.ceil(retryAfterMs / 1_000))));
+  }
+  return new Response(
+    status === 429 ? "RATE_LIMITED" : "Admission authority unavailable",
+    { status, headers },
+  );
+}
+
+async function admissionKey(identity: string): Promise<string> {
+  const data = new TextEncoder().encode(identity);
+  const digest = await crypto.subtle.digest("SHA-256", data);
+  return Array.from(new Uint8Array(digest), (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("");
+}
+
+/**
+ * CF-Connecting-IP is authoritative only on a directly edge-served Worker:
+ * Cloudflare overwrites it for public client requests. Never use X-Forwarded-For
+ * or a user-provided guest ID as an edge-rate identity. An absent or malformed
+ * edge identity enters one shared fallback bucket rather than bypassing quotas.
+ * Do not expose direct untrusted-HTTP proxies for public guest admission.
+ */
+function edgeSource(request: Request): string {
+  const source = request.headers.get("CF-Connecting-IP");
+  return source && /^[0-9a-fA-F:.]{3,64}$/.test(source)
+    ? source.toLowerCase()
+    : "unknown-source";
+}
+
+async function consumeAdmission(
+  env: Env,
+  identity: string,
+  category: EdgeAdmissionCategory,
+  limit: number | null,
+): Promise<Response | null> {
+  if (limit === null) return admissionResponse(503);
+  try {
+    const key = await admissionKey(identity);
+    const stub = env.ADMISSION.get(env.ADMISSION.idFromName(key));
+    const outcome = await stub.consume(category, limit);
+    return outcome.allowed
+      ? null
+      : admissionResponse(429, outcome.retryAfterMs);
+  } catch {
+    // No fail-open path on an absent/broken DO or invalid configuration.
+    return admissionResponse(503);
+  }
+}
+
+/** Cross-guest ingress policy; applied before sensitive public route handlers. */
+export function checkEdgeAdmission(
+  request: Request,
+  env: Env,
+  category: EdgeAdmissionCategory,
+): Promise<Response | null> {
+  const limit = configuredRate(
+    env,
+    EDGE_RATE_SETTINGS[category],
+    EDGE_DEFAULTS[category],
+  );
+  return consumeAdmission(
+    env,
+    `edge-v1:${edgeSource(request)}`,
+    category,
+    limit,
+  );
+}
+
+/**
+ * A verified OAuth guest is the principal across all of its connections.
+ * Multiple tokens, Worker isolates or concurrent requests cannot evade the
+ * default 60 application requests per rolling minute.
+ */
+export function checkPrincipalAdmission(
+  env: Env,
+  verifiedGuestId: string,
+): Promise<Response | null> {
+  const limit = configuredRate(
+    env,
+    "PRINCIPAL_RATE_PER_MINUTE",
+    INGRESS_LIMITS.principalRequestsPerMinute,
+  );
+  return consumeAdmission(env, `principal-v1:${verifiedGuestId}`, "application", limit);
+}
