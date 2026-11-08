@@ -280,7 +280,6 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
     }
   });
 
-
   it("reports a public SDK uncertainty after a committed reservation RPC loses its reply", async () => {
     const owner = await tokenForGuest("tables:read tables:write");
     const originalKey = {
@@ -315,12 +314,19 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
           retry: "Retry with the same request_id and unchanged arguments.",
         },
       });
-      const rows = await runInDurableObject(owner.guest, async (_instance, state) =>
-        state.storage.sql
-          .exec<{ table_id: string; expires_at: number; charged_at: number; outcome: string }>(
-            "SELECT table_id, expires_at, charged_at, outcome FROM guest_creation_reservations",
-          )
-          .toArray(),
+      const rows = await runInDurableObject(
+        owner.guest,
+        async (_instance, state) =>
+          state.storage.sql
+            .exec<{
+              table_id: string;
+              expires_at: number;
+              charged_at: number;
+              outcome: string;
+            }>(
+              "SELECT table_id, expires_at, charged_at, outcome FROM guest_creation_reservations",
+            )
+            .toArray(),
       );
       expect(rows).toHaveLength(1);
       expect(rows[0].outcome).toBe("reserved");
@@ -348,18 +354,22 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
         expiresAt: new Date(rows[0].expires_at).toISOString(),
       });
       await runInDurableObject(owner.guest, async (_instance, state) => {
-        const after = state.storage.sql.exec<{
-          table_id: string;
-          charged_at: number;
-          outcome: string;
-        }>(
-          "SELECT table_id, charged_at, outcome FROM guest_creation_reservations",
-        ).toArray();
-        expect(after).toEqual([{
-          table_id: rows[0].table_id,
-          charged_at: rows[0].charged_at,
-          outcome: "initialized",
-        }]);
+        const after = state.storage.sql
+          .exec<{
+            table_id: string;
+            charged_at: number;
+            outcome: string;
+          }>(
+            "SELECT table_id, charged_at, outcome FROM guest_creation_reservations",
+          )
+          .toArray();
+        expect(after).toEqual([
+          {
+            table_id: rows[0].table_id,
+            charged_at: rows[0].charged_at,
+            outcome: "initialized",
+          },
+        ]);
       });
     } finally {
       await client.close();
@@ -373,10 +383,16 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
       request_id: "sdk_initializer_response_loss_001",
     };
     const decision = await authorizeGuestConnection(
-      env, owner.guestId, owner.connectionId, "tables:write",
+      env,
+      owner.guestId,
+      owner.connectionId,
+      "tables:write",
     );
     if (!decision.allowed) throw new Error("Expected active write grant");
-    const reserved = await owner.guest.reserveCreation(decision.actor, originalKey);
+    const reserved = await owner.guest.reserveCreation(
+      decision.actor,
+      originalKey,
+    );
     if (!reserved.ok) throw new Error("Missing durable reservation");
     const table = env.TABLES.get(
       env.TABLES.idFromName(reserved.reservation.tableId),
@@ -411,8 +427,12 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
         },
       });
       await runInDurableObject(table, async (_instance, state) => {
-        expect(state.storage.sql.exec("SELECT * FROM table_metadata").toArray()).toHaveLength(1);
-        expect(state.storage.sql.exec("SELECT * FROM table_memberships").toArray()).toHaveLength(1);
+        expect(
+          state.storage.sql.exec("SELECT * FROM table_metadata").toArray(),
+        ).toHaveLength(1);
+        expect(
+          state.storage.sql.exec("SELECT * FROM table_memberships").toArray(),
+        ).toHaveLength(1);
       });
       await evictDurableObject(owner.guest);
       await evictDurableObject(table);
@@ -426,13 +446,17 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
         expiresAt: new Date(reserved.reservation.expiresAt).toISOString(),
       });
       await runInDurableObject(owner.guest, async (_instance, state) => {
-        const rows = state.storage.sql.exec<{ table_id: string; outcome: string }>(
-          "SELECT table_id, outcome FROM guest_creation_reservations",
-        ).toArray();
-        expect(rows).toEqual([{
-          table_id: reserved.reservation.tableId,
-          outcome: "initialized",
-        }]);
+        const rows = state.storage.sql
+          .exec<{ table_id: string; outcome: string }>(
+            "SELECT table_id, outcome FROM guest_creation_reservations",
+          )
+          .toArray();
+        expect(rows).toEqual([
+          {
+            table_id: reserved.reservation.tableId,
+            outcome: "initialized",
+          },
+        ]);
       });
     } finally {
       await client.close();
@@ -469,14 +493,23 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
       sdk(owner.token),
     ]);
     try {
-      const first = left.callTool({ name: "create_table", arguments: originalKey });
-      const second = right.callTool({ name: "create_table", arguments: originalKey });
+      const first = left.callTool({
+        name: "create_table",
+        arguments: originalKey,
+      });
+      const second = right.callTool({
+        name: "create_table",
+        arguments: originalKey,
+      });
       try {
         await Promise.race([
           ready,
           new Promise<never>((_resolve, reject) =>
             setTimeout(
-              () => reject(new Error("Public SDK reservation attempts did not overlap")),
+              () =>
+                reject(
+                  new Error("Public SDK reservation attempts did not overlap"),
+                ),
               5_000,
             ),
           ),
@@ -491,15 +524,21 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
       expect(output(a)).toEqual(output(b));
       const tableId = String(output(a).tableId);
       await runInDurableObject(owner.guest, async (_instance, state) => {
-        const rows = state.storage.sql.exec<{ table_id: string }>(
-          "SELECT table_id FROM guest_creation_reservations",
-        ).toArray();
+        const rows = state.storage.sql
+          .exec<{ table_id: string }>(
+            "SELECT table_id FROM guest_creation_reservations",
+          )
+          .toArray();
         expect(rows).toEqual([{ table_id: tableId }]);
       });
       const table = env.TABLES.get(env.TABLES.idFromName(tableId));
       await runInDurableObject(table, async (_instance, state) => {
-        expect(state.storage.sql.exec("SELECT * FROM table_metadata").toArray()).toHaveLength(1);
-        expect(state.storage.sql.exec("SELECT * FROM table_memberships").toArray()).toHaveLength(1);
+        expect(
+          state.storage.sql.exec("SELECT * FROM table_metadata").toArray(),
+        ).toHaveLength(1);
+        expect(
+          state.storage.sql.exec("SELECT * FROM table_memberships").toArray(),
+        ).toHaveLength(1);
       });
     } finally {
       release();
@@ -518,10 +557,11 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
     const flaky = await sdk(owner.token, async (request) => {
       let isCreate = false;
       if (request.method === "POST") {
-        const body = await request.clone().json().catch(() => null) as
+        const body = (await request.clone().json().catch(() => null)) as
           | { method?: string; params?: { name?: string } }
           | null;
-        isCreate = body?.method === "tools/call" &&
+        isCreate =
+          body?.method === "tools/call" &&
           body.params?.name === "create_table";
       }
       const response = await exports.default.fetch(request);
@@ -532,18 +572,28 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
       return response;
     });
     try {
-      await expect(flaky.callTool({
-        name: "create_table",
-        arguments: originalKey,
-      })).rejects.toThrow();
+      await expect(
+        flaky.callTool({
+          name: "create_table",
+          arguments: originalKey,
+        }),
+      ).rejects.toThrow();
       expect(dropped).toBe(true);
     } finally {
       await flaky.close();
     }
-    const rows = await runInDurableObject(owner.guest, async (_instance, state) =>
-      state.storage.sql.exec<{ table_id: string; expires_at: number; outcome: string }>(
-        "SELECT table_id, expires_at, outcome FROM guest_creation_reservations",
-      ).toArray(),
+    const rows = await runInDurableObject(
+      owner.guest,
+      async (_instance, state) =>
+        state.storage.sql
+          .exec<{
+            table_id: string;
+            expires_at: number;
+            outcome: string;
+          }>(
+            "SELECT table_id, expires_at, outcome FROM guest_creation_reservations",
+          )
+          .toArray(),
     );
     expect(rows).toHaveLength(1);
     expect(rows[0].outcome).toBe("initialized");
@@ -562,8 +612,12 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
         expiresAt: new Date(rows[0].expires_at).toISOString(),
       });
       await runInDurableObject(table, async (_instance, state) => {
-        expect(state.storage.sql.exec("SELECT * FROM table_metadata").toArray()).toHaveLength(1);
-        expect(state.storage.sql.exec("SELECT * FROM table_memberships").toArray()).toHaveLength(1);
+        expect(
+          state.storage.sql.exec("SELECT * FROM table_metadata").toArray(),
+        ).toHaveLength(1);
+        expect(
+          state.storage.sql.exec("SELECT * FROM table_memberships").toArray(),
+        ).toHaveLength(1);
       });
     } finally {
       await fresh.close();
