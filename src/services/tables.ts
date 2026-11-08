@@ -1,4 +1,5 @@
 import type { VerifiedConnectionActor } from "../shared/auth";
+import type { DeletionReceipt } from "../shared/deletion";
 import {
   InvalidCreationRequestError,
   parseCreationRequest,
@@ -209,6 +210,23 @@ export async function closeTable(
       }
     }
     return { ok: true, value: committed.value };
+  } catch {
+    return { ok: false, code: "TEMPORARILY_UNAVAILABLE" };
+  }
+}
+
+/** Agent requests only create a pending browser confirmation, never a purge. */
+export async function requestTableDeletion(
+  env: Env,
+  actor: VerifiedConnectionActor,
+  tableId: string,
+  requestId: string,
+): Promise<TableResult<DeletionReceipt>> {
+  try {
+    return await env.TABLES.get(env.TABLES.idFromName(tableId)).requestDeletion(
+      actor,
+      requestId,
+    );
   } catch {
     return { ok: false, code: "TEMPORARILY_UNAVAILABLE" };
   }

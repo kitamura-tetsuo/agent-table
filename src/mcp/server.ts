@@ -10,6 +10,7 @@ import {
   type PublicTableResult,
   postMessage,
   readMessages,
+  requestTableDeletion,
 } from "../services/tables";
 import { authorizeGuestConnection, type ConnectionScope } from "../shared/auth";
 import { validTableId } from "../shared/invitations";
@@ -46,6 +47,11 @@ const joinInput = z.strictObject({
 });
 
 const closeInput = z.strictObject({
+  table_id: z.string().regex(TABLE_ID),
+  request_id: z.string().regex(/^[A-Za-z0-9_-]{16,128}$/),
+});
+
+const deleteInput = z.strictObject({
   table_id: z.string().regex(TABLE_ID),
   request_id: z.string().regex(/^[A-Za-z0-9_-]{16,128}$/),
 });
@@ -229,6 +235,32 @@ function newServer(env: Env, identity: AuthenticatedMcpIdentity) {
       if (!actor)
         return toolResult({ error: { code: "NOT_AUTHORIZED" } }, true);
       const result = await closeTable(env, actor, table_id, request_id);
+      return result.ok
+        ? toolResult(result.value)
+        : toolResult({ error: { code: result.code } }, true);
+    },
+  );
+
+  server.registerTool(
+    "delete_table",
+    {
+      description:
+        "Request a five-minute, same-guest browser approval for shared-table deletion. This tool never deletes content. The URL alone is not authorization.",
+      inputSchema: deleteInput,
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    async ({ table_id, request_id }) => {
+      const actor = await scopedActor("tables:delete");
+      if (!actor) return toolResult({ error: { code: "NOT_AUTHORIZED" } }, true);
+      if (!validTableId(table_id)) {
+        return toolResult({ error: { code: "INVALID_REQUEST" } }, true);
+      }
+      const result = await requestTableDeletion(env, actor, table_id, request_id);
       return result.ok
         ? toolResult(result.value)
         : toolResult({ error: { code: result.code } }, true);
