@@ -15,8 +15,9 @@ async function guest() {
     Date.now() + 24 * 60 * 60_000,
   );
   if (!grant) throw new Error("Missing test guest grant");
+  const connectionId = grant.connectionId;
   async function actor(scope: ConnectionScope) {
-    const result = await authorizeGuestConnection(env, id, grant.connectionId, scope);
+    const result = await authorizeGuestConnection(env, id, connectionId, scope);
     if (!result.allowed) throw new Error("Missing test actor");
     return result.actor;
   }
@@ -148,7 +149,7 @@ describe("TableDO terminal lifecycle and durable cleanup", () => {
       fixture.writer, fixture.input, fixture.reserved.reservation,
     );
     expect(replay).toEqual({ ok: false, code: "TABLE_TERMINAL" });
-    expect(fixture.stub.lifecycleStatus()).resolves.toMatchObject({
+    await expect(fixture.stub.lifecycleStatus()).resolves.toMatchObject({
       state: "deleted", canDispatch: false,
     });
   });
@@ -175,7 +176,7 @@ describe("TableDO terminal lifecycle and durable cleanup", () => {
     expect(await fixture.stub.closeTable(fixture.writer, "lifecycle_expired_close_0001")).toEqual({
       ok: false, code: "TABLE_EXPIRED",
     });
-    await fixture.stub.alarm();
+    await runInDurableObject(fixture.stub, (instance) => instance.alarm());
     await runInDurableObject(fixture.stub, async (_instance, state) => {
       expect(state.storage.sql.exec("SELECT COUNT(*) AS total FROM table_metadata").one()).toEqual({ total: 0 });
       expect(state.storage.sql.exec("SELECT COUNT(*) AS total FROM table_messages").one()).toEqual({ total: 0 });
