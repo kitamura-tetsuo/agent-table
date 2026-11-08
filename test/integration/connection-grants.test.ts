@@ -209,8 +209,9 @@ describe("Worker and durable connection grant authority", () => {
       Date.now() + 60_000,
     );
     if (!grant) throw new Error("Grant not created");
-    expect((await decision(owner, grant.connectionId, "tables:read")).allowed)
-      .toBe(true);
+    expect(
+      (await decision(owner, grant.connectionId, "tables:read")).allowed,
+    ).toBe(true);
 
     const ownerPage = await formPage("/guest/connections", owner.session);
     const outsiderPage = await formPage("/guest", outsider.session);
@@ -243,8 +244,9 @@ describe("Worker and durable connection grant authority", () => {
       outsiderPage.csrfCookie,
     );
     expect(foreign.status).toBe(404);
-    expect((await decision(owner, grant.connectionId, "tables:read")).allowed)
-      .toBe(true);
+    expect(
+      (await decision(owner, grant.connectionId, "tables:read")).allowed,
+    ).toBe(true);
 
     const revoked = await revoke(
       grant.connectionId,
@@ -265,12 +267,14 @@ describe("Worker and durable connection grant authority", () => {
     expect(oldIdentity.status).toBe(401);
     expect(nextIdentity.status).toBe(200);
     const denial = { allowed: false, reason: "revoked" };
-    expect(await decision(owner, grant.connectionId, "tables:read"))
-      .toEqual(denial);
+    expect(await decision(owner, grant.connectionId, "tables:read")).toEqual(
+      denial,
+    );
 
     await evictDurableObject(owner.stub);
-    expect(await decision(owner, grant.connectionId, "tables:read"))
-      .toEqual(denial);
+    expect(await decision(owner, grant.connectionId, "tables:read")).toEqual(
+      denial,
+    );
     const nextPage = await formPage("/guest", nextSession);
     const nextList = await dispatch("/guest/connections", {
       headers: { Cookie: nextSession },
@@ -283,8 +287,9 @@ describe("Worker and durable connection grant authority", () => {
       nextPage.csrfCookie,
     );
     expect(repeated.status).toBe(303);
-    expect(await decision(owner, grant.connectionId, "tables:read"))
-      .toEqual(denial);
+    expect(await decision(owner, grant.connectionId, "tables:read")).toEqual(
+      denial,
+    );
   });
 
   it("refuses expired grants and corrupted persisted scopes", async () => {

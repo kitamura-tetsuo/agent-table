@@ -5,11 +5,13 @@ const CSRF_COOKIE = "__Host-agent_table_csrf";
 const SESSION_COOKIE = "__Host-agent_table_session";
 
 function cookie(response: APIResponse, name: string): string {
-  const header = response.headersArray().find(
-    (item) =>
-      item.name.toLowerCase() === "set-cookie" &&
-      item.value.startsWith(`${name}=`),
-  )?.value;
+  const header = response
+    .headersArray()
+    .find(
+      (item) =>
+        item.name.toLowerCase() === "set-cookie" &&
+        item.value.startsWith(`${name}=`),
+    )?.value;
   if (!header) throw new Error("Missing test cookie");
   return header.split(";")[0];
 }
