@@ -16,6 +16,9 @@ declare global {
       ALLOW_NEW_GUESTS: string;
       ALLOW_NEW_TABLES: string;
       ALLOW_OUTBOUND_NOTIFICATIONS: string;
+      GUEST_CHALLENGE_MODE?: string;
+      TURNSTILE_SITE_KEY?: string;
+      TURNSTILE_SECRET?: string;
       INVITATION_RESPONSE_KEYRING?: string;
       CALLBACK_CREDENTIAL_KEYRING?: string;
     }

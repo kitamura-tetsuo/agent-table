@@ -119,3 +119,78 @@ export async function rejectOversizedIngress(
     reader.releaseLock();
   }
 }
+
+/** A misconfigured required challenge must never silently allow new guests. */
+export type GuestChallengeConfiguration =
+  | { mode: "off" }
+  | { mode: "required"; siteKey: string }
+  | { mode: "unavailable" };
+
+export function guestChallengeConfiguration(env: Env): GuestChallengeConfiguration {
+  const mode = env.GUEST_CHALLENGE_MODE ?? "off";
+  if (mode === "off") return { mode: "off" };
+  if (mode !== "required" ||
+      !/^[A-Za-z0-9_-]{3,128}$/.test(env.TURNSTILE_SITE_KEY ?? "") ||
+      !env.TURNSTILE_SECRET ||
+      env.TURNSTILE_SECRET.length > 256) {
+    return { mode: "unavailable" };
+  }
+  return { mode: "required", siteKey: env.TURNSTILE_SITE_KEY as string };
+}
+
+/**
+ * Verify a single-use Turnstile token with the official server-side endpoint.
+ * A browser verdict, forwarded IP address or unrecognized response is never proof.
+ * The secret is a Worker secret, not a committed Wrangler var.
+ */
+export async function verifyGuestChallenge(
+  env: Env,
+  token: string,
+  verifierFetch: typeof fetch = fetch,
+): Promise<boolean> {
+  const config = guestChallengeConfiguration(env);
+  if (config.mode === "off") return true;
+  if (config.mode !== "required" ||
+      !/^[A-Za-z0-9._-]{1,2048}$/.test(token)) return false;
+  let hostname: string;
+  try {
+    hostname = new URL(env.PUBLIC_ORIGIN).hostname;
+    if (!hostname) return false;
+  } catch {
+    return false;
+  }
+  try {
+    const response = await verifierFetch(
+      "https://challenges.cloudflare.com/turnstile/v0/siteverify",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          secret: env.TURNSTILE_SECRET as string,
+          response: token,
+        }),
+        redirect: "error",
+        signal: AbortSignal.timeout(3_000),
+      },
+    );
+    if (!response.ok) return false;
+    // Never retain response content or include token/error details in diagnostics.
+    const verdict: unknown = await response.json();
+    if (!verdict || typeof verdict !== "object" || Array.isArray(verdict)) {
+      return false;
+    }
+    const fields = verdict as Record<string, unknown>;
+    const issued = typeof fields.challenge_ts === "string" ?
+      Date.parse(fields.challenge_ts) : NaN;
+    return (
+      fields.success === true &&
+      fields.action === "create_guest" &&
+      fields.hostname === hostname &&
+      Number.isFinite(issued) &&
+      issued <= Date.now() + 30_000 &&
+      issued > Date.now() - 300_000
+    );
+  } catch {
+    return false;
+  }
+}
