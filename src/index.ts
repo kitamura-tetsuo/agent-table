@@ -5,17 +5,31 @@ import {
   handleGuestIdentity,
   handleGuestPage,
 } from "./auth/guest";
-import { handleMcp } from "./mcp/server";
+import {
+  authorizationServer, handleAuthenticatedMcp, handleAuthorize,
+  oauthTokenStub,
+} from "./auth/provider";
 
 export { GuestDO } from "./objects/guest";
+export { OAuthTokenDO } from "./auth/token-do";
 export { TableDO } from "./objects/table";
 
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
-    if (url.pathname === "/mcp") {
-      return handleMcp(request, env, ctx);
-    }
+    if (
+      url.pathname === "/mcp" ||
+      url.pathname === "/.well-known/oauth-protected-resource/mcp"
+    ) return handleAuthenticatedMcp(request, env, ctx);
+    if (url.pathname === "/authorize") return handleAuthorize(request, env);
+    if (
+      url.pathname === "/oauth/token" ||
+      url.pathname === "/oauth/revoke"
+    ) return oauthTokenStub(env).fetch(request);
+    if (
+      url.pathname === "/.well-known/oauth-authorization-server" ||
+      url.pathname === "/oauth/register"
+    ) return authorizationServer(env).fetch(request, env, ctx);
     if (url.pathname === "/" || url.pathname === "/guest") {
       return handleGuestPage(request, env);
     }
