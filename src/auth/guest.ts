@@ -15,7 +15,8 @@ type BrowserCredential = { guestId: string; sessionId: string; secret: string };
 const securityHeaders = {
   "Cache-Control": "no-store",
   "X-Content-Type-Options": "nosniff",
-  "Referrer-Policy": "no-referrer",
+  // Keep same-origin POST Origin headers while suppressing cross-site referrers.
+  "Referrer-Policy": "same-origin",
   "X-Frame-Options": "DENY",
 };
 
