@@ -244,3 +244,31 @@ each outbound side effect. The transient close/purge invalidation observer
 is **not** a durable event outbox and cannot recall already dispatched bytes.
 No public Events, host wakeup, production deployment, backup erasure or
 browser deletion-approval success is implied by this lifecycle implementation.
+
+### Browser-confirmed shared deletion (Issue #14 draft)
+
+The authenticated `delete_table(table_id, request_id)` MCP tool requires an active
+`tables:delete` connection and current local table membership. It **only**
+creates/returns a durable five-minute pending confirmation and a management
+link; it does not call the purge primitive. The request key is 16–128 ASCII
+letters, digits, underscores or hyphens. Identical retries cannot extend its
+original five-minute expiry; an expired or denied key cannot be reopened.
+
+The link is `/guest/delete?table_id=...&request_id=...`. It carries routing
+identity only, **not** permission. GET and link previews have no side effects.
+A signed-in browser guest must perform an explicit same-origin, CSRF-protected
+approval POST. TableDO revalidates the browser session with GuestDO and the
+current local membership/expiry before the local SQL transaction. Approval
+commits the private purge and a content-free replay receipt in the same
+transaction. A failed commit cannot claim deletion. A denied request leaves
+content intact, and a second key is needed for a fresh attempt.
+
+The direct browser entry `/guest/delete?table_id=...` first requests
+confirmation and then uses the same approval path. A lost browser cookie
+cannot be recovered using a model connection, a link or table membership.
+After purge, only minimal tombstone membership and successful-delete
+idempotency identifiers remain until original expiry +24 hours; no message
+body or invitation credential survives in the application table. Previously
+delivered copies and provider backups remain outside the deletion guarantee.
+
+This implementation is not deployed or an authority for unconfirmed deletion.
