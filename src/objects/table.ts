@@ -156,7 +156,6 @@ export class TableDO extends DurableObject<Env> {
   // harness. It is never exposed through a public RPC or production binding.
   private transcriptCommitBarrierEnabledForTest = false;
   private transcriptCommitBarrierArrivalsForTest = 0;
-  private transcriptCommitBarrierOverlappedForTest = false;
   private transcriptCommitBarrierFirstWaitingForTest = false;
   private transcriptCommitBarrierReleaseForTest?: () => void;
 

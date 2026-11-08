@@ -1,9 +1,9 @@
 import type { VerifiedConnectionActor } from "../shared/auth";
-import type { DeletionReceipt } from "../shared/deletion";
 import {
   InvalidCreationRequestError,
   parseCreationRequest,
 } from "../shared/creation";
+import type { DeletionReceipt } from "../shared/deletion";
 import type {
   CloseTableReceipt,
   LifecycleInvalidation,

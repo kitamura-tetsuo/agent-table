@@ -272,6 +272,7 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
         "close_table",
         "create_invite",
         "create_table",
+        "delete_table",
         "get_table",
         "join_table",
         "post_message",
