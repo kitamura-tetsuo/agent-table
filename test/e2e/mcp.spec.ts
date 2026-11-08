@@ -93,15 +93,21 @@ test("official SDK negotiates against the authenticated live Wrangler HTTP serve
   const handle = html.match(/name="handle" type="hidden" value="([^"]+)"/)?.[1];
   const csrf = html.match(/name="csrf" type="hidden" value="([^"]+)"/)?.[1];
   if (!handle || !csrf) throw new Error("OAuth consent form is incomplete");
-  const oauthCsrfCookie = responseCookie(
-    consent,
-    "__Host-agent_table_oauth_csrf",
-  );
+  // Preserve all provider-issued handle cookies, not only the CSRF cookie.
+  const consentCookies = consent
+    .headersArray()
+    .filter((item) => item.name.toLowerCase() === "set-cookie")
+    .map((item) => item.value.split(";")[0]);
+  expect(
+    consentCookies.some((item) =>
+      item.startsWith("__Host-agent_table_oauth_csrf="),
+    ),
+  ).toBe(true);
   const approved = await request.post("/authorize", {
     headers: {
       Origin: ORIGIN,
       "Sec-Fetch-Site": "same-origin",
-      Cookie: `${sessionCookie}; ${oauthCsrfCookie}`,
+      Cookie: [sessionCookie, ...consentCookies].join("; "),
     },
     form: {
       handle,
