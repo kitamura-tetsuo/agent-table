@@ -198,7 +198,6 @@ test("official SDK deletion requires an explicit same-guest browser POST", async
         // __Host- requires a secure host-only cookie; Chromium treats
         // localhost as a trustworthy HTTP origin for sending it.
         url: "https://localhost:8787/",
-        path: "/",
         secure: true,
         httpOnly: true,
         sameSite: "Lax",
