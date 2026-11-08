@@ -11,6 +11,7 @@ import {
   handleAuthorize,
   oauthTokenStub,
 } from "./auth/provider";
+import { rejectOversizedIngress } from "./shared/admission";
 import { handleDeletionPage } from "./web/deletion";
 
 export { OAuthTokenDO } from "./auth/token-do";
@@ -19,6 +20,8 @@ export { TableDO } from "./objects/table";
 
 export default {
   async fetch(request, env, ctx) {
+    const ingressRejected = await rejectOversizedIngress(request);
+    if (ingressRejected) return ingressRejected;
     const url = new URL(request.url);
     if (
       url.pathname === "/mcp" ||
