@@ -1064,6 +1064,115 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
     }
   });
 
+
+  it("charges SDK post retries to ingress without duplicating durable accepted posts", async () => {
+    const owner = await tokenForGuest("tables:read tables:write");
+    let limited: Env = { ...env, PRINCIPAL_RATE_PER_MINUTE: "60" };
+    const client = await sdk(owner.token, (request) =>
+      fetchThroughWorker(limited)(request),
+    );
+    try {
+      const created = await client.callTool({
+        name: "create_table",
+        arguments: {
+          ...input,
+          request_id: "admission_retry_create_001",
+        },
+      });
+      expect(created.isError).not.toBe(true);
+      const tableId = String(output(created).tableId);
+      const digest = await crypto.subtle.digest(
+        "SHA-256",
+        new TextEncoder().encode(`principal-v1:${owner.guestId}`),
+      );
+      const identity = Array.from(new Uint8Array(digest), (byte) =>
+        byte.toString(16).padStart(2, "0"),
+      ).join("");
+      const authority = env.ADMISSION.get(env.ADMISSION.idFromName(identity));
+      const used = () =>
+        runInDurableObject(authority, async (_instance, state) =>
+          state.storage.sql
+            .exec<{ count: number }>(
+              "SELECT COUNT(*) AS count FROM admission_hits WHERE category = 'application'",
+            )
+            .one().count,
+        );
+      const initialCount = await used();
+      // Each authorized MCP attempt consumes ingress quota, including replay.
+      limited = {
+        ...limited,
+        PRINCIPAL_RATE_PER_MINUTE: String(initialCount + 2),
+      };
+      const args = {
+        table_id: tableId,
+        request_id: "admission_retry_post_001",
+        body: "Exactly one accepted durable message",
+      };
+      const first = await client.callTool({
+        name: "post_message",
+        arguments: args,
+      });
+      expect(first.isError).not.toBe(true);
+      expect(output(first)).toMatchObject({ seq: 1, persisted: true });
+      const retry = await client.callTool({
+        name: "post_message",
+        arguments: args,
+      });
+      expect(output(retry)).toEqual(output(first));
+
+      const rejected = await fetchThroughWorker(limited)(
+        new Request(RESOURCE, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${owner.token}`,
+            Accept: "application/json, text/event-stream",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: 210,
+            method: "tools/call",
+            params: { name: "post_message", arguments: args },
+          }),
+        }),
+      );
+      expect(rejected.status).toBe(429);
+      expect(rejected.headers.get("Retry-After")).toMatch(/^[1-9][0-9]*$/);
+      expect(await rejected.text()).toBe("RATE_LIMITED");
+      expect(await used()).toBe(initialCount + 2);
+
+      const table = env.TABLES.get(env.TABLES.idFromName(tableId));
+      await runInDurableObject(table, async (_instance, state) => {
+        expect(
+          state.storage.sql.exec("SELECT * FROM table_messages").toArray(),
+        ).toHaveLength(1);
+        expect(
+          state.storage.sql.exec("SELECT * FROM table_post_receipts").toArray(),
+        ).toHaveLength(1);
+        expect(
+          state.storage.sql.exec("SELECT last_seq FROM table_metadata").one(),
+        ).toMatchObject({ last_seq: 1 });
+      });
+
+      limited = { ...limited, PRINCIPAL_RATE_PER_MINUTE: "60" };
+      const afterLimit = await client.callTool({
+        name: "post_message",
+        arguments: args,
+      });
+      expect(output(afterLimit)).toEqual(output(first));
+      await runInDurableObject(table, async (_instance, state) => {
+        expect(
+          state.storage.sql.exec("SELECT * FROM table_messages").toArray(),
+        ).toHaveLength(1);
+        expect(
+          state.storage.sql.exec("SELECT * FROM table_post_receipts").toArray(),
+        ).toHaveLength(1);
+      });
+    } finally {
+      await client.close();
+    }
+  });
+
   it("uses the real OAuth SDK boundary for post retries, private reads and fixed snapshots", async () => {
     const owner = await tokenForGuest("tables:read tables:write");
     const outsider = await tokenForGuest("tables:read tables:write");
