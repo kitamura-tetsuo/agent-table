@@ -269,11 +269,11 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
     try {
       const tools = await client.listTools();
       expect(tools.tools.map((tool) => tool.name).sort()).toEqual([
+        "close_table",
         "create_invite",
         "create_table",
         "get_table",
         "join_table",
-        "close_table",
         "post_message",
         "read_messages",
       ]);
