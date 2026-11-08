@@ -557,12 +557,15 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
     const flaky = await sdk(owner.token, async (request) => {
       let isCreate = false;
       if (request.method === "POST") {
-        const body = (await request.clone().json().catch(() => null)) as
-          | { method?: string; params?: { name?: string } }
-          | null;
+        const body = (await request
+          .clone()
+          .json()
+          .catch(() => null)) as {
+          method?: string;
+          params?: { name?: string };
+        } | null;
         isCreate =
-          body?.method === "tools/call" &&
-          body.params?.name === "create_table";
+          body?.method === "tools/call" && body.params?.name === "create_table";
       }
       const response = await exports.default.fetch(request);
       if (isCreate && !dropped) {
