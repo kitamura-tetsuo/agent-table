@@ -148,7 +148,7 @@ Receiver Fixture: Cloudflare Tunnel endpoint `https://probe.outliner-online.com/
 | Outgoing body > 16 KiB | `sendVerifiedHttps` request size check assertion in Workerd Vitest | N/A (local workerd) | **PASS (local)** |
 | Connection-time destination IP validation | Workers native `fetch` provides no API to inspect or pin destination IP address at connect time | N/A | **BLOCKED (runtime limitation)** |
 | DNS Rebinding defense | Dynamic `fetch()` re-resolves DNS independently; pre-lookup cannot guarantee address at connect time; platform lacks documented rebind SLA | N/A | **BLOCKED (runtime limitation)** |
-| TLS certificate hostname mismatch | OpenSSL s_client: verification failed (`hostname mismatch`, `error:0A000086`); Workers remote preview: Cloudflare edge returned HTTP 526 (`Invalid SSL Certificate`), worker returned `upstream-non-2xx` (502) | Origin not reached; connection rejected at TLS handshake | **PASS (hostname mismatch rejected)** |
+| TLS certificate hostname mismatch | Independent OpenSSL reported a hostname mismatch; earlier hosted probe returned HTTP 526 and categorized it as `upstream-non-2xx` | No independently captured origin/connection trace for the exact candidate sender | **OBSERVED (HTTP 526); original-host TLS-name proof still BLOCKED** |
 | Prohibited private IP at DNS resolution | No authorized DNS fixture resolving public name to RFC1918 / loopback in hosted runtime; Cloudflare API 403 (Wrangler OAuth token lacks `dns:edit` permission) | N/A | **NOT RUN / BLOCKED** |
 
 ### Security Verification: DNS Rebinding and TLS Hostname Mismatch (2026-11-08 JST)
@@ -222,7 +222,7 @@ Receiver Fixture: Cloudflare Tunnel endpoint `https://probe.outliner-online.com/
   - Cloudflare generated an **HTTP 526 (Invalid SSL Certificate)** response at the egress proxy layer.
   - Worker received HTTP 526 (`upstreamStatus: 526`) and safely returned HTTP 502 `{"result":"upstream-non-2xx","upstreamStatus":526}`.
   - No fallback to unencrypted HTTP, no certificate validation bypass, and no retry to alternative destinations occurred.
-- **Basis for PASS:** TLS certificate hostname mismatch is strictly enforced at Cloudflare's egress proxy boundary via HTTP 526, preventing communication with mismatched HTTPS endpoints.
+- **Evidence boundary:** The independent OpenSSL hostname-mismatch result and hosted HTTP 526 observation are consistent with rejection, but the probe saw only an HTTP response. It did not record the actual handshake, prove the precise rejection layer, or establish TLS-name enforcement for the current sender head. Record this as diagnostic evidence rather than completing REQ-002/006.
 
 
 ### Cloudflare Platform Security Guarantees & Boundaries
@@ -232,7 +232,7 @@ Receiver Fixture: Cloudflare Tunnel endpoint `https://probe.outliner-online.com/
 3. **Connection IP inspection:** Cloudflare Workers `fetch()` (`Response` object) does not expose `remoteAddress` or socket metadata. Raw TCP sockets (`node:net` / `node:tls` / `cloudflare:sockets`) expose IP inspection but are explicitly blocked by Cloudflare when connecting to Cloudflare-owned/fronted IP ranges.
 4. **TLS certificate verification against original host:** Native `fetch()` verifies certificates via Web PKI against the URL hostname. However, custom CN/SAN inspection or certificate pinning is not exposed on `fetch()`.
 5. **`global_fetch_strictly_public` scope:** Prevents same-zone requests from shortcutting through internal origin routing and ensures egress traverses Cloudflare's public edge front door. It does not provide IP pinning or DNS rebinding prevention.
-6. **Same-zone vs Cross-zone behavior:** Without `global_fetch_strictly_public`, same-zone requests bypass public edge proxies. `resolveOverride` is restricted to same-zone targets and throws Error 1034 for external/cross-zone destinations.
+6. **Same-zone vs Cross-zone behavior:** Without `global_fetch_strictly_public`, same-zone requests can bypass the public front door. Per the official Workers Request API, `cf.resolveOverride` is **ignored** when either the URL host or override hostname lies outside the worker's zone. It cannot pin arbitrary provider-host IP addresses.
 7. **Supported mechanism for Cloudflare-fronted targets:** Native `fetch` with `redirect: "manual"`, explicit `AbortSignal` deadlines, and bounded streaming is the only officially supported path to reach Cloudflare-fronted public endpoints.
 
 ## Required acceptance evidence before enabling any sender
@@ -242,7 +242,7 @@ However, **REQ-002 (connection-time IP and TLS safety) and complete REQ-006 (adv
 
 Status remains: **blocked for public webhook delivery**.
 - `ENABLE_OPENAI_EVENTS=false` must remain enforced.
-- Production callback sender remains fail-closed (`connection-boundary-unverified`).
+- The **public Events capability gate** remains fail-closed (`connection-boundary-unverified`). The isolated candidate sender can perform native HTTPS requests; no public Events path may invoke it before security acceptance.
 - PR #33 remains in draft status.
 - P1 review thread on unmet runtime security proof remains open.
 - Issue #19 remains open.
@@ -276,3 +276,43 @@ implementation evidence, but neither alone proves the exact hosted
 Cloudflare proxy's address-at-connect behavior for adversarial dynamic DNS.
 A successful 526 response is an observed HTTP/TLS-related symptom, not
 unambiguous packet-level proof of the internal TLS failure step.
+
+## Official platform documentation recheck (2026-11-09; documentation only)
+
+This section records a source review, **not** a new hosted probe, receiver
+observation, DNS test, or proof that the current candidate head is safe.
+
+- [Workers supported protocols](https://developers.cloudflare.com/workers/reference/protocols/)
+  documents outbound HTTP(S) through Worker-native `fetch()`.
+  [Workers TCP sockets](https://developers.cloudflare.com/workers/runtime-apis/tcp-sockets/)
+  explicitly blocks direct sockets to Cloudflare IP ranges and recommends
+  `fetch` for port 80/443. A DNS-pinned raw TLS socket is therefore not a
+  general transport to provider callbacks behind Cloudflare.
+- [Workers Request API](https://developers.cloudflare.com/workers/runtime-apis/request/)
+  limits `cf.resolveOverride` to hosts within the Worker's zone. It says
+  nonmatching cross-zone overrides are **ignored**, not that arbitrary
+  external callback hosts can be IP-pinned. This does not implement the
+  original-host TLS and connection-time public-address checks of #19/REQ-002.
+- [Compatibility flags](https://developers.cloudflare.com/workers/configuration/compatibility-flags/)
+  documents `global_fetch_strictly_public` as public-front-door routing
+  for global fetch. It does **not** document a per-connection forbidden-IP,
+  rebinding-defense, or TLS-peer inspection contract. Preserve this flag
+  without treating it as completion evidence.
+- [Workers VPC Service bindings](https://developers.cloudflare.com/workers-vpc/api/)
+  pre-register a fixed host and port; that binding owns the connection target.
+  They do not transparently validate an arbitrary provider-generated
+  callback host. They are a separate, configured networking product,
+  not an authorized substitute for general public Events delivery.
+- [Workers fetch limits](https://developers.cloudflare.com/workers/platform/limits/)
+  say there is no inherent single-subrequest deadline. The sender's own
+  abort deadline and streaming size caps remain necessary, and must be
+  tested against an actual allowed receiver on the exact candidate head.
+
+**Still not run / blocked:** hosted exact-head positive and adversarial
+probes, the actual connect-time RFC1918/loopback/private-address refusal
+and in-flight DNS change/rebinding fixture, and original-URL-host TLS-name
+enforcement with traceable receiver/handshake evidence. Earlier Cloudflare
+Tunnel reachability and HTTP 526 are not substitutes. No external account
+permissions, public IPv4 receiver, production deployment, or wider
+authorization was obtained here. Continue to withhold acceptance for
+#19/REQ-002 and #19/REQ-006; keep this PR draft and public Events disabled.
