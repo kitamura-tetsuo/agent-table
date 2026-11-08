@@ -1124,6 +1124,39 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
           error: { code: "TABLE_NOT_FOUND" },
         });
       }
+      const inboxUri = String(metadata.ownInboxUri);
+      const inbox = await client.readResource({ uri: inboxUri });
+      const ownContent = inbox.contents.find(
+        (entry) => entry.uri === inboxUri && "text" in entry,
+      );
+      if (!ownContent || !("text" in ownContent)) {
+        throw new Error("Authenticated own-inbox resource missing");
+      }
+      expect(JSON.parse(ownContent.text)).toMatchObject({
+        tableId,
+        lastSeq: 1,
+        latestPeerSeq: 0,
+      });
+      await expect(
+        stranger.readResource({ uri: inboxUri }),
+      ).rejects.toThrow();
+      for (const [key, invalidBody] of [
+        ["sdk_transcript_bad_whitespace_001", "  \\n  "],
+        ["sdk_transcript_bad_utf8_limit_001", "😀".repeat(2049)],
+      ] as const) {
+        const invalid = await client.callTool({
+          name: "post_message",
+          arguments: {
+            table_id: tableId,
+            request_id: key,
+            body: invalidBody,
+          },
+        });
+        expect(invalid.isError).toBe(true);
+        expect(output(invalid)).toMatchObject({
+          error: { code: "INVALID_REQUEST" },
+        });
+      }
       const firstPage = await client.callTool({
         name: "read_messages",
         arguments: { table_id: tableId, limit: 1 },
