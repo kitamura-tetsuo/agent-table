@@ -1961,10 +1961,12 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
       const receipt = output(pending);
       expect(receipt).toMatchObject({ confirmation_required: true });
       expect(
-        output(await client.callTool({
-          name: "delete_table",
-          arguments: operation,
-        })),
+        output(
+          await client.callTool({
+            name: "delete_table",
+            arguments: operation,
+          }),
+        ),
       ).toEqual(receipt);
       const browserUrl = String(receipt.confirmation_url);
       expect(browserUrl).toContain("/guest/delete?");
@@ -1975,10 +1977,12 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
       const html = await preview.text();
       expect(html).toContain("both");
       const csrf = html.match(/name="csrf" value="([A-Za-z0-9_-]{43})"/)?.[1];
-      const csrfCookie = preview.headers.getSetCookie()
+      const csrfCookie = preview.headers
+        .getSetCookie()
         .find((value) => value.startsWith("__Host-agent_table_csrf="))
         ?.split(";")[0];
-      if (!csrf || !csrfCookie) throw new Error("Missing browser approval CSRF");
+      if (!csrf || !csrfCookie)
+        throw new Error("Missing browser approval CSRF");
       const before = await client.callTool({
         name: "read_messages",
         arguments: { table_id: tableId },
@@ -1992,7 +1996,7 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
         decision: "approve",
       });
       const post = (origin: string, token: string) =>
-        exports.default.fetch(ORIGIN + "/guest/delete", {
+        exports.default.fetch(`${ORIGIN}/guest/delete`, {
           method: "POST",
           headers: {
             Origin: origin,
@@ -2000,15 +2004,23 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
             "Content-Type": "application/x-www-form-urlencoded",
             Cookie: [owner.browserCookie, csrfCookie].join("; "),
           },
-          body: new URLSearchParams({ ...operation, csrf: token, decision: "approve" }),
+          body: new URLSearchParams({
+            ...operation,
+            csrf: token,
+            decision: "approve",
+          }),
         });
       expect((await post("https://evil.example", csrf)).status).toBe(403);
       expect((await post(ORIGIN, "wrong")).status).toBe(403);
-      expect(output(await client.callTool({
-        name: "read_messages",
-        arguments: { table_id: tableId },
-      }))).toMatchObject({ messages: [{ seq: 1 }] });
-      const accepted = await exports.default.fetch(ORIGIN + "/guest/delete", {
+      expect(
+        output(
+          await client.callTool({
+            name: "read_messages",
+            arguments: { table_id: tableId },
+          }),
+        ),
+      ).toMatchObject({ messages: [{ seq: 1 }] });
+      const accepted = await exports.default.fetch(`${ORIGIN}/guest/delete`, {
         method: "POST",
         headers: {
           Origin: ORIGIN,
@@ -2022,21 +2034,32 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
       expect(await accepted.text()).toContain("Deletion committed");
       const table = env.TABLES.get(env.TABLES.idFromName(tableId));
       await evictDurableObject(table);
-      expect(output(await client.callTool({
-        name: "delete_table",
-        arguments: operation,
-      }))).toMatchObject({ confirmation_required: false, state: "deleted" });
+      expect(
+        output(
+          await client.callTool({
+            name: "delete_table",
+            arguments: operation,
+          }),
+        ),
+      ).toMatchObject({ confirmation_required: false, state: "deleted" });
       const after = await client.callTool({
         name: "read_messages",
         arguments: { table_id: tableId },
       });
       expect(after.isError).toBe(true);
       await runInDurableObject(table, async (_instance, state) => {
-        expect(state.storage.sql.exec("SELECT COUNT(*) AS n FROM table_messages").one())
-          .toEqual({ n: 0 });
-        expect(state.storage.sql.exec(
-          "SELECT guest_id, request_id FROM table_tombstone_delete_receipts",
-        ).one()).toEqual({
+        expect(
+          state.storage.sql
+            .exec("SELECT COUNT(*) AS n FROM table_messages")
+            .one(),
+        ).toEqual({ n: 0 });
+        expect(
+          state.storage.sql
+            .exec(
+              "SELECT guest_id, request_id FROM table_tombstone_delete_receipts",
+            )
+            .one(),
+        ).toEqual({
           guest_id: owner.guestId,
           request_id: operation.request_id,
         });
@@ -2046,5 +2069,4 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
       await withoutDeletion.close();
     }
   });
-
 });
