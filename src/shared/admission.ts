@@ -281,11 +281,7 @@ async function admissionKey(identity: string): Promise<string> {
  */
 function edgeSource(request: Request): string {
   const source = request.headers.get("CF-Connecting-IP");
-  if (
-    !source ||
-    source.length > 64 ||
-    !/^[0-9a-fA-F:.]+$/.test(source)
-  ) {
+  if (!source || source.length > 64 || !/^[0-9a-fA-F:.]+$/.test(source)) {
     return "unknown-source";
   }
   const ipv6 = source.includes(":");
@@ -294,8 +290,7 @@ function edgeSource(request: Request): string {
     if (
       octets.length !== 4 ||
       octets.some(
-        (octet) =>
-          !/^(0|[1-9][0-9]{0,2})$/.test(octet) || Number(octet) > 255,
+        (octet) => !/^(0|[1-9][0-9]{0,2})$/.test(octet) || Number(octet) > 255,
       )
     ) {
       return "unknown-source";
