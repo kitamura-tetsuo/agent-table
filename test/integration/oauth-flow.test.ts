@@ -1,3 +1,4 @@
+import { evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { env, exports } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { canonicalMcpResource } from "../../src/auth/provider";
@@ -486,6 +487,71 @@ describe("real authorization code and guest-grant flow", () => {
     const rejected = await refresh(String(renewal.refresh_token));
     expect(rejected.status).toBe(400);
     expect((await jsonUrl(rejected)).error).toBe("invalid_grant");
+  });
+
+  it("denies real-provider refresh and protected reads after persisted connection expiry", async () => {
+    const browser = await withBrowserGuest();
+    const clientId = await register();
+    const approved = await approvedConsent(browser, clientId);
+    const issued = await redeem(clientId, approved.code, approved.verifier);
+    expect(issued.status).toBe(200);
+    const tokens = await jsonUrl(issued);
+    expect(typeof tokens.access_token).toBe("string");
+    expect(typeof tokens.refresh_token).toBe("string");
+    expect(tokens.expires_in).toBe(900);
+    const grants = await browser.guest.listConnections(
+      approved.sessionId,
+      approved.sessionSecret,
+    );
+    expect(grants).toHaveLength(1);
+    const grant = grants?.[0];
+    if (!grant) throw new Error("Consent-created grant was not found");
+    expect(grant.expiresAt).toBeGreaterThan(
+      Date.now() + 29 * 24 * 60 * 60 * 1_000,
+    );
+
+    // Simulate the original grant deadline through the real SQLite authority.
+    // Do not mock the OAuth provider, token handler, or validation decision.
+    await runInDurableObject(browser.guest, async (_instance, state) => {
+      state.storage.sql.exec(
+        "UPDATE guest_connections SET created_at = ?, expires_at = ? WHERE connection_id = ?",
+        Date.now() - 120_000,
+        Date.now() - 60_000,
+        grant.connectionId,
+      );
+    });
+    await evictDurableObject(browser.guest);
+
+    const access = await exports.default.fetch(`${ORIGIN}/mcp`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${String(tokens.access_token)}`,
+        "Content-Type": "application/json",
+        Accept: "application/json, text/event-stream",
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 29,
+        method: "tools/list",
+        params: {},
+      }),
+    });
+    expect(access.status).toBe(401);
+    const renewal = await exports.default.fetch(`${ORIGIN}/oauth/token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        client_id: clientId,
+        grant_type: "refresh_token",
+        refresh_token: String(tokens.refresh_token),
+        resource: RESOURCE,
+      }),
+    });
+    expect(renewal.status).toBe(400);
+    const denial = await jsonUrl(renewal);
+    expect(denial.error).toBe("invalid_grant");
+    expect(denial.access_token).toBeUndefined();
+    expect(denial.refresh_token).toBeUndefined();
   });
 
   it("keeps two overlapping bearer connections independent after revoking only one", async () => {
