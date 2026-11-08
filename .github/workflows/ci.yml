@@ -19,6 +19,20 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run typecheck
+      # Temporary diagnostic: snapshot Biome's canonical edits, then remove.
+      - name: Temporary PR 37 formatter snapshot
+        run: |
+          npx biome check --write src schema test
+          node --input-type=module -e '
+            import fs from "node:fs";
+            const paths = ["src/mcp/server.ts","src/objects/table.ts","src/services/tables.ts","src/shared/transcript.ts","test/integration/transcript.test.ts","schema/007_transcript.ts","schema/migrations.ts"];
+            for (const path of paths) {
+              const encoded = fs.readFileSync(path).toString("base64");
+              for (let i = 0; i < encoded.length; i += 2400) {
+                console.log("PR37_FORMAT|" + path + "|" + Math.floor(i / 2400) + "|" + encoded.slice(i, i + 2400));
+              }
+            }
+          '
       - run: npm run lint
       - run: npm test
       - run: npm run test:integration
