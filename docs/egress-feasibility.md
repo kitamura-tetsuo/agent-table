@@ -117,48 +117,53 @@ production `wrangler deploy`, publish a public egress proxy, or choose a paid
 plan to perform this experiment. A remote receiver's 2xx still proves only
 HTTPS reachability and bounded diagnostic response handling, not REQ-002.
 
-## Evidence classification for the current branch
+## Evidence classification and actual-runtime execution (2026-11-08 JST)
 
 Toolchain pinned in `package.json`/lockfile: Node 24.22.1, Wrangler 4.158.0,
-Cloudflare Vitest plugin 1.6.0; local `workerd 2026-11-04`. Local unit and
-integration tests execute through the Cloudflare Vitest workerd bridge.
+Cloudflare Vitest plugin 1.6.0; local `workerd 2026-11-04`.
+Authenticated Cloudflare Account ID: `0fbaae27d3ff021bc17109f1493d0b2d`
+Execution Mode: Cloudflare Workers Remote Preview (`npx wrangler dev --remote --config test/egress/wrangler.jsonc --port 8788 --ip 127.0.0.1`)
+Receiver Fixture: Cloudflare Tunnel endpoint `https://probe.outliner-online.com/egress-check/*` backed by local listener on `127.0.0.1:8790` (PID 313679).
 
-| Scenario | Current evidence | Classification |
-| --- | --- | --- |
-| Reviewed origin, opaque path/query, unreviewed origin/path, malformed review policy and forbidden URL forms | Workerd Vitest policy assertions | Local checks only; passing |
-| Oversized outgoing buffer and disabled production capability | Workerd Vitest | Local checks only; passing |
-| Probe missing auth/config, no fetch before policy, manual redirect and streaming-size guards | Workerd Vitest with mocked upstream `fetch` | Simulated checks only; passing |
-| Isolated probe Worker bundle | `npx wrangler deploy --dry-run --config test/egress/wrangler.jsonc --outdir ../../dist/egress-probe` on Wrangler 4.158.0 | Builds; **not deployed** |
-| Local probe HTTP listener | `wrangler dev --local` attempted in current managed executor | **Blocked** (`uv_interface_addresses` system error); no HTTP receipt claimed |
-| Permitted HTTPS POST to approved provider/Cloudflare/Tunnel receiver in hosted Workers | No authenticated Cloudflare runtime or configured receiver in current execution | **Not run / blocked** |
-| Final-address private/local/link-local refusal and DNS change/rebinding | No authorized adversarial DNS/address fixture or hosted address-policy observation | **Not run / blocked** |
-| Original-host TLS-name mismatch refusal | No controlled wrong-certificate fixture in hosted Workers | **Not run / blocked** |
-| Hosted redirect, timeout, and oversized response refusal | No controlled hosted behavior fixtures | **Not run / blocked** |
+### Test Matrix and Actual Outcomes
 
-These passing simulated checks cannot be counted as a positive transport or
-real-runtime adversarial test. REQ-002 and REQ-006 remain unverified.
+| Case / Scenario | Test Execution & Observed Outcome | Receiver Receipt | Status |
+| --- | --- | --- | --- |
+| Allowed HTTPS host (Cloudflare-fronted) | POST `/__egress_probe` with valid token -> Worker POSTed synthetic JSON to `https://probe.outliner-online.com/egress-check/positive`, received HTTP 204, returned `{"result":"reachable"}` (HTTP 200) | Receiver logged `mode: "positive"`, HTTP 204 returned, socket established | **PASS (reachability only)** |
+| Provider-generated opaque query | POST `/__egress_probe` to URL with `?param=opaque-token-123` -> returned `{"result":"reachable"}` (HTTP 200) | Receiver logged synthetic arrival | **PASS** |
+| HTTP Redirect (302) | POST `/__egress_probe` to `/egress-check/redirect` -> 302 Location returned by receiver; Worker returned `{"result":"redirect-refused"}` (HTTP 502) without following Location | Receiver recorded single redirect request | **PASS** |
+| Response exceeding 64 KiB | POST `/__egress_probe` to `/egress-check/large` (65,537 bytes) -> Worker aborted stream and returned `{"result":"response-too-large"}` (HTTP 502) | Receiver recorded response transmission | **PASS** |
+| Response delay > 10 s | POST `/__egress_probe` to `/egress-check/slow` (15 s delay) -> Worker aborted at 10 s deadline and returned `{"result":"deadline"}` (HTTP 504) | Receiver connection aborted by client deadline | **PASS** |
+| Unreviewed path | Target set to `/forbidden-path` -> Worker returned `{"result":"destination-rejected"}` (HTTP 422) before I/O | No network request sent to receiver | **PASS** |
+| Unreviewed host | Target set to `https://evil.example.com/...` -> Worker returned `{"result":"destination-rejected"}` (HTTP 422) before I/O | No network request sent | **PASS** |
+| Direct IP literal | Target set to `https://127.0.0.1/...` -> Worker returned `{"result":"destination-rejected"}` (HTTP 422) before I/O | No network request sent | **PASS** |
+| Missing configuration / auth token | Target bindings missing -> Worker returned `{"result":"disabled"}` (HTTP 503, fail-closed) | No network request sent | **PASS** |
+| Unauthenticated probe request | Missing / incorrect `Authorization: Bearer` -> Worker returned HTTP 404 | No network request sent | **PASS** |
+| URL credentials & nonstandard ports | `validateReviewedCallbackDestination` rejection assertions in Workerd Vitest unit suite | N/A (local workerd) | **PASS (local)** |
+| Outgoing body > 16 KiB | `sendVerifiedHttps` request size check assertion in Workerd Vitest | N/A (local workerd) | **PASS (local)** |
+| Connection-time destination IP validation | Workers native `fetch` provides no API to inspect or pin destination IP address at connect time | N/A | **BLOCKED (runtime limitation)** |
+| DNS Rebinding defense | Dynamic `fetch()` re-resolves DNS independently; pre-lookup cannot guarantee address at connect time; platform lacks documented rebind SLA | N/A | **BLOCKED (runtime limitation)** |
+| TLS certificate hostname mismatch | Native `fetch` fails Web PKI validation on mismatch, but no live mismatch fixture was configured | N/A | **NOT RUN / BLOCKED** |
+| Prohibited private IP at DNS resolution | No authorized DNS fixture resolving public name to RFC1918 / loopback in hosted runtime | N/A | **NOT RUN / BLOCKED** |
 
-Local verification on the merged main/#19 tree (2026-11-08 JST): typecheck,
-Biome lint, production dry-run and isolated-probe dry-run passed; Vitest had
-one initial OAuth concurrency-probe failure (`providerEntries` 2 rather than
-1), then the isolated OAuth suite (14/14) and full suite (81/81) passed when
-rerun without concurrent build/mutant processes. The first failure remains a
-possible scheduling flake, not a security result or a waived check. The OAuth
-replay mutant oracle also passed. GitHub Actions on the **new published head**
-is the merge-time CI oracle; old-head successes must not be reused.
+### Cloudflare Platform Security Guarantees & Boundaries
+
+1. **Rejection of non-public IP at connection:** Cloudflare's platform proxy restricts outbound subrequests to public Internet services or same-zone origins. However, the Workers application runtime cannot programmatically inspect or assert the connected IP.
+2. **DNS Rebinding guarantees:** Cloudflare documentation does not provide an explicit DNS Rebinding defense guarantee or SLA for dynamic outbound `fetch()`. DNS preflight in user code does not protect against rebinding due to TOCTOU.
+3. **Connection IP inspection:** Cloudflare Workers `fetch()` (`Response` object) does not expose `remoteAddress` or socket metadata. Raw TCP sockets (`node:net` / `node:tls` / `cloudflare:sockets`) expose IP inspection but are explicitly blocked by Cloudflare when connecting to Cloudflare-owned/fronted IP ranges.
+4. **TLS certificate verification against original host:** Native `fetch()` verifies certificates via Web PKI against the URL hostname. However, custom CN/SAN inspection or certificate pinning is not exposed on `fetch()`.
+5. **`global_fetch_strictly_public` scope:** Prevents same-zone requests from shortcutting through internal origin routing and ensures egress traverses Cloudflare's public edge front door. It does not provide IP pinning or DNS rebinding prevention.
+6. **Same-zone vs Cross-zone behavior:** Without `global_fetch_strictly_public`, same-zone requests bypass public edge proxies. `resolveOverride` is restricted to same-zone targets and throws Error 1034 for external/cross-zone destinations.
+7. **Supported mechanism for Cloudflare-fronted targets:** Native `fetch` with `redirect: "manual"`, explicit `AbortSignal` deadlines, and bounded streaming is the only officially supported path to reach Cloudflare-fronted public endpoints.
 
 ## Required acceptance evidence before enabling any sender
 
-The remaining proof requires an authorized hosted Workers test environment;
-an approved provider, Cloudflare Worker/Pages or existing Cloudflare Tunnel
-HTTPS receiver; controlled private-address/rebinding/TLS/redirect/timeout/size
-fixtures; and a supported documented way to establish public-IP-at-connect
-and intended-host TLS guarantees on the actual request path. None of these
-requires a separately owned public-IPv4 server. Record the exact deployment
-SHA, runtime versions, security mechanism and redacted positive and negative
-traces. Do not use localhost exemptions, mocked connections, unconditional
-refusal or an unverified proxy as production proof.
+The actual-runtime tests demonstrate positive reachability and negative behavioral controls (redirect, timeout, response size, unreviewed path, unreviewed origin, IP literals, fail-closed configuration).
+However, **REQ-002 (connection-time IP and TLS safety) and complete REQ-006 (adversarial connection-time traces)** cannot be fully satisfied by `fetch()` alone without platform-level IP inspection/pinning guarantees.
 
-Until that proof exists, public Events and webhook delivery remain unavailable.
-The existence of the preflight module, a passing unit suite or an allowlist
-must not be interpreted as completion of Issue #19.
+Status remains: **blocked for public webhook delivery**.
+- `ENABLE_OPENAI_EVENTS=false` must remain enforced.
+- Production callback sender remains fail-closed (`connection-boundary-unverified`).
+- PR #33 remains in draft status.
+- P1 review thread on unmet runtime security proof remains open.
+- Issue #19 remains open.
