@@ -35,7 +35,10 @@ export const hostEvidenceSchema = z.strictObject({
   }),
   deployment: z.strictObject({
     endpoint: z.string().max(256).nullable(),
-    buildSha: z.string().regex(/^[a-f0-9]{40}$/).nullable(),
+    buildSha: z
+      .string()
+      .regex(/^[a-f0-9]{40}$/)
+      .nullable(),
     isolated: z.boolean().nullable(),
   }),
   observedAt: z.string().datetime({ offset: true }).nullable(),
@@ -100,7 +103,8 @@ export function evaluateHostEvidence(input: unknown): {
       // Invalid or absent URLs never count as a verified deployed resource.
     }
   }
-  if (!canonicalResource) missing.push("canonical isolated HTTPS /mcp endpoint");
+  if (!canonicalResource)
+    missing.push("canonical isolated HTTPS /mcp endpoint");
 
   for (const name of HOST_CASES) {
     const observation = record.cases[name];
