@@ -295,26 +295,61 @@ describe("real authorization code and guest-grant flow", () => {
     expect((await jsonUrl(refresh)).error).toBe("invalid_grant");
   });
 
-  it("serializes two simultaneous redemptions of exactly one real authorization code", async () => {
+  it("excludes a second redemption while the real provider's grant read is held", async () => {
     const browser = await withBrowserGuest();
     const clientId = await register();
     const approved = await approvedConsent(browser, clientId);
-    const results = await Promise.all([
-      redeem(clientId, approved.code, approved.verifier),
-      redeem(clientId, approved.code, approved.verifier),
-    ]);
-    expect(results.map((response) => response.status).sort()).toEqual([
-      200, 400,
-    ]);
-    const payloads = await Promise.all(
-      results.map((response) => jsonUrl(response)),
+    const tokenDO = env.OAUTH_SERIALIZER.get(
+      env.OAUTH_SERIALIZER.idFromName("token-exchange-v1"),
     );
-    expect(
-      payloads.filter((item) => typeof item.access_token === "string"),
-    ).toHaveLength(1);
-    expect(
-      payloads.filter((item) => item.error === "invalid_grant"),
-    ).toHaveLength(1);
+    const waitFor = async (requests: number, reads: number) => {
+      for (let attempt = 0; attempt < 80; attempt++) {
+        const state = await tokenDO.redemptionReadProbeState();
+        if (state.activeRequests >= requests && state.grantReads >= reads) {
+          return state;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      throw new Error("Provider never reached the observed redemption boundary");
+    };
+    await tokenDO.armRedemptionReadProbe();
+    try {
+      const first = redeem(clientId, approved.code, approved.verifier);
+      await waitFor(1, 1);
+      // The first request has already read the real pre-consumption KV grant,
+      // but cannot change it until the probe releases that exact read.
+      const second = redeem(clientId, approved.code, approved.verifier);
+      const held = await waitFor(2, 1);
+      // A no-serializer mutant would reach the grant read a second time while
+      // the first is held; response-status-only racing would miss that defect.
+      expect(held.grantReads).toBe(1);
+      await tokenDO.releaseRedemptionReadProbe();
+      const results = await Promise.all([first, second]);
+      expect(results.map((response) => response.status).sort()).toEqual([
+        200, 400,
+      ]);
+      const payloads = await Promise.all(results.map(jsonUrl));
+      expect(
+        payloads.filter((item) => typeof item.access_token === "string"),
+      ).toHaveLength(1);
+      expect(
+        payloads.filter((item) => item.error === "invalid_grant"),
+      ).toHaveLength(1);
+
+      const grants = await env.OAUTH_KV.list({
+        prefix: `grant:${browser.guestId}:`,
+      });
+      expect(grants.keys).toHaveLength(1);
+      const stored = await env.OAUTH_KV.get<Record<string, unknown>>(
+        grants.keys[0].name,
+        "json",
+      );
+      expect(stored).not.toBeNull();
+      expect(stored?.authCodeWrappedKey).toBeUndefined();
+      expect(typeof stored?.refreshTokenId).toBe("string");
+    } finally {
+      await tokenDO.clearRedemptionReadProbe();
+    }
   });
 
   it("rejects an approval submitted after the selected browser guest changed", async () => {
