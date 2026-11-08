@@ -1167,7 +1167,9 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
         lastSeq: 1,
         latestPeerSeq: 1,
       });
-      await expect(client.readResource({ uri: peerInboxUri })).rejects.toThrow();
+      await expect(
+        client.readResource({ uri: peerInboxUri }),
+      ).rejects.toThrow();
       await expect(peer.readResource({ uri: inboxUri })).rejects.toThrow();
       const inbox = await client.readResource({ uri: inboxUri });
       const ownContent = inbox.contents.find(
@@ -1652,10 +1654,7 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
           await releaseCommit;
         };
       });
-      const [a, b] = await Promise.all([
-        sdk(owner.token),
-        sdk(peer.token),
-      ]);
+      const [a, b] = await Promise.all([sdk(owner.token), sdk(peer.token)]);
       const argsA = {
         table_id: tableId,
         request_id: "sdk_capacity_final_owner_0001",
