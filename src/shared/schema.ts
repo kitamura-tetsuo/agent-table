@@ -59,8 +59,16 @@ export function initializeApplicationSchema(
       for (const statement of migration.statements) {
         storage.sql.exec(statement);
       }
-      if ("componentStatements" in migration && component === "guest") {
-        for (const statement of migration.componentStatements.guest) {
+      if ("componentStatements" in migration) {
+        const statements =
+          component === "guest"
+            ? "guest" in migration.componentStatements
+              ? migration.componentStatements.guest
+              : []
+            : "table" in migration.componentStatements
+              ? migration.componentStatements.table
+              : [];
+        for (const statement of statements) {
           storage.sql.exec(statement);
         }
       }

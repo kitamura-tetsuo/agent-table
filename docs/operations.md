@@ -1,6 +1,6 @@
 # Development and operations
 
-Status: local foundation runbook plus future deployment plan. The Worker/DO scaffold, guest sessions, connection grants, private creation reservations, dependency lockfile, test scripts, PR-only validation workflow, and purpose-separated encrypted-secret primitive exist. No public or staging deployment, OAuth authentication, invitation producer, callback producer, initialized application tables, event delivery, or host interoperability has been completed.
+Status: local foundation runbook plus future deployment plan. The Worker/DO scaffold, guest sessions, connection grants, private creation reservations, private TableDO initialization, dependency lockfile, test scripts, PR-only validation workflow, and purpose-separated encrypted-secret primitive exist. No public or staging deployment, OAuth authentication, invitation producer, callback producer, public table creation, event delivery, or host interoperability has been completed.
 
 ## Implemented foundation (Issue #2)
 
@@ -30,6 +30,12 @@ The workerd integration suite tests both purposes, authenticated metadata and re
 `schema/004_creation_reservations.ts` applies only to GuestDO. The private `reserveCreation` binding commits one random table identity and one quota charge per valid new `(guest, create_table, request_id)`; identical retries within the original table lifetime return the same reservation. Changed arguments conflict. The current policy never refunds reservations, even if TableDO initialization later fails. The internal `getCreationReservation`, `recordCreationOutcome`, and bounded `pruneExpiredReservations` methods support recovery and eight-day retention. Neither this milestone nor a recorded `initialized` outcome implements the public `create_table` tool, creates membership, or authorizes reviving an expired table.
 
 Run `npx vitest run test/integration/creation-reservations.test.ts` for real workerd/SQLite binding tests covering grant revocation, original expiry, eviction/retry, and two requests held at the final quota decision boundary. No external account, deployment or OAuth host compatibility is claimed by these tests.
+
+### Private table identity and membership (Issue #8)
+
+`schema/005_table_authority.ts` adds table-only metadata and member tables; the common migrator applies component-specific statements without creating guest state in TableDO or table state in GuestDO. `TableDO.initializeTable` takes the original request, a claimed reservation and a server-verified writer. It checks the real GuestDO receipt and current grant, the routed Durable Object ID and fixed expiry before committing table and creator membership together. The result is idempotent across object eviction. Private `getMetadata` and `readOwnInbox` check a new read grant, local membership, table state and deadline; the inbox is initially empty and belongs only to the requesting member.
+
+Run `npx vitest run test/integration/table-authority.test.ts` for real binding/SQLite checks, including forged and relocated reservations, unknown-table noncreation, membership isolation, inbox ownership and terminal/expiry denial. The tests use synthetic guests; a second-seat fixture tests access boundaries but does not implement invitation acceptance. This is not yet a public `create_table` implementation or proof of OAuth/host interoperability.
 
 ## Future repository layout
 

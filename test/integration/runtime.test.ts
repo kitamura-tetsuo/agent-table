@@ -6,6 +6,39 @@ import { GuestDO, TableDO } from "../../src/index";
 import { initializeApplicationSchema } from "../../src/shared/schema";
 
 describe("actual SQLite-backed Durable Object bindings", () => {
+  it("migrates an existing version 4 table without fabricating an application table", async () => {
+    const table = env.TABLES.get(env.TABLES.idFromName(crypto.randomUUID()));
+    expect(await table.schemaVersion()).toBe(APPLICATION_SCHEMA_VERSION);
+    await runInDurableObject(table, async (_instance, state) => {
+      state.storage.sql.exec(
+        "CREATE TABLE table_upgrade_sentinel (data TEXT NOT NULL)",
+      );
+      state.storage.sql.exec(
+        "INSERT INTO table_upgrade_sentinel (data) VALUES ('retained')",
+      );
+      state.storage.sql.exec("DROP TABLE table_memberships");
+      state.storage.sql.exec("DROP TABLE table_metadata");
+      state.storage.sql.exec(
+        "UPDATE __agent_table_schema SET version = 4 WHERE singleton = 1",
+      );
+    });
+    await evictDurableObject(table);
+    expect(await table.schemaVersion()).toBe(APPLICATION_SCHEMA_VERSION);
+    await runInDurableObject(table, async (_instance, state) => {
+      expect(
+        state.storage.sql
+          .exec<{ data: string }>("SELECT data FROM table_upgrade_sentinel")
+          .one().data,
+      ).toBe("retained");
+      expect(
+        state.storage.sql.exec("SELECT * FROM table_metadata").toArray(),
+      ).toEqual([]);
+      expect(
+        state.storage.sql.exec("SELECT * FROM table_memberships").toArray(),
+      ).toEqual([]);
+    });
+  });
+
   it("migrates an existing guest version 1 object without wiping its other data", async () => {
     const guest = env.GUESTS.get(env.GUESTS.idFromName(crypto.randomUUID()));
     expect(await guest.schemaVersion()).toBe(APPLICATION_SCHEMA_VERSION);
@@ -80,6 +113,13 @@ describe("actual SQLite-backed Durable Object bindings", () => {
           )
           .toArray(),
       ).toEqual([]);
+      expect(
+        state.storage.sql
+          .exec<{ name: string }>(
+            "SELECT name FROM sqlite_master WHERE name = 'table_metadata'",
+          )
+          .toArray(),
+      ).toHaveLength(1);
       initializeApplicationSchema(state.storage, "table");
     });
     await runInDurableObject(guest, async (instance, state) => {
@@ -98,6 +138,13 @@ describe("actual SQLite-backed Durable Object bindings", () => {
           )
           .toArray(),
       ).toHaveLength(1);
+      expect(
+        state.storage.sql
+          .exec<{ name: string }>(
+            "SELECT name FROM sqlite_master WHERE name = 'table_metadata'",
+          )
+          .toArray(),
+      ).toEqual([]);
       initializeApplicationSchema(state.storage, "guest");
     });
 
