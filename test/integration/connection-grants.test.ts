@@ -5,9 +5,27 @@ import { SESSION_COOKIE_NAME } from "../../src/auth/guest";
 import worker from "../../src/index";
 import {
   authorizeGuestConnection,
+  CONNECTION_SCOPES,
   type ConnectionScope,
   OPERATION_SCOPE,
 } from "../../src/shared/auth";
+
+// This oracle is transcribed from Issue #5 REQ-002, not from OPERATION_SCOPE.
+const EXPECTED_OPERATION_SCOPE = {
+  "table-metadata": "tables:read",
+  "transcript-read": "tables:read",
+  "own-inbox-read": "tables:read",
+  "table-create": "tables:write",
+  "table-invite": "tables:write",
+  "table-join": "tables:write",
+  "message-post": "tables:write",
+  "table-close": "tables:write",
+  "delete-request": "tables:delete",
+  "delete-result": "tables:delete",
+  "notification-subscribe": "events:subscribe",
+  "notification-refresh": "events:subscribe",
+  "notification-unsubscribe": "events:subscribe",
+} as const satisfies Record<keyof typeof OPERATION_SCOPE, ConnectionScope>;
 
 const ORIGIN = "http://localhost:8787";
 const CSRF_NAME = "__Host-agent_table_csrf";
@@ -126,42 +144,54 @@ describe("Worker and durable connection grant authority", () => {
       ).rejects.toThrow(/Invalid connection scopes/);
     });
 
-    const read = await guest.stub.createConnection(
-      guest.sessionId,
-      guest.secret,
-      ["tables:read"],
-      expiry,
-    );
-    const other = await guest.stub.createConnection(
-      guest.sessionId,
-      guest.secret,
-      ["tables:write", "tables:delete", "events:subscribe"],
-      expiry,
-    );
-    if (!read || !other) throw new Error("Grant not created");
-    expect(read.connectionId).not.toBe(other.connectionId);
-
-    for (const [operation, scope] of Object.entries(OPERATION_SCOPE)) {
-      expect(operation.length).toBeGreaterThan(0);
-      expect(scope).toMatch(
-        /^(tables:read|tables:write|tables:delete|events:subscribe)$/,
+    expect(OPERATION_SCOPE).toEqual(EXPECTED_OPERATION_SCOPE);
+    const grants = {} as Record<
+      ConnectionScope,
+      NonNullable<Awaited<ReturnType<typeof guest.stub.createConnection>>>
+    >;
+    for (const scope of CONNECTION_SCOPES) {
+      const grant = await guest.stub.createConnection(
+        guest.sessionId,
+        guest.secret,
+        [scope],
+        expiry,
       );
-      const chosen = scope === "tables:read" ? read : other;
-      expect(await decision(guest, chosen.connectionId, scope)).toEqual({
-        allowed: true,
-        actor: {
-          kind: "verified-connection",
-          guestId: guest.guestId,
-          connectionId: chosen.connectionId,
-          scope,
-          expiresAt: chosen.expiresAt,
-        },
-      });
+      if (!grant) throw new Error("Grant not created");
+      grants[scope] = grant;
     }
-    expect(await decision(guest, read.connectionId, "tables:write")).toEqual({
-      allowed: false,
-      reason: "insufficient-scope",
-    });
+    expect(
+      new Set(Object.values(grants).map((grant) => grant.connectionId)).size,
+    ).toBe(4);
+
+    for (const [operation, requiredScope] of Object.entries(
+      EXPECTED_OPERATION_SCOPE,
+    )) {
+      expect(OPERATION_SCOPE[operation as keyof typeof OPERATION_SCOPE]).toBe(
+        requiredScope,
+      );
+      for (const grantScope of CONNECTION_SCOPES) {
+        const grant = grants[grantScope];
+        const actual = await decision(guest, grant.connectionId, requiredScope);
+        if (grantScope === requiredScope) {
+          expect(actual).toEqual({
+            allowed: true,
+            actor: {
+              kind: "verified-connection",
+              guestId: guest.guestId,
+              connectionId: grant.connectionId,
+              scope: requiredScope,
+              expiresAt: grant.expiresAt,
+            },
+          });
+        } else {
+          expect(actual).toEqual({
+            allowed: false,
+            reason: "insufficient-scope",
+          });
+        }
+      }
+    }
+    const read = grants["tables:read"];
     expect(await decision(guest, crypto.randomUUID(), "tables:read")).toEqual({
       allowed: false,
       reason: "missing",
@@ -192,7 +222,7 @@ describe("Worker and durable connection grant authority", () => {
       const rows = state.storage.sql
         .exec<{ guest_id: string }>("SELECT guest_id FROM guest_connections")
         .toArray();
-      expect(rows).toHaveLength(2);
+      expect(rows).toHaveLength(4);
       expect(rows.every((row) => row.guest_id === guest.guestId)).toBe(true);
     });
 
