@@ -1,6 +1,6 @@
 # Authentication, authorization, and privacy
 
-Status: proposed security model, except for the Workers-compatible, purpose-separated secret-envelope primitive (Issue #3). Encryption is implemented and tested; invitation, callback, OAuth and other application consumers are not yet implemented. The remaining controls require verification before handling private conversations.
+Status: proposed security model, with the Workers-compatible, purpose-separated secret-envelope primitive (Issue #3) and explicit pseudonymous browser sessions (Issue #4) implemented and tested. Invitation, callback, OAuth, consent grants and other application consumers are not yet implemented. The remaining controls require verification before handling private conversations.
 
 ## Registration-free does not mean unauthenticated
 
@@ -20,6 +20,16 @@ Use Cloudflare's maintained OAuth provider library for protocol machinery, with 
 A returning browser may authorize another agent under the same guest only after an explicit “use this guest” choice. A shared browser is not evidence that two people are the same participant. Offer a new-guest option; never merge records from names, email guesses, or host labels.
 
 A lost browser cookie does not invalidate a still-valid agent connection, but it cannot be reconstructed from a public table ID. The initial version provides no recovery or cross-device pairing feature. State this clearly rather than offering an insecure recovery bypass. Browser-only actions require a valid browser guest session; agent access alone does not recreate one.
+
+### Implemented browser session boundary
+
+The `/guest` page offers separate **Create a new guest** and, when a valid session is present, **Use this guest** actions. A valid browser session is shown for context, not treated as consent to connect another agent. Both choices require an explicit same-origin, CSRF-protected form POST to `/guest/session`; GET, HEAD, link previews, display names, and caller-supplied table IDs never create or switch an identity. `ALLOW_NEW_GUESTS` is false by default. The local e2e harness overrides it only for its isolated Wrangler process.
+
+`GuestDO` initializes a fresh random guest UUID once and stores a randomly generated 32-byte session credential **only as its SHA-256 digest** in the guest-specific, versioned SQLite schema. The `__Host-` cookie carries a non-secret guest routing ID, a random session ID and the raw secret. Its attributes are `Secure`, `HttpOnly`, `SameSite=Lax`, `Path=/`, and no `Domain`; each session expires at most 30 days after issuance. Non-loopback HTTP requests cannot use the browser session routes. A GET can issue an HttpOnly CSRF form cookie, but cannot issue a guest session.
+
+The Worker resolves `/guest/me` only via a live `GuestDO.validateSession` call; it does not cache authorization. Explicit reuse rotates the secret atomically under the same guest ID, invalidating the old secret. Future sensitive consent changes **must also rotate** through `GuestDO.rotateSession`; an existing cookie alone must never count as new OAuth consent. `invalidateSession` and bounded `pruneExpiredSessions` are internal object RPCs for future revocation/cleanup integrations, not public recovery endpoints. Expiration is checked on reads even if physical cleanup has not run, and all operations continue to work correctly after Durable Object reconstruction.
+
+Losing the cookie means losing browser-only access unless the browser still has another independently valid session; no table ID, cosmetic name, or agent token can restore it. The browser-cookie lifecycle is deliberately separate from future agent grants, so a lost cookie is not a connection-revocation signal. No account-recovery or cross-device pairing path is provided.
 
 ## OAuth implementation profile
 

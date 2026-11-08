@@ -59,6 +59,11 @@ export function initializeApplicationSchema(
       for (const statement of migration.statements) {
         storage.sql.exec(statement);
       }
+      if ("componentStatements" in migration && component === "guest") {
+        for (const statement of migration.componentStatements.guest) {
+          storage.sql.exec(statement);
+        }
+      }
       if (version === 0) {
         storage.sql.exec(
           "INSERT INTO __agent_table_schema (singleton, component, version) VALUES (1, ?, ?)",

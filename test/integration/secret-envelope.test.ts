@@ -142,7 +142,7 @@ describe("production Workers AES-GCM secret envelopes", () => {
       context,
       config,
     );
-    expect(await stub.schemaVersion()).toBe(1);
+    expect(await stub.schemaVersion()).toBe(2);
 
     await runInDurableObject(stub, async (_instance, state) => {
       state.storage.sql.exec(
