@@ -47,6 +47,21 @@ try {
 }
 
 if (!passed) {
+  // Print only test-status and assertion lines, never raw OAuth exchanges.
+  const relevant = output
+    .split("\n")
+    .filter((line) =>
+      /FAIL|AssertionError|expected [0-9]+ to be [0-9]+|Test Files|Tests .*passed|No test files|No tests found/i.test(line),
+    )
+    .slice(-12);
+  console.error(
+    JSON.stringify({
+      exitStatus: run.status,
+      signal: run.signal,
+      processError: run.error?.code ?? null,
+      resultLines: relevant,
+    }),
+  );
   throw new Error("OAuth replay oracle did not kill the no-serialization mutant");
 }
 console.log("OAuth replay oracle killed the no-serialization mutant");
