@@ -1175,4 +1175,200 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
       await reader.close();
     }
   });
+
+  it("rolls back a failed transcript insert and recovers with the same SDK request key", async () => {
+    const owner = await tokenForGuest("tables:read tables:write");
+    const client = await sdk(owner.token);
+    try {
+      const created = await client.callTool({
+        name: "create_table",
+        arguments: {
+          ...input,
+          request_id: "sdk_transcript_fault_create_001",
+        },
+      });
+      const tableId = String(output(created).tableId);
+      const table = env.TABLES.get(env.TABLES.idFromName(tableId));
+      await runInDurableObject(table, async (_instance, state) => {
+        state.storage.sql.exec(
+          "CREATE TRIGGER reject_transcript_insert BEFORE INSERT ON table_messages BEGIN SELECT RAISE(ABORT, 'injected-write-failure'); END",
+        );
+      });
+      const original = {
+        table_id: tableId,
+        request_id: "sdk_transcript_fault_post_001",
+        body: "Must be committed or absent",
+      };
+      const failed = await client.callTool({
+        name: "post_message",
+        arguments: original,
+      });
+      expect(failed.isError).toBe(true);
+      expect(output(failed)).toMatchObject({
+        error: { code: "TEMPORARILY_UNAVAILABLE" },
+      });
+      await runInDurableObject(table, async (_instance, state) => {
+        expect(
+          state.storage.sql.exec("SELECT last_seq FROM table_metadata").one(),
+        ).toMatchObject({ last_seq: 0 });
+        expect(
+          state.storage.sql.exec("SELECT * FROM table_messages").toArray(),
+        ).toHaveLength(0);
+        expect(
+          state.storage.sql.exec("SELECT * FROM table_post_receipts").toArray(),
+        ).toHaveLength(0);
+        expect(
+          state.storage.sql.exec("SELECT body_bytes FROM table_transcript_usage").one(),
+        ).toMatchObject({ body_bytes: 0 });
+        state.storage.sql.exec("DROP TRIGGER reject_transcript_insert");
+      });
+      await evictDurableObject(table);
+      const recovered = await client.callTool({
+        name: "post_message",
+        arguments: original,
+      });
+      expect(recovered.isError).not.toBe(true);
+      expect(output(recovered)).toMatchObject({ seq: 1, persisted: true });
+      const exactRetry = await client.callTool({
+        name: "post_message",
+        arguments: original,
+      });
+      expect(output(exactRetry)).toEqual(output(recovered));
+      await runInDurableObject(table, async (_instance, state) => {
+        expect(
+          state.storage.sql.exec("SELECT * FROM table_messages").toArray(),
+        ).toHaveLength(1);
+        expect(
+          state.storage.sql.exec("SELECT * FROM table_post_receipts").toArray(),
+        ).toHaveLength(1);
+      });
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("bounds two overlapping SDK post requests at the last rate-limit slot", async () => {
+    const owner = await tokenForGuest("tables:read tables:write");
+    const peer = await tokenForGuest("tables:read tables:write");
+    const creator = await sdk(owner.token);
+    const invitee = await sdk(peer.token);
+    try {
+      const created = await creator.callTool({
+        name: "create_table",
+        arguments: {
+          ...input,
+          request_id: "sdk_transcript_race_create_001",
+        },
+      });
+      const tableId = String(output(created).tableId);
+      const issued = await creator.callTool({
+        name: "create_invite",
+        arguments: {
+          table_id: tableId,
+          request_id: "sdk_transcript_race_invite_001",
+        },
+      });
+      const joined = await invitee.callTool({
+        name: "join_table",
+        arguments: {
+          invitation: output(issued).invitation,
+          request_id: "sdk_transcript_race_join_0001",
+        },
+      });
+      expect(joined.isError).not.toBe(true);
+      for (let i = 0; i < 9; i++) {
+        const seed = await creator.callTool({
+          name: "post_message",
+          arguments: {
+            table_id: tableId,
+            body: `Seed ${i}`,
+            request_id: `sdk_transcript_race_seed_${i}`,
+          },
+        });
+        expect(seed.isError).not.toBe(true);
+      }
+      let entered = 0;
+      const overlay: Env = {
+        ...env,
+        TABLES: {
+          idFromName: (name: string) => env.TABLES.idFromName(name),
+          get: (id: DurableObjectId): TableStub => {
+            const stub = env.TABLES.get(id);
+            return new Proxy(stub, {
+              get(target, property) {
+                if (property === "postMessage") {
+                  return async (actor: VerifiedConnectionActor, value: unknown) => {
+                    entered++;
+                    for (let attempt = 0; entered < 2 && attempt < 500; attempt++) {
+                      await new Promise<void>((resolve) => setTimeout(resolve, 10));
+                    }
+                    if (entered < 2) throw new Error("SDK posts did not overlap");
+                    return target.postMessage(actor, value);
+                  };
+                }
+                return Reflect.get(target, property, target);
+              },
+            });
+          },
+        } as Env["TABLES"],
+      };
+      const [a, b] = await Promise.all([
+        sdk(owner.token, fetchThroughWorker(overlay)),
+        sdk(peer.token, fetchThroughWorker(overlay)),
+      ]);
+      const argsA = {
+        table_id: tableId,
+        request_id: "sdk_transcript_race_winner_a_001",
+        body: "Competing creator",
+      };
+      const argsB = {
+        table_id: tableId,
+        request_id: "sdk_transcript_race_winner_b_001",
+        body: "Competing invitee",
+      };
+      try {
+        const results = await Promise.all([
+          a.callTool({ name: "post_message", arguments: argsA }),
+          b.callTool({ name: "post_message", arguments: argsB }),
+        ]);
+        expect(entered).toBe(2);
+        expect(results.filter((result) => !result.isError)).toHaveLength(1);
+        const winningIndex = results.findIndex((result) => !result.isError);
+        const winner = winningIndex === 0 ? creator : invitee;
+        const original = winningIndex === 0 ? argsA : argsB;
+        const rejected = results[1 - winningIndex];
+        expect(output(rejected)).toMatchObject({
+          error: { code: "RATE_LIMITED" },
+        });
+        expect(output(results[winningIndex])).toMatchObject({
+          seq: 10,
+          persisted: true,
+        });
+        const table = env.TABLES.get(env.TABLES.idFromName(tableId));
+        await evictDurableObject(table);
+        const retry = await winner.callTool({
+          name: "post_message",
+          arguments: original,
+        });
+        expect(output(retry)).toEqual(output(results[winningIndex]));
+        await runInDurableObject(table, async (_instance, state) => {
+          expect(
+            state.storage.sql.exec("SELECT last_seq FROM table_metadata").one(),
+          ).toMatchObject({ last_seq: 10 });
+          expect(
+            state.storage.sql.exec("SELECT * FROM table_messages").toArray(),
+          ).toHaveLength(10);
+          expect(
+            state.storage.sql.exec("SELECT * FROM table_post_receipts").toArray(),
+          ).toHaveLength(10);
+        });
+      } finally {
+        await a.close();
+        await b.close();
+      }
+    } finally {
+      await creator.close();
+      await invitee.close();
+    }
+  });
 });
