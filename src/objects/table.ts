@@ -159,6 +159,11 @@ export class TableDO extends DurableObject<Env> {
   private transcriptCommitBarrierOverlappedForTest = false;
   private transcriptCommitBarrierFirstWaitingForTest = false;
   private transcriptCommitBarrierReleaseForTest?: () => void;
+  private deletionCommitBarrierEnabledForTest = false;
+  private deletionCommitBarrierArrivalsForTest = 0;
+  private deletionCommitBarrierOverlappedForTest = false;
+  private deletionCommitBarrierFirstWaitingForTest = false;
+  private deletionCommitBarrierReleaseForTest?: () => void;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -1423,6 +1428,28 @@ export class TableDO extends DurableObject<Env> {
         return { ok: true, value: { state: "deleted" } };
       }
       return { ok: false, code: "NOT_FOUND" };
+    }
+    // This in-object integration gate is never enabled by a production route.
+    // It observes real overlapping approval RPCs before the atomic SQL decision.
+    if (this.deletionCommitBarrierEnabledForTest) {
+      this.deletionCommitBarrierArrivalsForTest++;
+      if (this.deletionCommitBarrierArrivalsForTest === 1) {
+        this.deletionCommitBarrierFirstWaitingForTest = true;
+        await new Promise<void>((resolve) => {
+          let settled = false;
+          const finish = () => {
+            if (settled) return;
+            settled = true;
+            this.deletionCommitBarrierFirstWaitingForTest = false;
+            resolve();
+          };
+          this.deletionCommitBarrierReleaseForTest = finish;
+          setTimeout(finish, 700);
+        });
+      } else if (this.deletionCommitBarrierFirstWaitingForTest) {
+        this.deletionCommitBarrierOverlappedForTest = true;
+        this.deletionCommitBarrierReleaseForTest?.();
+      }
     }
     const committed = await this.deadlines.commitWithWakeup(
       previous.expires_at + 24 * 60 * 60_000,

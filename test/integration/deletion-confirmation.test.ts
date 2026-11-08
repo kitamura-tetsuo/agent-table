@@ -126,6 +126,12 @@ describe("browser-confirmed deletion through real TableDO and GuestDO", () => {
     const f = await fixture();
     const foreign = await guest();
     const requestId = "browser_shared_delete_0001";
+    // A closed but unexpired table must remain eligible for browser deletion.
+    const closed = await f.table.closeTable(
+      await f.owner.actor("tables:write"),
+      "browser_delete_closed_table_0001",
+    );
+    expect(closed.ok).toBe(true);
     const deleteActor = await f.owner.actor("tables:delete");
     const pending = await f.table.requestDeletion(deleteActor, requestId);
     expect(pending).toMatchObject({
@@ -367,10 +373,27 @@ describe("browser-confirmed deletion through real TableDO and GuestDO", () => {
       state.storage.sql.exec("DROP TRIGGER reject_delete");
     });
     await evictDurableObject(f.table);
+    await runInDurableObject(f.table, async (instance) => {
+      const testInstance = instance as unknown as {
+        deletionCommitBarrierEnabledForTest: boolean;
+      };
+      testInstance.deletionCommitBarrierEnabledForTest = true;
+    });
     const [a, b] = await Promise.all([
       f.table.resolveDeletion(f.owner.credential, key, "approve"),
       f.table.resolveDeletion(f.owner.credential, key, "approve"),
     ]);
+    const observed = await runInDurableObject(f.table, async (instance) => {
+      const testInstance = instance as unknown as {
+        deletionCommitBarrierArrivalsForTest: number;
+        deletionCommitBarrierOverlappedForTest: boolean;
+      };
+      return {
+        count: testInstance.deletionCommitBarrierArrivalsForTest,
+        overlapped: testInstance.deletionCommitBarrierOverlappedForTest,
+      };
+    });
+    expect(observed).toEqual({ count: 2, overlapped: true });
     expect(a).toEqual({ ok: true, value: { state: "deleted" } });
     expect(b).toEqual({ ok: true, value: { state: "deleted" } });
     await runInDurableObject(f.table, async (_instance, state) => {
