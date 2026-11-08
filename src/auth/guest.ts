@@ -1,5 +1,6 @@
 import type { GuestSessionPrincipal, NewGuestSession } from "../objects/guest";
 import { randomBase64Url } from "../shared/random";
+import { connectionsPage } from "../web/connections";
 import { guestPage } from "../web/guest";
 
 export const SESSION_COOKIE_NAME = "__Host-agent_table_session";
@@ -241,6 +242,93 @@ export async function handleGuestChoice(
   headers.append(
     "Set-Cookie",
     `${CSRF_COOKIE_NAME}=; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=Lax`,
+  );
+  return new Response(null, { status: 303, headers });
+}
+
+/** Connection management is browser-only; no OAuth token or public grant API. */
+export async function handleConnectionList(
+  request: Request,
+  env: Env,
+): Promise<Response> {
+  if (request.method !== "GET") return response("Method Not Allowed", 405);
+  if (!allowedScheme(request)) return response("HTTPS required", 403);
+  const credential = browserCredential(request);
+  if (!credential) return response("No valid guest session", 401);
+  let guest: GuestSessionPrincipal | null;
+  let connections;
+  try {
+    const stub = guestStub(env, credential.guestId);
+    guest = await stub.validateSession(credential.sessionId, credential.secret);
+    if (!guest || guest.guestId !== credential.guestId) {
+      return response("No valid guest session", 401);
+    }
+    connections = await stub.listConnections(credential.sessionId, credential.secret);
+  } catch {
+    return response("Connection authority unavailable", 503);
+  }
+  if (!connections) return response("No valid guest session", 401);
+  const existingCsrf = getCookie(request, CSRF_COOKIE_NAME);
+  const csrf =
+    existingCsrf && CSRF_TOKEN.test(existingCsrf)
+      ? existingCsrf
+      : randomBase64Url(32);
+  const headers = new Headers({
+    ...securityHeaders,
+    "Content-Type": "text/html; charset=utf-8",
+    "Content-Security-Policy":
+      "default-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
+  });
+  if (csrf !== existingCsrf) headers.append("Set-Cookie", csrfCookie(csrf));
+  return new Response(connectionsPage(guest.guestId, connections, csrf), {
+    headers,
+  });
+}
+
+export async function handleConnectionRevoke(
+  request: Request,
+  env: Env,
+): Promise<Response> {
+  if (request.method !== "POST") return response("Method Not Allowed", 405);
+  if (!sameOriginPost(request)) return response("CSRF validation failed", 403);
+  const form = await readBoundedForm(request);
+  if (!form || [...form.keys()].sort().join(",") !== "connection_id,csrf") {
+    return response("Invalid revocation request", 400);
+  }
+  if (
+    !sameToken(
+      form.get("csrf") ?? "",
+      getCookie(request, CSRF_COOKIE_NAME) ?? "",
+    )
+  ) {
+    return response("CSRF validation failed", 403);
+  }
+  const credential = browserCredential(request);
+  if (!credential) return response("No valid guest session", 401);
+  let result;
+  try {
+    result = await guestStub(env, credential.guestId).revokeConnection(
+      credential.sessionId,
+      credential.secret,
+      form.get("connection_id") ?? "",
+    );
+  } catch {
+    return response("Connection authority unavailable", 503);
+  }
+  if (result.status === "unauthorized") {
+    return response("No valid guest session", 401);
+  }
+  if (result.status === "not-found") {
+    return response("Connection not found", 404);
+  }
+  const headers = new Headers({
+    ...securityHeaders,
+    Location: "/guest/connections",
+  });
+  headers.append("Set-Cookie", sessionCookie(result.session));
+  headers.append(
+    "Set-Cookie",
+    CSRF_COOKIE_NAME + "=; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=Lax",
   );
   return new Response(null, { status: 303, headers });
 }
