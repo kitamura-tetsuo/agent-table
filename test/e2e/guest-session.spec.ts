@@ -10,6 +10,28 @@ test("browser explicitly creates, reuses, or replaces its guest without implicit
 }) => {
   await page.goto("/guest");
   expect((await page.request.get("/guest/me")).status()).toBe(401);
+  // In a real browser the double-submit cookie must survive the initial GET.
+  expect(
+    (await context.cookies()).some(
+      (cookie) => cookie.name === "__Host-agent_table_csrf",
+    ),
+  ).toBe(true);
+
+  let postEvidence: {
+    origin: string | null;
+    csrfCookieSent: boolean;
+    fetchSite: string | null;
+  } | null = null;
+  page.on("request", (outgoing) => {
+    if (!outgoing.url().endsWith("/guest/session")) return;
+    const headers = outgoing.headers();
+    postEvidence = {
+      origin: headers.origin ?? null,
+      csrfCookieSent:
+        headers.cookie?.includes("__Host-agent_table_csrf=") ?? false,
+      fetchSite: headers["sec-fetch-site"] ?? null,
+    };
+  });
 
   const [creation] = await Promise.all([
     page.waitForResponse((response) =>
@@ -17,6 +39,11 @@ test("browser explicitly creates, reuses, or replaces its guest without implicit
     ),
     page.getByRole("button", { name: "Create a new guest" }).click(),
   ]);
+  expect(postEvidence).toEqual({
+    origin: "http://localhost:8787",
+    csrfCookieSent: true,
+    fetchSite: "same-origin",
+  });
   expect(creation.status()).toBe(303);
   const setCookie = (await creation.headerValue("set-cookie")) ?? "";
   for (const attribute of ["Path=/", "Secure", "HttpOnly", "SameSite=Lax"]) {
