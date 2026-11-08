@@ -66,7 +66,7 @@ describe("server-verified guest admission challenge", () => {
 
   it("renders a challenge and refuses missing proof on real guest routes", async () => {
     const page = await worker.fetch(
-      new Request(`${ORIGIN}/guest`),
+      new Request(`${ORIGIN}/guest`) as Parameters<typeof worker.fetch>[0],
       required,
       createExecutionContext(),
     );
@@ -95,7 +95,7 @@ describe("server-verified guest admission challenge", () => {
           csrf: token,
           "cf-turnstile-response": "",
         }),
-      }),
+      }) as Parameters<typeof worker.fetch>[0],
       required,
       createExecutionContext(),
     );
@@ -115,7 +115,7 @@ describe("server-verified guest admission challenge", () => {
           "cf-turnstile-response": TOKEN,
           human: "true",
         }),
-      }),
+      }) as Parameters<typeof worker.fetch>[0],
       required,
       createExecutionContext(),
     );
