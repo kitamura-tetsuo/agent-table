@@ -406,6 +406,10 @@ export class TableDO extends DurableObject<Env> {
           return { kind: "error", code: "IDEMPOTENCY_CONFLICT" } as const;
         }
         if (previous.expires_at <= now) {
+          this.ctx.storage.sql.exec(
+            "UPDATE table_invitations SET state = 'revoked', response_envelope = NULL WHERE invite_id = ? AND state = 'active'",
+            previous.invite_id,
+          );
           return { kind: "error", code: "INVITATION_EXPIRED" } as const;
         }
         if (previous.state !== "active" || !previous.response_envelope) {
@@ -502,7 +506,6 @@ export class TableDO extends DurableObject<Env> {
         table.table_id !== parts.tableId ||
         table.expires_at <= now ||
         table.state === "deleted" ||
-        table.state === "closed" ||
         table.state === "expired"
       ) {
         return { ok: false, code: "INVITATION_INVALID" } as const;
@@ -529,8 +532,7 @@ export class TableDO extends DurableObject<Env> {
         .toArray()[0];
       if (
         !invitation ||
-        invitation.secret_digest !== digest ||
-        invitation.expires_at <= now
+        invitation.secret_digest !== digest
       ) {
         return { ok: false, code: "INVITATION_INVALID" } as const;
       }
@@ -539,7 +541,7 @@ export class TableDO extends DurableObject<Env> {
         invitation.state === "consumed" &&
         invitation.consumed_by === actor.guestId &&
         existing?.seat === 2 &&
-        table.state === "open"
+        (table.state === "open" || table.state === "closed")
       ) {
         if (!receipt) {
           this.ctx.storage.sql.exec(
@@ -555,6 +557,9 @@ export class TableDO extends DurableObject<Env> {
           ok: true,
           value: this.publicMetadata(table, existing),
         } as const;
+      }
+      if (invitation.expires_at <= now) {
+        return { ok: false, code: "INVITATION_EXPIRED" } as const;
       }
       if (
         receipt ||
