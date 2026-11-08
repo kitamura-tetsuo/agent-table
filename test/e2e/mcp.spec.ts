@@ -166,8 +166,10 @@ test("official SDK negotiates against the authenticated live Wrangler HTTP serve
     });
     const listed = await client.listTools();
     expect(listed.tools.map((tool) => tool.name).sort()).toEqual([
+      "create_invite",
       "create_table",
       "get_table",
+      "join_table",
     ]);
     expect(
       listed.tools.find((tool) => tool.name === "create_table")?.annotations,

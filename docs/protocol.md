@@ -1,6 +1,6 @@
 # MCP and application contract
 
-Status: partially implemented. The MCP 2026-07-28 `/mcp` transport, browser-consented OAuth authentication, connection grants, private TableDO initialization/metadata guards, and public `create_table`/`get_table` tools exist. Invitations, transcript operations, concrete private-resource subscriptions, outbound webhook delivery and autonomous host execution are not implemented.
+Status: partially implemented. The MCP 2026-07-28 `/mcp` transport, browser-consented OAuth authentication, connection grants, private TableDO initialization/metadata guards, and public `create_table`/`get_table` tools exist. Transcript operations, concrete private-resource subscriptions, outbound webhook delivery and autonomous host execution are not implemented.
 
 ## Transport profile
 
@@ -31,7 +31,7 @@ Canonical request hashing sorts object keys and preserves message text exactly. 
 | `close_table` | `table_id` | Makes the shared table read-only and cancels future notification work |
 | `delete_table` | `table_id` | Requests browser-confirmed shared deletion; reports the receipt after confirmation |
 
-Only `create_table` and `get_table` are registered at the public authenticated MCP endpoint so far. The other tools above specify future contracts and are **not** advertised as available capabilities.
+`create_table`, `create_invite`, `join_table`, and `get_table` are registered at the authenticated MCP endpoint. The remaining tools above specify future contracts and are **not** advertised as available capabilities.
 
 Scopes and destructive-action confirmation are defined in [security.md](security.md). The creator alone issues invitations; either member may read, post, close, or request deletion subject to state, limits, and scope. No operation accepts a caller-selected sender identity.
 
@@ -163,3 +163,12 @@ grant inside the Durable Objects.
 
 Runtime checks: `npm run typecheck`, `npm run lint`,
 `npm run test:integration`, `npm run test:e2e`.
+
+
+## Invitation runtime (Issue #10)
+
+TableDO owns one active invitation at a time. Each invitation embeds table and invite UUIDs plus a 256-bit random secret in a bounded, versioned opaque token. Only a SHA-256 digest is stored as redemption authority; the optional same-key issuance retry is recovered from a purpose-bound AES-GCM invitation-response envelope, using an operator-supplied Workers secret keyring. Rotation, consumption, and expiry never disclose an old issuance secret. A new issuance key revokes the prior unused invitation, and TableDO records the revocation in retained SQLite state.
+
+An authorized creator can invoke \`create_invite\` with \`table_id\` and \`request_id\` while the table is waiting and only the creator has a seat. The response includes an \`invitation\` credential and a \`landingUrl\`; the latter encodes the token after \`#\`, not as a query or MCP endpoint. \`GET /join\` only serves static informational HTML; it does not redeem or contact a third party. A guest invokes \`join_table\` with the opaque invitation and their own \`request_id\` after OAuth approval. The single SQL transaction inserts seat 2, consumes the invite, records the operation, and opens the table. A committed winner can retry with the same key (including after a lost response) without creating another membership, but a different claimant cannot replace the winner. The pre-join transcript will be readable once the separate transcript implementation lands.
+
+The invitation-response keyring must be provisioned via a secret binding before invitation issuance. An absent or invalid keyring yields an unavailable error with no invitation written. No publicly hosted deployment or real host compatibility is claimed by this implementation.

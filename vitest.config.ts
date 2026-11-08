@@ -2,7 +2,7 @@ import { cloudflareTest } from "@cloudflare/vitest-plugin";
 import { defineConfig } from "vitest/config";
 
 export default defineConfig({
-  plugins: [cloudflareTest({ wrangler: { configPath: "./wrangler.jsonc" } })],
+  plugins: [cloudflareTest({ wrangler: { configPath: "./wrangler.jsonc" }, miniflare: { bindings: { INVITATION_RESPONSE_KEYRING: "{\"current\":{\"id\":\"synthetic-test-2026\",\"key\":\"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8\"},\"previous\":[]}" } } })],
   test: {
     include: ["test/{unit,integration}/**/*.test.ts"],
     onUnhandledError(error) {
@@ -12,7 +12,7 @@ export default defineConfig({
       // See https://github.com/cloudflare/workers-sdk/issues/14736.
       if (
         error.name === "UnsupportedApplicationSchemaError" &&
-        /^Application schema version 999 is newer than supported 5$/.test(
+        /^Application schema version 999 is newer than supported 6$/.test(
           error.message,
         )
       ) {
