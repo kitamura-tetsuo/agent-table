@@ -134,9 +134,11 @@ function sameReservation(
 
 export class TableDO extends DurableObject<Env> {
   private readonly deadlines: DurableDeadlineScheduler;
-  // Integration tests may place two real RPCs immediately before the SQL commit.
-  // This hook is not configurable by clients and is never set in production.
-  private beforeTranscriptCommitForTest?: () => Promise<void>;
+  // Integration tests configure this private in-object barrier via the test
+  // harness. It is never exposed through a public RPC or production binding.
+  private transcriptCommitBarrierEnabledForTest = false;
+  private transcriptCommitBarrierArrivalsForTest = 0;
+  private transcriptCommitBarrierReleaseForTest?: () => void;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -706,8 +708,18 @@ export class TableDO extends DurableObject<Env> {
     const digest = await postDigest(input);
     const bytes = new TextEncoder().encode(input.body).byteLength;
     const messageId = crypto.randomUUID();
-    if (this.beforeTranscriptCommitForTest) {
-      await this.beforeTranscriptCommitForTest();
+    if (this.transcriptCommitBarrierEnabledForTest) {
+      this.transcriptCommitBarrierArrivalsForTest++;
+      if (this.transcriptCommitBarrierArrivalsForTest === 1) {
+        // Create and release the promise in the same DO I/O context.
+        // A bounded fallback avoids hanging tests if the second RPC never arrives.
+        await new Promise<void>((resolve) => {
+          this.transcriptCommitBarrierReleaseForTest = resolve;
+          setTimeout(resolve, 5_000);
+        });
+      } else {
+        this.transcriptCommitBarrierReleaseForTest?.();
+      }
     }
     return this.ctx.storage.transactionSync(() => {
       const table = this.metadataRow();

@@ -1635,24 +1635,11 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
         );
       });
 
-      let arrived = 0;
-      let release!: () => void;
-      let bothArrived!: () => void;
-      const releaseCommit = new Promise<void>((resolve) => {
-        release = resolve;
-      });
-      const enteredCommit = new Promise<void>((resolve) => {
-        bothArrived = resolve;
-      });
       await runInDurableObject(table, async (instance) => {
         const testInstance = instance as unknown as {
-          beforeTranscriptCommitForTest?: () => Promise<void>;
+          transcriptCommitBarrierEnabledForTest: boolean;
         };
-        testInstance.beforeTranscriptCommitForTest = async () => {
-          arrived++;
-          if (arrived === 2) bothArrived();
-          await releaseCommit;
-        };
+        testInstance.transcriptCommitBarrierEnabledForTest = true;
       });
       const [a, b] = await Promise.all([sdk(owner.token), sdk(peer.token)]);
       const argsA = {
@@ -1666,20 +1653,17 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
         body: "B".repeat(TABLE_LIMITS.messageBodyBytes),
       };
       try {
-        const pending = Promise.all([
+        const results = await Promise.all([
           a.callTool({ name: "post_message", arguments: argsA }),
           b.callTool({ name: "post_message", arguments: argsB }),
         ]);
-        const bothReachedBoundary = await Promise.race([
-          enteredCommit.then(() => true),
-          new Promise<boolean>((resolve) =>
-            setTimeout(() => resolve(false), 5_000),
-          ),
-        ]);
-        release();
-        expect(bothReachedBoundary).toBe(true);
-        const results = await pending;
-        expect(arrived).toBe(2);
+        const arrivals = await runInDurableObject(table, async (instance) => {
+          const testInstance = instance as unknown as {
+            transcriptCommitBarrierArrivalsForTest: number;
+          };
+          return testInstance.transcriptCommitBarrierArrivalsForTest;
+        });
+        expect(arrivals).toBe(2);
         expect(results.filter((result) => !result.isError)).toHaveLength(1);
         const winnerIndex = results.findIndex((result) => !result.isError);
         const winner = winnerIndex === 0 ? creator : invitee;
@@ -1721,12 +1705,11 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
           ).toEqual({ message_id: accepted.message_id });
         });
       } finally {
-        release();
         await runInDurableObject(table, async (instance) => {
           const testInstance = instance as unknown as {
-            beforeTranscriptCommitForTest?: () => Promise<void>;
+            transcriptCommitBarrierEnabledForTest: boolean;
           };
-          testInstance.beforeTranscriptCommitForTest = undefined;
+          testInstance.transcriptCommitBarrierEnabledForTest = false;
         });
         await a.close();
         await b.close();
