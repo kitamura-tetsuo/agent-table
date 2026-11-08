@@ -1,6 +1,7 @@
 import { evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it, vi } from "vitest";
+import { APPLICATION_SCHEMA_VERSION } from "../../schema/migrations";
 import {
   MAX_ROTATION_OVERLAP_MS,
   type SecretEncryptionBindings,
@@ -142,7 +143,7 @@ describe("production Workers AES-GCM secret envelopes", () => {
       context,
       config,
     );
-    expect(await stub.schemaVersion()).toBe(2);
+    expect(await stub.schemaVersion()).toBe(APPLICATION_SCHEMA_VERSION);
 
     await runInDurableObject(stub, async (_instance, state) => {
       state.storage.sql.exec(

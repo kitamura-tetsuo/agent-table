@@ -105,22 +105,26 @@ describe("Worker and durable connection grant authority", () => {
         expiry,
       ),
     ).toBe(null);
-    await expect(
-      guest.stub.createConnection(
-        guest.sessionId,
-        guest.secret,
-        ["unknown" as ConnectionScope],
-        expiry,
-      ),
-    ).rejects.toThrow(/Invalid connection scopes/);
-    await expect(
-      guest.stub.createConnection(
-        guest.sessionId,
-        guest.secret,
-        ["tables:read", "tables:read"],
-        expiry,
-      ),
-    ).rejects.toThrow(/Invalid connection scopes/);
+    // Assert invalid input directly inside the DO to avoid duplicate RPC
+    // unhandled rejections emitted by the test harness.
+    await runInDurableObject(guest.stub, async (instance) => {
+      await expect(
+        instance.createConnection(
+          guest.sessionId,
+          guest.secret,
+          ["unknown" as ConnectionScope],
+          expiry,
+        ),
+      ).rejects.toThrow(/Invalid connection scopes/);
+      await expect(
+        instance.createConnection(
+          guest.sessionId,
+          guest.secret,
+          ["tables:read", "tables:read"],
+          expiry,
+        ),
+      ).rejects.toThrow(/Invalid connection scopes/);
+    });
 
     const read = await guest.stub.createConnection(
       guest.sessionId,
