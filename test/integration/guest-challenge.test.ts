@@ -45,17 +45,26 @@ describe("server-verified guest admission challenge", () => {
       expect(init?.method).toBe("POST");
       expect(init?.redirect).toBe("manual");
       // Construct the real Workerd Request: unsupported redirect modes throw.
-      expect(new Request("https://challenges.cloudflare.com/turnstile/v0/siteverify", init).redirect).toBe("manual");
+      expect(
+        new Request(
+          "https://challenges.cloudflare.com/turnstile/v0/siteverify",
+          init,
+        ).redirect,
+      ).toBe("manual");
       const body = init?.body as URLSearchParams;
       expect(body.get("secret")).toBe(required.TURNSTILE_SECRET);
       expect(body.get("response")).toBe(TOKEN);
       return Response.json(payload);
     });
     expect(await verifyGuestChallenge(required, TOKEN, verifier)).toBe(true);
-    const redirected = await verifyGuestChallenge(required, TOKEN, async (_url, init) => {
-      expect(new Request(_url, init).redirect).toBe("manual");
-      return Response.redirect("https://redirect.example.test/verifier", 302);
-    });
+    const redirected = await verifyGuestChallenge(
+      required,
+      TOKEN,
+      async (_url, init) => {
+        expect(new Request(_url, init).redirect).toBe("manual");
+        return Response.redirect("https://redirect.example.test/verifier", 302);
+      },
+    );
     expect(redirected).toBe(false);
     for (const change of [
       { hostname: "evil.example" },

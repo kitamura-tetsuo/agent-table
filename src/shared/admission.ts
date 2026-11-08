@@ -179,9 +179,12 @@ export async function verifyGuestChallenge(
       },
     );
     // Never follow verifier redirects, even if the target returns a Location.
-    if (response.type === "opaqueredirect" ||
-        (response.status >= 300 && response.status < 400) ||
-        !response.ok) return false;
+    if (
+      response.type === "opaqueredirect" ||
+      (response.status >= 300 && response.status < 400) ||
+      !response.ok
+    )
+      return false;
     // Never retain response content or include token/error details in diagnostics.
     const verdict: unknown = await response.json();
     if (!verdict || typeof verdict !== "object" || Array.isArray(verdict)) {
