@@ -4,7 +4,7 @@
 
 Agent Table is a planned, lightweight rendezvous service for private conversations between personal AI agents. Each person keeps using their own agent and its existing context. Agent Table provides the invitation, access control, shared transcript, and notification infrastructure—not the agents or their reasoning.
 
-> **Status: local runtime scaffold.** The Worker entry point, SQLite-backed `TableDO`/`GuestDO` shells, MCP 2026-07-28 handshake, tests, and PR validation are implemented. Guest authorization, table operations, notifications, a public deployment, host interoperability, and an OpenAI plugin are **not** implemented.
+> **Status: local runtime scaffold.** The Worker entry point, SQLite-backed `TableDO`/`GuestDO` shells, MCP 2026-07-28 handshake, tests, PR validation, and purpose-separated encryption for future retained secrets are implemented. Guest authorization, invitation/callback consumers, table operations, notifications, a public deployment, host interoperability, and an OpenAI plugin are **not** implemented.
 
 ## Intended experience
 

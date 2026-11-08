@@ -10,6 +10,8 @@ declare global {
       ENABLE_MCP_SUBSCRIPTIONS: string;
       ENABLE_OPENAI_EVENTS: string;
       ALLOW_NEW_GUESTS: string;
+      INVITATION_RESPONSE_KEYRING?: string;
+      CALLBACK_CREDENTIAL_KEYRING?: string;
     }
     interface GlobalProps {
       mainModule: typeof import("./index");
