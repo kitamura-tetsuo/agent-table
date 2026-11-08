@@ -12,7 +12,7 @@ export default defineConfig({
       // See https://github.com/cloudflare/workers-sdk/issues/14736.
       if (
         error.name === "UnsupportedApplicationSchemaError" &&
-        /^Application schema version 999 is newer than supported 4$/.test(
+        /^Application schema version 999 is newer than supported 5$/.test(
           error.message,
         )
       ) {

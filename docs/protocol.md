@@ -1,6 +1,6 @@
 # MCP and application contract
 
-Status: proposed application contract. The MCP 2026-07-28 transport scaffold and `/mcp` route now exist, but none of the application tools, private resources, authentication, or subscriptions described below are registered or implemented.
+Status: proposed public application contract. The MCP 2026-07-28 transport scaffold and `/mcp` route exist, and private TableDO initialization/metadata/inbox guards have been implemented. Public application tools, exposed private resources, OAuth authentication and subscriptions are not yet registered or implemented.
 
 ## Transport profile
 

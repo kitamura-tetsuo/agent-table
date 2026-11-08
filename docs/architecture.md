@@ -1,6 +1,6 @@
 # Architecture
 
-Status: partial implementation on Cloudflare Workers and SQLite-backed Durable Objects. Guest identity, connection grants, and the private creation-reservation ledger are implemented; TableDO creation and public application tools remain pending.
+Status: partial implementation on Cloudflare Workers and SQLite-backed Durable Objects. Guest identity, connection grants, the private creation-reservation ledger, and private TableDO initialization/membership authority are implemented. Public create_table orchestration, invitations, transcript operations, and notification delivery remain pending.
 
 ## Topology
 
@@ -53,7 +53,7 @@ Revocation is checked when authorizing an operation. A request already authorize
 
 ## Durable records
 
-The following are logical schema targets, not existing SQL migrations.
+The table metadata and memberships below now have a private SQL producer in schema v5. Invitation, message, operation-receipt, subscription and outbox records are still logical targets for later migrations.
 
 ### `TableDO`
 
@@ -68,6 +68,10 @@ The following are logical schema targets, not existing SQL migrations.
 | Outbox | Event ID, subscription ID/generation, message sequence, state, attempt count, lease deadline, next-attempt time, safe failure category |
 
 Message sequence is the transcript ordering authority. Use uniqueness constraints for sequence, message ID, and operation keys. Enforce seat/invite decisions in the same transaction as their mutation. JavaScript's single thread does not excuse unsafe interleaving across `await` boundaries.
+
+`schema/005_table_authority.ts` creates a single `table_metadata` row and at most two unique `table_memberships` seats. `TableDO.initializeTable` verifies the fixed table identity against its own Durable Object ID and independently re-reads the exact reservation and write grant from GuestDO before a local transaction inserts a `waiting` table and one random creator membership in seat 1. A matching replay returns the original creator membership across eviction. A different reservation or metadata, an expired reservation, or a retained terminal table cannot create another table. The other seat is not allocated by this stage.
+
+The private `getMetadata` and `readOwnInbox` boundaries require a fresh active read grant and local membership/expiry checks. An unknown or nonmember request receives `TABLE_NOT_FOUND` without application metadata; an authorized expired table receives no content. Metadata returns safe membership IDs/roles, fixed UTC timestamps, configured limits and only the caller's concrete inbox URI. The inbox's initial counters are zero. The in-memory Worker does not cache grants or memberships, and no public table route exists yet.
 
 ### `GuestDO`
 
