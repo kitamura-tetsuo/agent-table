@@ -166,12 +166,16 @@ describe("Worker and durable connection grant authority", () => {
     for (const [operation, requiredScope] of Object.entries(
       EXPECTED_OPERATION_SCOPE,
     )) {
-      expect(OPERATION_SCOPE[operation as keyof typeof OPERATION_SCOPE]).toBe(
-        requiredScope,
-      );
+      const implementationScope =
+        OPERATION_SCOPE[operation as keyof typeof OPERATION_SCOPE];
+      expect(implementationScope).toBe(requiredScope);
       for (const grantScope of CONNECTION_SCOPES) {
         const grant = grants[grantScope];
-        const actual = await decision(guest, grant.connectionId, requiredScope);
+        const actual = await decision(
+          guest,
+          grant.connectionId,
+          implementationScope,
+        );
         if (grantScope === requiredScope) {
           expect(actual).toEqual({
             allowed: true,
