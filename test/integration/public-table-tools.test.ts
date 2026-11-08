@@ -1068,7 +1068,7 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
       expect(created.isError).not.toBe(true);
       const metadata = output(created);
       const tableId = String(metadata.tableId);
-      const body = "  é 😀\\nPreserve whitespace  ";
+      const body = "  é 😀\nPreserve whitespace  ";
       const original = {
         table_id: tableId,
         body,
@@ -1139,7 +1139,7 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
       });
       await expect(stranger.readResource({ uri: inboxUri })).rejects.toThrow();
       for (const [key, invalidBody] of [
-        ["sdk_transcript_bad_whitespace_001", "  \\n  "],
+        ["sdk_transcript_bad_whitespace_001", "  \n  "],
         ["sdk_transcript_bad_utf8_limit_001", "😀".repeat(2049)],
       ] as const) {
         const invalid = await client.callTool({
