@@ -1,6 +1,7 @@
 import { evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
+import { postMessage as servicePostMessage } from "../../src/services/tables";
 import {
   authorizeGuestConnection,
   type ConnectionScope,
@@ -259,5 +260,148 @@ describe("TableDO committed transcript and reads", () => {
         created.value.ownInboxUri,
       ),
     ).toEqual({ ok: false, code: "TABLE_NOT_FOUND" });
+  });
+  it("only exposes transient hints after a new committed peer post", async () => {
+    const { owner, stub, id, created } = await tableFixture();
+    const hints: Array<{
+      tableId: string;
+      seq: number;
+      peerMembershipId: string;
+    }> = [];
+    const capture = (hint: (typeof hints)[number]) => {
+      hints.push(hint);
+    };
+    const creator = await owner.actor("tables:write");
+    const first = {
+      request_id: "transient_before_peer_0001",
+      body: "Message before joining",
+    };
+    const preJoin = await servicePostMessage(env, creator, id, first, capture);
+    expect(preJoin).toMatchObject({ ok: true, value: { seq: 1 } });
+    expect(hints).toEqual([]);
+
+    const invite = await stub.issueInvite(
+      creator,
+      "transient_peer_invitation_001",
+    );
+    if (!invite.ok) throw new Error("Missing invitation");
+    const newcomer = await guest();
+    const joined = await stub.redeemInvite(
+      await newcomer.actor("tables:write"),
+      invite.value.invitation,
+      "transient_peer_join_000001",
+    );
+    if (!joined.ok) throw new Error("Missing peer membership");
+
+    const second = {
+      request_id: "transient_peer_post_key_0001",
+      body: "Newly committed",
+    };
+    const accepted = await servicePostMessage(
+      env,
+      creator,
+      id,
+      second,
+      capture,
+    );
+    expect(accepted).toMatchObject({ ok: true, value: { seq: 2 } });
+    expect(accepted.ok && Object.keys(accepted.value)).not.toContain(
+      "peerUpdateHint",
+    );
+    expect(hints).toEqual([
+      {
+        tableId: id,
+        seq: 2,
+        peerMembershipId: joined.value.ownMembershipId,
+      },
+    ]);
+    expect(
+      await servicePostMessage(env, creator, id, second, capture),
+    ).toEqual(accepted);
+    expect(
+      await servicePostMessage(
+        env,
+        creator,
+        id,
+        { ...second, body: "Changed" },
+        capture,
+      ),
+    ).toEqual({ ok: false, code: "IDEMPOTENCY_CONFLICT" });
+    expect(
+      await servicePostMessage(
+        env,
+        creator,
+        id,
+        {
+          request_id: "transient_invalid_post_0001",
+          body: "   ",
+        },
+        capture,
+      ),
+    ).toEqual({ ok: false, code: "INVALID_REQUEST" });
+    expect(
+      await stub.readMessages(await newcomer.actor("tables:read"), {}),
+    ).toMatchObject({ ok: true, value: { through_seq: 2 } });
+    expect(hints).toHaveLength(1);
+
+    await runInDurableObject(stub, async (_instance, state) => {
+      state.storage.sql.exec(
+        "CREATE TRIGGER transient_fail_insert BEFORE INSERT ON table_messages BEGIN SELECT RAISE(ABORT, 'test rollback'); END",
+      );
+    });
+    expect(
+      await servicePostMessage(
+        env,
+        creator,
+        id,
+        {
+          request_id: "transient_failed_post_0001",
+          body: "Do not publish",
+        },
+        capture,
+      ),
+    ).toEqual({ ok: false, code: "TEMPORARILY_UNAVAILABLE" });
+    expect(hints).toHaveLength(1);
+    await runInDurableObject(stub, async (_instance, state) => {
+      expect(
+        state.storage.sql.exec("SELECT last_seq FROM table_metadata").one(),
+      ).toMatchObject({ last_seq: 2 });
+      state.storage.sql.exec("DROP TRIGGER transient_fail_insert");
+    });
+
+    // An observer failure after commit must not turn durable success into a retryable error.
+    const peerPost = await servicePostMessage(
+      env,
+      await newcomer.actor("tables:write"),
+      id,
+      {
+        request_id: "transient_reverse_post_0001",
+        body: "Response to creator",
+      },
+      () => {
+        throw new Error("Transient consumer unavailable");
+      },
+    );
+    expect(peerPost).toMatchObject({ ok: true, value: { seq: 3 } });
+    const next = await servicePostMessage(
+      env,
+      creator,
+      id,
+      { request_id: "transient_owner_post_0001", body: "One more" },
+      capture,
+    );
+    expect(next).toMatchObject({ ok: true, value: { seq: 4 } });
+    expect(hints).toEqual([
+      { tableId: id, seq: 2, peerMembershipId: joined.value.ownMembershipId },
+      { tableId: id, seq: 4, peerMembershipId: joined.value.ownMembershipId },
+    ]);
+    const ownInbox = await stub.readOwnInbox(
+      await owner.actor("tables:read"),
+      created.value.ownInboxUri,
+    );
+    expect(ownInbox).toMatchObject({
+      ok: true,
+      value: { lastSeq: 4, latestPeerSeq: 3 },
+    });
   });
 });

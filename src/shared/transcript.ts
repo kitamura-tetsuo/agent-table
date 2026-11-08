@@ -22,6 +22,15 @@ export interface PostReceipt {
   created_at: string;
   persisted: true;
 }
+/**
+ * Best-effort, non-durable post-commit signal for a different table member.
+ * This is internal metadata, not a public post receipt or an outbox record.
+ */
+export interface TransientPeerUpdateHint {
+  tableId: string;
+  seq: number;
+  peerMembershipId: string;
+}
 export interface TranscriptMessage {
   seq: number;
   message_id: string;

@@ -37,6 +37,7 @@ import {
   POST_WINDOW_MS,
   type PostReceipt,
   postDigest,
+  type TransientPeerUpdateHint,
   type TranscriptPage,
   validPostInput,
   validReadInput,
@@ -692,7 +693,9 @@ export class TableDO extends DurableObject<Env> {
   async postMessage(
     actor: VerifiedConnectionActor,
     input: unknown,
-  ): Promise<TableResult<PostReceipt>> {
+  ): Promise<
+    TableResult<PostReceipt> & { peerUpdateHint?: TransientPeerUpdateHint }
+  > {
     if (!validPostInput(input)) return { ok: false, code: "INVALID_REQUEST" };
     if (!(await this.verifyActor(actor, "tables:write"))) {
       return { ok: false, code: "TABLE_NOT_FOUND" };
@@ -770,6 +773,13 @@ export class TableDO extends DurableObject<Env> {
         return { ok: false, code: "RATE_LIMITED" } as const;
       }
       const seq = table.last_seq + 1;
+      const peer = this.ctx.storage.sql
+        .exec<{ membership_id: string }>(
+          "SELECT membership_id FROM table_memberships WHERE table_id = ? AND guest_id <> ? LIMIT 1",
+          table.table_id,
+          actor.guestId,
+        )
+        .toArray()[0];
       this.ctx.storage.sql.exec(
         `INSERT INTO table_messages
           (seq, message_id, sender_membership_id, body, body_bytes, created_at, reply_to_message_id)
@@ -813,6 +823,17 @@ export class TableDO extends DurableObject<Env> {
           created_at: now,
           reply_to_message_id: input.reply_to_message_id ?? null,
         }),
+        // This metadata becomes observable only after transactionSync commits.
+        // Identical receipt retries take the earlier return and never produce it.
+        ...(peer
+          ? {
+              peerUpdateHint: {
+                tableId: table.table_id,
+                seq,
+                peerMembershipId: peer.membership_id,
+              },
+            }
+          : {}),
       } as const;
     });
   }

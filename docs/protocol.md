@@ -190,6 +190,15 @@ Failures and retries do not advance sequence or counters. Snapshot reads
 accept ascending `after_seq` and an optional fixed `through_seq` with pages
 up to 100. Reads neither acknowledge events nor change processing cursors.
 
+The table write returns an internal, best-effort `peerUpdateHint` only on a new
+committed post with a different current member. The service boundary accepts
+an optional synchronous observer that sees only the table ID, committed sequence,
+and target peer membership ID after the TableDO transaction returns. Retries,
+rollbacks, rejected posts, reads and pre-join self-only posts produce no hint.
+Observer failure cannot invalidate a persisted receipt; the public MCP receipt
+never contains the internal hint. This transient hook is not durable delivery
+or an event outbox and must not be used as proof that an agent was awakened.
+
 The private `agent-table://tables/{tableId}/inbox/{membershipId}` resource
 template performs fresh OAuth connection and TableDO membership checks and
 returns only the authenticated caller's watermark. Private concrete resource

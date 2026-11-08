@@ -9,6 +9,7 @@ import type {
   PostMessageInput,
   PostReceipt,
   ReadMessagesInput,
+  TransientPeerUpdateHint,
   TranscriptPage,
 } from "../shared/transcript";
 
@@ -142,12 +143,23 @@ export async function postMessage(
   actor: VerifiedConnectionActor,
   id: string,
   input: PostMessageInput,
+  onPeerUpdate?: (hint: TransientPeerUpdateHint) => void,
 ): Promise<TableResult<PostReceipt>> {
   try {
-    return await env.TABLES.get(env.TABLES.idFromName(id)).postMessage(
-      actor,
-      input,
-    );
+    const committed = await env.TABLES.get(
+      env.TABLES.idFromName(id),
+    ).postMessage(actor, input);
+    if (!committed.ok) return committed;
+    if (committed.peerUpdateHint && onPeerUpdate) {
+      try {
+        // The SQL commit is already complete. This is not durable delivery.
+        onPeerUpdate(committed.peerUpdateHint);
+      } catch {
+        // A transient observer cannot change the persisted post receipt.
+      }
+    }
+    // Never expose internal peer routing details through public MCP tools.
+    return { ok: true, value: committed.value };
   } catch {
     return { ok: false, code: "TEMPORARILY_UNAVAILABLE" };
   }
