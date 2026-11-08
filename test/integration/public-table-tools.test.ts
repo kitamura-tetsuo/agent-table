@@ -10,9 +10,15 @@ import {
 } from "@modelcontextprotocol/client";
 import { describe, expect, it } from "vitest";
 import worker from "../../src/index";
-import type { CreationReservation, CreationResult } from "../../src/objects/guest";
+import type {
+  CreationReservation,
+  CreationResult,
+} from "../../src/objects/guest";
+import {
+  authorizeGuestConnection,
+  type VerifiedConnectionActor,
+} from "../../src/shared/auth";
 import type { SafeTableMetadata, TableResult } from "../../src/shared/table";
-import { authorizeGuestConnection, type VerifiedConnectionActor } from "../../src/shared/auth";
 
 const ORIGIN = "http://localhost:8787";
 const REDIRECT = "https://client.example/callback";
@@ -492,14 +498,16 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
       env.TABLES.idFromName(reserved.reservation.tableId),
     );
     let committed = false;
-    const overlay = withInitializationRpc(async (real, actor, request, receipt) => {
-      const actual = await real(actor, request, receipt);
-      if (actual.ok) {
-        committed = true;
-        throw new Error("Injected reply loss after persisted initialization");
-      }
-      return actual;
-    });
+    const overlay = withInitializationRpc(
+      async (real, actor, request, receipt) => {
+        const actual = await real(actor, request, receipt);
+        if (actual.ok) {
+          committed = true;
+          throw new Error("Injected reply loss after persisted initialization");
+        }
+        return actual;
+      },
+    );
     const client = await sdk(owner.token, fetchThroughWorker(overlay));
     try {
       const uncertain = await client.callTool({
