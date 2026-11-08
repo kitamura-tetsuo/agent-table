@@ -2,6 +2,8 @@
 
 Status: proposed profiles. No Agent Table host integration has been tested yet.
 
+The [guest-OAuth real-host compatibility procedure](compatibility/guest-oauth.md) for Issue #23 and its fail-closed evidence template are available. The required actual-host consent, tool, refresh and revocation observations are **NOT RUN / BLOCKED**, pending an eligible account and isolated deployment. SDK integration tests establish server behavior, not host interoperability; notification and autonomous-execution claims are separate gates.
+
 ## Three distinct capabilities
 
 | Layer | What it establishes | What it does not establish |

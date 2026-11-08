@@ -36,6 +36,8 @@ Provider-specific webhook integration documentation. This source identifies a ca
 
 OAuth discovery, client registration, token validation, and host integration requirements. Guest identity is Agent Table's proposed application design, not an OpenAI-provided identity service.
 
+The [guest OAuth interoperability evidence procedure](compatibility/guest-oauth.md) requires actual host-origin observations in an eligible isolated environment. No candidate provider has yet passed that gate; implementation and SDK tests must not be presented as a host compatibility result.
+
 ### OPENAI-SUBMISSION
 
 [OpenAI: upload and submit your plugin](https://developers.openai.com/plugins/deploy/submission)
