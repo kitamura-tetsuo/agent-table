@@ -8,6 +8,8 @@ import {
 } from "../auth/guest";
 import { canonicalOAuthOrigin } from "../auth/provider";
 import { validInvitationOperationId, validTableId } from "../shared/invitations";
+import type { DeletionReceipt, DeletionView } from "../shared/deletion";
+import type { TableResult } from "../shared/table";
 
 const headers = {
   "Cache-Control": "no-store",
@@ -78,7 +80,7 @@ ${hidden("table_id", tableId)}${hidden("csrf", csrf.token)}
 </form>`, csrf.setCookie);
     }
     if (!validInvitationOperationId(requestId)) return plain("Invalid request", 400);
-    let result;
+    let result: TableResult<DeletionView>;
     try {
       result = await env.TABLES.get(env.TABLES.idFromName(tableId)).deletionView(
         guest.guestId, requestId,
@@ -110,7 +112,7 @@ ${hidden("table_id", tableId)}${hidden("request_id", requestId)}${hidden("csrf",
   if (!validTableId(tableId)) return plain("Invalid request", 400);
   if (decision === "request") {
     if (keys !== "csrf,decision,table_id") return plain("Invalid request", 400);
-    let result;
+    let result: TableResult<DeletionReceipt>;
     try {
       result = await env.TABLES.get(env.TABLES.idFromName(tableId)).requestBrowserDeletion(
         credential, crypto.randomUUID(),
@@ -132,7 +134,7 @@ ${hidden("table_id", tableId)}${hidden("request_id", requestId)}${hidden("csrf",
   ) return plain("Invalid request", 400);
   const requestId = form.get("request_id") ?? "";
   if (!validInvitationOperationId(requestId)) return plain("Invalid request", 400);
-  let result;
+  let result: TableResult<{ state: "deleted" | "denied" }>;
   try {
     result = await env.TABLES.get(env.TABLES.idFromName(tableId)).resolveDeletion(
       credential, requestId, decision,
