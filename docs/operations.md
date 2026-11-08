@@ -1,6 +1,6 @@
 # Development and operations
 
-Status: local foundation runbook plus future deployment plan. The Worker/DO scaffold, dependency lockfile, test scripts, PR-only validation workflow, and purpose-separated encrypted-secret primitive exist. No public or staging deployment, guest authorization, invitation producer, callback producer, application tables, event delivery, or host interoperability has been completed.
+Status: local foundation runbook plus future deployment plan. The Worker/DO scaffold, dependency lockfile, test scripts, PR-only validation workflow, and purpose-separated encrypted-secret primitive exist. No public or staging deployment, OAuth authentication, invitation producer, callback producer, application tables, event delivery, or host interoperability has been completed.
 
 ## Implemented foundation (Issue #2)
 
@@ -54,7 +54,7 @@ test/
 docs/
 ```
 
-The implemented subset has `src/index.ts`, `src/mcp/server.ts`, `src/auth/guest.ts`, `src/web/guest.ts`, `src/objects/{table,guest}.ts`, `src/shared/{schema,config,random,secret-envelope}.ts`, versioned `schema/001_initial.ts` and `schema/002_guest_sessions.ts`, `test/{unit,integration,e2e}/`, and `.github/workflows/ci.yml`. Guest browser identity is implemented; OAuth provider, webhook, consent, and connection-management dependencies will be selected by their respective implementation issues after reviewing compatibility.
+The implemented subset has `src/index.ts`, `src/mcp/server.ts`, `src/auth/guest.ts`, `src/web/guest.ts`, `src/objects/{table,guest}.ts`, `src/shared/{schema,config,random,secret-envelope}.ts`, versioned `schema/001_initial.ts`, `schema/002_guest_sessions.ts` and `schema/003_connection_grants.ts`, `test/{unit,integration,e2e}/`, and `.github/workflows/ci.yml`. Guest browser identity and private grant authority/browser revocation are implemented; OAuth provider, webhook, and consent-issuance dependencies remain pending.
 
 Tests should run in Cloudflare's workerd-based harness for storage, bindings, alarms, and streams. Browser tests cover consent and invitation handling. Pure Node unit tests alone are not an adequate production oracle. [CF-TEST]
 
@@ -97,7 +97,7 @@ npm run dev
 
 The GitHub Actions PR workflow repeats clean `npm ci`, type checking, linting, workerd tests, dry-run build, and browser smoke tests. It requests read-only repository permissions and no production secrets. Use local ignored `.dev.vars` for any future local credentials. Tests must use synthetic identities; a production callback validator must not receive a localhost exemption from a test configuration.
 
-New guest admission is disabled by default (`ALLOW_NEW_GUESTS=false`). For a temporary, isolated local browser session test, start `npm run dev -- --var ALLOW_NEW_GUESTS:true`; the Playwright web server uses that override, while the standard `npm run dev` does not. Browser routes are `/guest` (explicit choice UI), `/guest/session` (same-origin CSRF-protected POST only), and `/guest/me` (read-only validated session check). The `__Host-` session cookie needs HTTPS except on loopback during development. Version 2 of the application schema adds guest identity/session tables **only in GuestDO**. It migrates existing version 1 objects transactionally and rejects unsupported newer versions without clearing state. The SHA-256 session digests remain durable across instance eviction; raw session credentials must never enter SQL, logs, or diagnostic artifacts.
+New guest admission is disabled by default (`ALLOW_NEW_GUESTS=false`). For a temporary, isolated local browser session test, start `npm run dev -- --var ALLOW_NEW_GUESTS:true`; the Playwright web server uses that override, while the standard `npm run dev` does not. Browser routes are `/guest` (explicit choice UI), `/guest/session` (same-origin CSRF-protected POST only), `/guest/me` (read-only validated session check), and `/guest/connections` (session-protected connection list) with POST-only `/guest/connections/revoke`. The `__Host-` session cookie needs HTTPS except on loopback during development. Version 2 of the application schema adds guest identity/session tables **only in GuestDO**. It migrates existing version 1 objects transactionally and rejects unsupported newer versions without clearing state. The SHA-256 session digests remain durable across instance eviction; raw session credentials must never enter SQL, logs, or diagnostic artifacts.
 
 ## Deployment procedure after implementation
 

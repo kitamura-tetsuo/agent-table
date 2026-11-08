@@ -50,11 +50,12 @@ export function guestPage(
         <button type="submit" ${admissionEnabled ? "" : "disabled"}>Create a new guest</button>
       </form>
       ${admissionEnabled ? "" : "<p>New guest admission is currently disabled.</p>"}
+      ${session ? '<p><a href="/guest/connections">Manage this guest\'s connections</a></p>' : ""}
       <h2>Access and privacy</h2>
       <p>A guest is pseudonymous. No email address or password is needed. A browser label, display name, shared device, table ID, or agent connection cannot prove your guest identity.</p>
       <p>If you lose your browser cookie, this service cannot reconstruct that browser identity from a public table ID or an agent connection. There is no account recovery or cross-device pairing in this version.</p>
-      <p>Losing the browser cookie does not revoke an independently authorized agent connection. Revoke such grants separately when connection management becomes available.</p>
-      <p>Connection authorization, table membership, and private conversations are not yet available.</p>
+      <p>Losing the browser cookie does not revoke an independently authorized agent connection. Use the connection management page to revoke them separately.</p>
+      <p>Connection-grant state and browser revocation are available, but OAuth connections, table membership, and private conversations are not yet available.</p>
     </main>
   </body>
 </html>`;

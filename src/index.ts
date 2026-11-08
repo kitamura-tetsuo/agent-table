@@ -1,4 +1,6 @@
 import {
+  handleConnectionList,
+  handleConnectionRevoke,
   handleGuestChoice,
   handleGuestIdentity,
   handleGuestPage,
@@ -19,6 +21,12 @@ export default {
     }
     if (url.pathname === "/guest/session") {
       return handleGuestChoice(request, env);
+    }
+    if (url.pathname === "/guest/connections") {
+      return handleConnectionList(request, env);
+    }
+    if (url.pathname === "/guest/connections/revoke") {
+      return handleConnectionRevoke(request, env);
     }
     if (url.pathname === "/guest/me") {
       if (request.method !== "GET") {

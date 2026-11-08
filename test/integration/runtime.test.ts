@@ -16,6 +16,7 @@ describe("actual SQLite-backed Durable Object bindings", () => {
       state.storage.sql.exec(
         "INSERT INTO preserved_fixture (value) VALUES ('old-guest-data')",
       );
+      state.storage.sql.exec("DROP TABLE guest_connections");
       state.storage.sql.exec("DROP TABLE guest_sessions");
       state.storage.sql.exec("DROP TABLE guest_identity");
       state.storage.sql.exec(
@@ -34,6 +35,13 @@ describe("actual SQLite-backed Durable Object bindings", () => {
         state.storage.sql
           .exec<{ name: string }>(
             "SELECT name FROM sqlite_master WHERE name = 'guest_sessions'",
+          )
+          .toArray(),
+      ).toHaveLength(1);
+      expect(
+        state.storage.sql
+          .exec<{ name: string }>(
+            "SELECT name FROM sqlite_master WHERE name = 'guest_connections'",
           )
           .toArray(),
       ).toHaveLength(1);
