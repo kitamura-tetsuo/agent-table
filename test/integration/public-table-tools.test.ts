@@ -734,26 +734,33 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
         arguments: { ...input, request_id: "invitation_creator_setup_001" },
       });
       const tableId = String(output(created).tableId);
-      const issue = (key: string) => client.callTool({
-        name: "create_invite",
-        arguments: { table_id: tableId, request_id: key },
-      });
+      const issue = (key: string) =>
+        client.callTool({
+          name: "create_invite",
+          arguments: { table_id: tableId, request_id: key },
+        });
       const first = await issue("invitation_issue_key_one_001");
       expect(first.isError).not.toBe(true);
       const active = output(first);
       const secret = String(active.invitation);
-      expect(secret).toMatch(/^at1\.[0-9a-f-]+\.[0-9a-f-]+\.[A-Za-z0-9_-]{43}$/);
+      expect(secret).toMatch(
+        /^at1\.[0-9a-f-]+\.[0-9a-f-]+\.[A-Za-z0-9_-]{43}$/,
+      );
       expect(String(active.landingUrl)).toContain("/join#at1.");
       expect(String(active.landingUrl)).not.toContain("?invitation=");
       const retry = await issue("invitation_issue_key_one_001");
       expect(output(retry)).toEqual(active);
       const table = env.TABLES.get(env.TABLES.idFromName(tableId));
       await runInDurableObject(table, async (_instance, state) => {
-        const rows = state.storage.sql.exec<{
-          response_envelope: string;
-          secret_digest: string;
-          state: string;
-        }>("SELECT response_envelope, secret_digest, state FROM table_invitations").toArray();
+        const rows = state.storage.sql
+          .exec<{
+            response_envelope: string;
+            secret_digest: string;
+            state: string;
+          }>(
+            "SELECT response_envelope, secret_digest, state FROM table_invitations",
+          )
+          .toArray();
         expect(rows).toHaveLength(1);
         expect(rows[0].state).toBe("active");
         expect(rows[0].response_envelope).not.toContain(secret);
@@ -761,7 +768,10 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
       });
       const creatorJoin = await client.callTool({
         name: "join_table",
-        arguments: { invitation: secret, request_id: "creator_self_join_key_001" },
+        arguments: {
+          invitation: secret,
+          request_id: "creator_self_join_key_001",
+        },
       });
       expect(creatorJoin.isError).toBe(true);
       const rotated = await issue("invitation_issue_key_two_001");
@@ -772,19 +782,28 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
       expect(JSON.stringify(output(oldRetry))).not.toContain(secret);
       const oldJoin = await client.callTool({
         name: "join_table",
-        arguments: { invitation: secret, request_id: "old_revoked_invite_key_001" },
+        arguments: {
+          invitation: secret,
+          request_id: "old_revoked_invite_key_001",
+        },
       });
       expect(oldJoin.isError).toBe(true);
       await runInDurableObject(table, async (_instance, state) => {
-        const rows = state.storage.sql.exec<{
-          state: string;
-          response_envelope: string | null;
-        }>("SELECT state, response_envelope FROM table_invitations ORDER BY issued_at, rowid").toArray();
+        const rows = state.storage.sql
+          .exec<{
+            state: string;
+            response_envelope: string | null;
+          }>(
+            "SELECT state, response_envelope FROM table_invitations ORDER BY issued_at, rowid",
+          )
+          .toArray();
         expect(rows.map((row) => row.state)).toEqual(["revoked", "active"]);
         expect(rows[0].response_envelope).toBeNull();
-        expect(state.storage.sql.exec("SELECT * FROM table_memberships").toArray()).toHaveLength(1);
+        expect(
+          state.storage.sql.exec("SELECT * FROM table_memberships").toArray(),
+        ).toHaveLength(1);
       });
-      const landing = await exports.default.fetch(ORIGIN + "/join");
+      const landing = await exports.default.fetch(`${ORIGIN}/join`);
       expect(landing.status).toBe(200);
       expect(await landing.text()).not.toContain(secret);
       expect(landing.headers.get("Referrer-Policy")).toBe("no-referrer");
@@ -805,7 +824,10 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
     const tableId = String(output(initial).tableId);
     const issued = await creator.callTool({
       name: "create_invite",
-      arguments: { table_id: tableId, request_id: "join_contenders_invite_001" },
+      arguments: {
+        table_id: tableId,
+        request_id: "join_contenders_invite_001",
+      },
     });
     expect(issued.isError).not.toBe(true);
     const invitation = String(output(issued).invitation);
@@ -826,10 +848,17 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
                   key: string,
                 ) => {
                   entered++;
-                  for (let attempt = 0; entered < 2 && attempt < 500; attempt++) {
-                    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+                  for (
+                    let attempt = 0;
+                    entered < 2 && attempt < 500;
+                    attempt++
+                  ) {
+                    await new Promise<void>((resolve) =>
+                      setTimeout(resolve, 10),
+                    );
                   }
-                  if (entered !== 2) throw new Error("Redemption attempts did not overlap");
+                  if (entered !== 2)
+                    throw new Error("Redemption attempts did not overlap");
                   const result = await target.redeemInvite(actor, token, key);
                   if (result.ok && !dropped) {
                     dropped = true;
@@ -852,47 +881,70 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
     const originalKeyB = "joining_guest_b_request_001";
     try {
       const [resultA, resultB] = await Promise.all([
-        a.callTool({ name: "join_table", arguments: { invitation, request_id: originalKeyA } }),
-        b.callTool({ name: "join_table", arguments: { invitation, request_id: originalKeyB } }),
+        a.callTool({
+          name: "join_table",
+          arguments: { invitation, request_id: originalKeyA },
+        }),
+        b.callTool({
+          name: "join_table",
+          arguments: { invitation, request_id: originalKeyB },
+        }),
       ]);
       expect(entered).toBe(2);
       expect(dropped).toBe(true);
       expect(resultA.isError).toBe(true);
       expect(resultB.isError).toBe(true);
       const table = env.TABLES.get(env.TABLES.idFromName(tableId));
-      const winner = await runInDurableObject(table, async (_instance, state) => {
-        const [row] = state.storage.sql.exec<{
-          consumed_by: string;
-          state: string;
-          response_envelope: string | null;
-        }>("SELECT consumed_by, state, response_envelope FROM table_invitations").toArray();
-        expect(row.state).toBe("consumed");
-        expect(row.response_envelope).toBeNull();
-        expect(state.storage.sql.exec("SELECT * FROM table_memberships").toArray()).toHaveLength(2);
-        expect(state.storage.sql.exec<{ state: string }>(
-          "SELECT state FROM table_metadata",
-        ).one().state).toBe("open");
-        return row.consumed_by;
-      });
+      const winner = await runInDurableObject(
+        table,
+        async (_instance, state) => {
+          const [row] = state.storage.sql
+            .exec<{
+              consumed_by: string;
+              state: string;
+              response_envelope: string | null;
+            }>(
+              "SELECT consumed_by, state, response_envelope FROM table_invitations",
+            )
+            .toArray();
+          expect(row.state).toBe("consumed");
+          expect(row.response_envelope).toBeNull();
+          expect(
+            state.storage.sql.exec("SELECT * FROM table_memberships").toArray(),
+          ).toHaveLength(2);
+          expect(
+            state.storage.sql
+              .exec<{ state: string }>("SELECT state FROM table_metadata")
+              .one().state,
+          ).toBe("open");
+          return row.consumed_by;
+        },
+      );
       const winningClient = winner === guestA.guestId ? a : b;
       const losingClient = winner === guestA.guestId ? b : a;
-      const winningKey = winner === guestA.guestId ? originalKeyA : originalKeyB;
+      const winningKey =
+        winner === guestA.guestId ? originalKeyA : originalKeyB;
       const losingKey = winner === guestA.guestId ? originalKeyB : originalKeyA;
       await evictDurableObject(table);
       const recovered = await winningClient.callTool({
-        name: "join_table", arguments: { invitation, request_id: winningKey },
+        name: "join_table",
+        arguments: { invitation, request_id: winningKey },
       });
       expect(recovered.isError).not.toBe(true);
       expect(output(recovered)).toMatchObject({
-        tableId, state: "open", limits: { participants: 2 },
+        tableId,
+        state: "open",
+        limits: { participants: 2 },
       });
       const membership = String(output(recovered).ownMembershipId);
       const again = await winningClient.callTool({
-        name: "join_table", arguments: { invitation, request_id: winningKey },
+        name: "join_table",
+        arguments: { invitation, request_id: winningKey },
       });
       expect(output(again).ownMembershipId).toBe(membership);
       const denied = await losingClient.callTool({
-        name: "join_table", arguments: { invitation, request_id: losingKey },
+        name: "join_table",
+        arguments: { invitation, request_id: losingKey },
       });
       expect(denied.isError).toBe(true);
       const changedKey = await winningClient.callTool({
@@ -902,12 +954,16 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
       expect(changedKey.isError).toBe(true);
       const creatorRetry = await creator.callTool({
         name: "create_invite",
-        arguments: { table_id: tableId, request_id: "join_contenders_invite_001" },
+        arguments: {
+          table_id: tableId,
+          request_id: "join_contenders_invite_001",
+        },
       });
       expect(creatorRetry.isError).toBe(true);
       expect(JSON.stringify(output(creatorRetry))).not.toContain(invitation);
       const read = await winningClient.callTool({
-        name: "get_table", arguments: { table_id: tableId },
+        name: "get_table",
+        arguments: { table_id: tableId },
       });
       expect(output(read).ownMembershipId).toBe(membership);
     } finally {

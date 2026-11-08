@@ -103,7 +103,10 @@ export async function createInvite(
   requestId: string,
 ) {
   try {
-    return await env.TABLES.get(env.TABLES.idFromName(tableId)).issueInvite(actor, requestId);
+    return await env.TABLES.get(env.TABLES.idFromName(tableId)).issueInvite(
+      actor,
+      requestId,
+    );
   } catch {
     return { ok: false as const, code: "TEMPORARILY_UNAVAILABLE" };
   }
@@ -119,8 +122,9 @@ export async function joinTable(
   const parsed = parseInvitation(invitation);
   if (!parsed) return { ok: false, code: "INVITATION_INVALID" };
   try {
-    return await env.TABLES.get(env.TABLES.idFromName(parsed.tableId))
-      .redeemInvite(actor, invitation, requestId);
+    return await env.TABLES.get(
+      env.TABLES.idFromName(parsed.tableId),
+    ).redeemInvite(actor, invitation, requestId);
   } catch {
     return { ok: false, code: "TEMPORARILY_UNAVAILABLE" };
   }

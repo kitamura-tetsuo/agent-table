@@ -19,19 +19,6 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run typecheck
-      - name: Temporary source-format diagnostics (must be removed)
-        run: |
-          npx biome check --write src schema test || true
-          python3 - <<'PY'
-          import base64
-          import pathlib
-          import subprocess
-          paths = subprocess.check_output(["git", "diff", "--name-only"], text=True).splitlines()
-          for path in paths:
-              if path.startswith(("src/", "schema/", "test/")):
-                  print("FORMATTED_FILE_B64", path, base64.b64encode(pathlib.Path(path).read_bytes()).decode("ascii"))
-          PY
-          exit 1
       - run: npm run lint
       - run: npm test
       - run: npm run test:integration
