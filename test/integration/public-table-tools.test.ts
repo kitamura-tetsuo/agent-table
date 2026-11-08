@@ -2070,3 +2070,59 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
     }
   });
 });
+
+
+describe("authenticated public SDK admission quota", () => {
+  it("charges real OAuth-authenticated SDK MCP traffic in the principal's SQLite window", async () => {
+    const principal = await tokenForGuest("tables:read tables:write");
+    const limited: Env = {
+      ...env,
+      PRINCIPAL_RATE_PER_MINUTE: "4",
+    };
+    const observed: Array<{ status: number; retryAfter: string | null }> = [];
+    const client = await sdk(principal.token, async (request) => {
+      const response = await fetchThroughWorker(limited)(request);
+      if (new URL(request.url).pathname === "/mcp") {
+        observed.push({
+          status: response.status,
+          retryAfter: response.headers.get("Retry-After"),
+        });
+      }
+      return response;
+    });
+    try {
+      for (let index = 0; index < 8; index++) {
+        try {
+          await client.listTools();
+        } catch {
+          // HTTP 429 is an expected transport-level refusal after the budget.
+        }
+      }
+      const denied = observed.filter((item) => item.status === 429);
+      expect(denied.length).toBeGreaterThan(0);
+      expect(denied[0].retryAfter).toMatch(/^[1-9][0-9]*$/);
+      expect(observed.filter((item) => item.status !== 429)).toHaveLength(4);
+      expect(observed.every((item) => item.status !== 503)).toBe(true);
+
+      const key = `principal-v1:${principal.guestId}`;
+      const bytes = await crypto.subtle.digest(
+        "SHA-256",
+        new TextEncoder().encode(key),
+      );
+      const hash = Array.from(new Uint8Array(bytes), (value) =>
+        value.toString(16).padStart(2, "0"),
+      ).join("");
+      const admission = env.ADMISSION.get(env.ADMISSION.idFromName(hash));
+      await runInDurableObject(admission, async (_instance, state) => {
+        const rows = state.storage.sql
+          .exec<{ count: number }>(
+            "SELECT COUNT(*) AS count FROM admission_hits WHERE category = 'application'",
+          )
+          .one();
+        expect(rows.count).toBe(4);
+      });
+    } finally {
+      await client.close();
+    }
+  });
+});
