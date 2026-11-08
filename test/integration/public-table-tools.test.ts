@@ -272,6 +272,8 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
         "create_table",
         "get_table",
         "join_table",
+        "post_message",
+        "read_messages",
       ]);
       const rejected = await client.callTool({
         name: "create_table",

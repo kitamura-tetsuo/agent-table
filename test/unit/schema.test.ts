@@ -9,7 +9,7 @@ describe("application schema manifest", () => {
     expect(migrations.map((migration) => migration.version)).toEqual([
       1, 2, 3, 4, 5, 6,
     ]);
-    expect(APPLICATION_SCHEMA_VERSION).toBe(6);
+    expect(APPLICATION_SCHEMA_VERSION).toBe(7);
     expect(
       migrations.every(
         (migration) =>
