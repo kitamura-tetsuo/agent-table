@@ -274,17 +274,43 @@ async function admissionKey(identity: string): Promise<string> {
 }
 
 /**
- * CF-Connecting-IP is authoritative only on a directly edge-served Worker:
- * Cloudflare overwrites it for public client requests. Never use X-Forwarded-For
- * or a user-provided guest ID as an edge-rate identity. An absent or malformed
- * edge identity enters one shared fallback bucket rather than bypassing quotas.
- * Do not expose direct untrusted-HTTP proxies for public guest admission.
+ * CF-Connecting-IP is meaningful only on the trusted direct edge boundary.
+ * Canonicalize valid IPv4/IPv6 forms before assigning a durable rate bucket.
+ * Malformed values share the same bounded unknown-source bucket; forwarding
+ * from a same-zone Worker still requires independent ingress trust controls.
  */
 function edgeSource(request: Request): string {
   const source = request.headers.get("CF-Connecting-IP");
-  return source && /^[0-9a-fA-F:.]{3,64}$/.test(source)
-    ? source.toLowerCase()
-    : "unknown-source";
+  if (
+    !source ||
+    source.length > 64 ||
+    !/^[0-9a-fA-F:.]+$/.test(source)
+  ) {
+    return "unknown-source";
+  }
+  const ipv6 = source.includes(":");
+  if (!ipv6) {
+    const octets = source.split(".");
+    if (
+      octets.length !== 4 ||
+      octets.some(
+        (octet) =>
+          !/^(0|[1-9][0-9]{0,2})$/.test(octet) || Number(octet) > 255,
+      )
+    ) {
+      return "unknown-source";
+    }
+  }
+  try {
+    const address = ipv6 ? `[${source}]` : source;
+    const canonical = new URL(`http://${address}/`).hostname.toLowerCase();
+    if (ipv6 && (!canonical.startsWith("[") || !canonical.endsWith("]"))) {
+      return "unknown-source";
+    }
+    return canonical;
+  } catch {
+    return "unknown-source";
+  }
 }
 
 async function consumeAdmission(
