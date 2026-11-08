@@ -1,16 +1,15 @@
 import { describe, expect, it } from "vitest";
+import { evaluateHostEvidence, HOST_CASES } from "../e2e/host/evidence";
 import template from "../e2e/host/evidence.template.json";
-import {
-  evaluateHostEvidence,
-  HOST_CASES,
-} from "../e2e/host/evidence";
 
 describe("actual host interoperability evidence gate", () => {
   it("keeps the default untested host explicitly blocked", () => {
     const result = evaluateHostEvidence(template);
     expect(result.structurallyValid).toBe(true);
     expect(result.completeRecord).toBe(false);
-    expect(result.missing).toContain("actual host-origin traffic (not SDK-only)");
+    expect(result.missing).toContain(
+      "actual host-origin traffic (not SDK-only)",
+    );
     expect(result.missing).toContain(
       "actual client and server evidence for refreshedToken",
     );
