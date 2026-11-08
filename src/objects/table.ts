@@ -530,10 +530,7 @@ export class TableDO extends DurableObject<Env> {
           parts.inviteId,
         )
         .toArray()[0];
-      if (
-        !invitation ||
-        invitation.secret_digest !== digest
-      ) {
+      if (!invitation || invitation.secret_digest !== digest) {
         return { ok: false, code: "INVITATION_INVALID" } as const;
       }
       const existing = this.memberFor(actor.guestId);

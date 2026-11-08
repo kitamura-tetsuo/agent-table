@@ -1000,8 +1000,8 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
         arguments: { invitation: "at1.invalid", request_id: winningKey },
       });
       expect(changedKey.isError).toBe(true);
-      const alteredInvitation = invitation.slice(0, -1) +
-        (invitation.endsWith("A") ? "B" : "A");
+      const alteredInvitation =
+        invitation.slice(0, -1) + (invitation.endsWith("A") ? "B" : "A");
       const conflicting = await winningClient.callTool({
         name: "join_table",
         arguments: {
