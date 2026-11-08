@@ -1137,9 +1137,7 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
         lastSeq: 1,
         latestPeerSeq: 0,
       });
-      await expect(
-        stranger.readResource({ uri: inboxUri }),
-      ).rejects.toThrow();
+      await expect(stranger.readResource({ uri: inboxUri })).rejects.toThrow();
       for (const [key, invalidBody] of [
         ["sdk_transcript_bad_whitespace_001", "  \\n  "],
         ["sdk_transcript_bad_utf8_limit_001", "😀".repeat(2049)],
