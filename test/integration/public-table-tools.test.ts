@@ -1723,7 +1723,7 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
       await invitee.close();
     }
   }, 10_000);
-}
+
   it("rejects SDK posts against the aggregate byte budget before the message-count ceiling", async () => {
     const owner = await tokenForGuest("tables:read tables:write");
     const creator = await sdk(owner.token);
