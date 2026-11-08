@@ -149,6 +149,7 @@ async function approvedConsent(
     .map((line) => line.split(";")[0]);
   const approved = await exports.default.fetch(`${ORIGIN}/authorize`, {
     method: "POST",
+    redirect: "manual",
     headers: {
       Origin: ORIGIN,
       "Sec-Fetch-Site": "same-origin",
@@ -306,6 +307,7 @@ describe("real authorization code and guest-grant flow", () => {
     if (!handle || !csrf) throw Error("Consent form missing bound values");
     const denied = await exports.default.fetch(`${ORIGIN}/authorize`, {
       method: "POST",
+      redirect: "manual",
       headers: {
         Origin: ORIGIN,
         "Sec-Fetch-Site": "same-origin",
