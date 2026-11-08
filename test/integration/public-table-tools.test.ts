@@ -1064,7 +1064,6 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
     }
   });
 
-
   it("charges SDK post retries to ingress without duplicating durable accepted posts", async () => {
     const owner = await tokenForGuest("tables:read tables:write");
     let limited: Env = { ...env, PRINCIPAL_RATE_PER_MINUTE: "60" };
@@ -1090,12 +1089,14 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
       ).join("");
       const authority = env.ADMISSION.get(env.ADMISSION.idFromName(identity));
       const used = () =>
-        runInDurableObject(authority, async (_instance, state) =>
-          state.storage.sql
-            .exec<{ count: number }>(
-              "SELECT COUNT(*) AS count FROM admission_hits WHERE category = 'application'",
-            )
-            .one().count,
+        runInDurableObject(
+          authority,
+          async (_instance, state) =>
+            state.storage.sql
+              .exec<{ count: number }>(
+                "SELECT COUNT(*) AS count FROM admission_hits WHERE category = 'application'",
+              )
+              .one().count,
         );
       const initialCount = await used();
       // Each authorized MCP attempt consumes ingress quota, including replay.
