@@ -1,6 +1,6 @@
 # Architecture
 
-Status: partial implementation on Cloudflare Workers and SQLite-backed Durable Objects. Guest identity, connection grants, the private creation-reservation ledger, and private TableDO initialization/membership authority are implemented. The authenticated public `create_table`/`get_table` tools are implemented. Invitations, transcript operations, and notification delivery remain pending.
+Status: partial implementation on Cloudflare Workers and SQLite-backed Durable Objects. Guest identity, connection grants, creation reservations, invitations, ordered transcript, and authenticated table tools are implemented. This branch implements shared close and private deletion/expiry cleanup; browser-confirmed deletion and event delivery remain separate, unimplemented integrations.
 
 ## Topology
 
@@ -114,7 +114,7 @@ Each object has one alarm slot, and alarm execution may be repeated. `src/shared
 
 GuestDO now schedules session and grant expiry plus the eight-day reservation-retention deadlines at their producing commits. Its constructor checks for missing alarms after reconstruction without replacing an earlier pending one. The real `alarm()` processes at most 100 due session, grant and reservation rows per invocation, retaining guest identity and all live records, then schedules the earliest remaining deadline. Before handling, a separate durable 60-second recovery wakeup is armed to survive a handler crash beyond Cloudflare's bounded automatic retries. A due backlog is rearmed at least one second later. Injected pre/post-arm, mutation, rearm and response-loss tests verify durable rollback/recovery and repeated alarms through eviction.
 
-TableDO owns an instance of the same helper and an alarm entry, but no table expiry, delivery lease or outbox consumer has been introduced yet. Those later features must register their **real** durable deadlines and handlers, including work-recovery safety, rather than interpreting a scheduled wakeup as successful cleanup, delivery or host execution. An alarm alone does not replace synchronous lifecycle authorization checks; `setTimeout`, an in-memory queue, and `waitUntil` are not durable schedulers.
+TableDO now arms its original expiry with table initialization and uses the same scheduler for private purge retention and bounded tombstone cleanup. Its constructor reconstructs a missing alarm, and its handler re-reads durable expiry/tombstone rows. No delivery lease or outbox consumer has been introduced; those later features must register their **real** durable deadlines and handlers rather than interpreting a scheduled wakeup as successful delivery or host execution. An alarm alone does not replace synchronous lifecycle authorization checks; `setTimeout`, an in-memory queue, and `waitUntil` are not durable schedulers.
 
 ## Lifecycle
 
@@ -128,7 +128,7 @@ TableDO owns an instance of the same helper and an alarm entry, but no table exp
 
 Expiration is enforced on every request and dispatch attempt; it does not depend on the alarm firing on time. Closing never extends expiration. A full transcript rejects additional posts but does not erase prior messages.
 
-Deletion retains only a minimal authorization/idempotency tombstone until the original expiry plus 24 hours. No title, purpose, message body, callback secret, or invitation secret remains in that tombstone. Then remove the object's remaining storage. A missing object is never recreated by read, post, join, subscribe, or a stale delivery result. Platform backups and already delivered copies have separate retention boundaries. [CF-TTL]
+The private purge implementation retains a minimal opaque-ID/membership tombstone until original expiry plus 24 hours. No title, purpose, message body, callback secret, or invitation secret remains. The tombstone and retained guest ID rows are then removed by the scheduler. Internal schema metadata remains as empty tables; browser approval and physical platform-storage reclamation are later integration/operations requirements. Platform backups are a separate boundary. A missing object is never recreated by read, post, join, subscribe, or a stale delivery result. Platform backups and already delivered copies have separate retention boundaries. [CF-TTL]
 
 ## Notification placement
 
