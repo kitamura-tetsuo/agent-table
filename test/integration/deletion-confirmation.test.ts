@@ -354,6 +354,29 @@ describe("browser-confirmed deletion through real TableDO and GuestDO", () => {
         instance.resolveDeletion(f.owner.credential, key, "approve"),
       ).rejects.toThrow();
     });
+    // The public browser approval must not report a successful purge when
+    // the TableDO storage transaction rejects. Exercise the Worker response
+    // boundary as well as the direct in-object rollback assertion above.
+    const page = await csrfPage(f.id, key, f.owner.cookie);
+    const failedApproval = await confirm(
+      f.id,
+      key,
+      "approve",
+      f.owner.cookie,
+      page,
+    );
+    expect(failedApproval.status).toBe(503);
+    expect(await failedApproval.text()).not.toContain("Deletion committed");
+    expect(
+      await f.table.deletionView(f.owner.id, key),
+    ).toMatchObject({ ok: true, value: { state: "pending" } });
+    await runInDurableObject(f.table, async (_instance, state) => {
+      expect(
+        state.storage.sql
+          .exec("SELECT COUNT(*) AS n FROM table_tombstone_delete_receipts")
+          .one(),
+      ).toEqual({ n: 0 });
+    });
     await runInDurableObject(f.table, async (_instance, state) => {
       expect(
         state.storage.sql
