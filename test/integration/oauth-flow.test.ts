@@ -96,3 +96,175 @@ describe("OAuth library and consent boundary", () => {
     expect(body.error).toBe("invalid_grant");
   });
 });
+
+
+async function withBrowserGuest() {
+  const guestId = crypto.randomUUID();
+  const guest = env.GUESTS.get(env.GUESTS.idFromName(guestId));
+  const session = await guest.createSession(guestId);
+  return {
+    guestId,
+    guest,
+    session,
+    cookie: `__Host-agent_table_session=v1.${guestId}.${session.sessionId}.${session.secret}`,
+  };
+}
+
+async function approvedConsent(
+  browser: Awaited<ReturnType<typeof withBrowserGuest>>,
+  clientId: string,
+  extra: Record<string, string> = {},
+) {
+  const { url, verifier } = await start(clientId, extra);
+  const response = await exports.default.fetch(url, {
+    headers: { Cookie: browser.cookie },
+  });
+  expect(response.status).toBe(200);
+  const html = await response.text();
+  expect(html).toContain("Synthetic OAuth client");
+  expect(html).toContain(browser.guestId);
+  expect(html).toContain("lose your browser session"); // The page states the loss-of-access limitation.
+  const handle = /name="handle" type="hidden" value="([^"]+)"/.exec(html)?.[1];
+  const csrf = /name="csrf" type="hidden" value="([^"]+)"/.exec(html)?.[1];
+  if (!handle || !csrf) throw Error("Consent form missing bound values");
+  const cookies = response.headers.getSetCookie().map((line) => line.split(";")[0]);
+  const approved = await exports.default.fetch(`${ORIGIN}/authorize`, {
+    method: "POST",
+    headers: {
+      Origin: ORIGIN,
+      "Sec-Fetch-Site": "same-origin",
+      "Content-Type": "application/x-www-form-urlencoded",
+      Cookie: [browser.cookie, ...cookies].join("; "),
+    },
+    body: new URLSearchParams([
+      ["handle", handle],
+      ["csrf", csrf],
+      ["decision", "approve"],
+      ["scope", "tables:read"],
+    ]),
+  });
+  expect(approved.status).toBe(302);
+  const redirectTo = approved.headers.get("Location");
+  if (!redirectTo) throw Error("OAuth authorization redirect was absent");
+  const code = new URL(redirectTo).searchParams.get("code");
+  if (!code) throw Error("Code absent");
+  const newSession = approved.headers.getSetCookie()
+    .find((line) => line.startsWith("__Host-agent_table_session="));
+  const values = newSession && /^__Host-agent_table_session=v1\.([0-9a-f-]+)\.([0-9a-f-]+)\.([A-Za-z0-9_-]{43})/
+    .exec(newSession);
+  if (!values) throw Error("Browser session not rotated");
+  return { code, verifier, sessionId: values[2], sessionSecret: values[3] };
+}
+
+async function redeem(clientId: string, code: string, verifier: string) {
+  return exports.default.fetch(`${ORIGIN}/oauth/token`, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      client_id: clientId,
+      grant_type: "authorization_code",
+      code,
+      redirect_uri: REDIRECT,
+      code_verifier: verifier,
+      resource: RESOURCE,
+    }),
+  });
+}
+
+describe("real authorization code and guest-grant flow", () => {
+  it("binds an explicit browser consent to guest grants and revokes future token operations", async () => {
+    const browser = await withBrowserGuest();
+    const clientId = await register();
+    const approved = await approvedConsent(browser, clientId);
+    expect(await browser.guest.validateSession(
+      browser.session.sessionId, browser.session.secret,
+    )).toBeNull();
+    const grants = await browser.guest.listConnections(
+      approved.sessionId, approved.sessionSecret,
+    );
+    expect(grants).toHaveLength(1);
+    expect(grants?.[0].scopes).toEqual(["tables:read"]);
+
+    const response = await redeem(clientId, approved.code, approved.verifier);
+    expect(response.status).toBe(200);
+    const tokens = await jsonUrl(response);
+    expect(typeof tokens.access_token).toBe("string");
+    expect(typeof tokens.refresh_token).toBe("string");
+    expect(tokens.expires_in).toBe(900);
+    const headers = {
+      Authorization: `Bearer ${tokens.access_token}`,
+      "Content-Type": "application/json",
+      Accept: "application/json, text/event-stream",
+    };
+    const protectedRead = await exports.default.fetch(`${ORIGIN}/mcp`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ jsonrpc: "2.0", id: 5, method: "tools/list", params: {} }),
+    });
+    expect(protectedRead.status).not.toBe(401);
+
+    const revoked = await browser.guest.revokeConnection(
+      approved.sessionId, approved.sessionSecret, grants?.[0].connectionId ?? "",
+    );
+    expect(revoked.status).toBe("revoked");
+    const denied = await exports.default.fetch(`${ORIGIN}/mcp`, {
+      method: "POST", headers,
+      body: JSON.stringify({ jsonrpc: "2.0", id: 5, method: "tools/list", params: {} }),
+    });
+    expect(denied.status).toBe(401);
+    const refresh = await exports.default.fetch(`${ORIGIN}/oauth/token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        client_id: clientId, grant_type: "refresh_token",
+        refresh_token: String(tokens.refresh_token), resource: RESOURCE,
+      }),
+    });
+    expect(refresh.status).toBe(400);
+    expect((await jsonUrl(refresh)).error).toBe("invalid_grant");
+  });
+
+  it("serializes two simultaneous redemptions of exactly one real authorization code", async () => {
+    const browser = await withBrowserGuest();
+    const clientId = await register();
+    const approved = await approvedConsent(browser, clientId);
+    const results = await Promise.all([
+      redeem(clientId, approved.code, approved.verifier),
+      redeem(clientId, approved.code, approved.verifier),
+    ]);
+    expect(results.map((response) => response.status).sort()).toEqual([200, 400]);
+    const payloads = await Promise.all(results.map((response) => jsonUrl(response)));
+    expect(payloads.filter((item) => typeof item.access_token === "string")).toHaveLength(1);
+    expect(payloads.filter((item) => item.error === "invalid_grant")).toHaveLength(1);
+  });
+
+  it("does not authorize a denied browser consent", async () => {
+    const browser = await withBrowserGuest();
+    const clientId = await register();
+    const { url } = await start(clientId);
+    const response = await exports.default.fetch(url, {
+      headers: { Cookie: browser.cookie },
+    });
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    const handle = /name="handle" type="hidden" value="([^"]+)"/.exec(html)?.[1];
+    const csrf = /name="csrf" type="hidden" value="([^"]+)"/.exec(html)?.[1];
+    const cookies = response.headers.getSetCookie().map((line) => line.split(";")[0]);
+    if (!handle || !csrf) throw Error("Consent form missing bound values");
+    const denied = await exports.default.fetch(`${ORIGIN}/authorize`, {
+      method: "POST",
+      headers: {
+        Origin: ORIGIN, "Sec-Fetch-Site": "same-origin",
+        "Content-Type": "application/x-www-form-urlencoded",
+        Cookie: [browser.cookie, ...cookies].join("; "),
+      },
+      body: new URLSearchParams({ handle, csrf, decision: "deny" }),
+    });
+    expect(denied.status).toBe(302);
+    expect(denied.headers.get("Location")).toContain("error=access_denied");
+    const grants = await browser.guest.listConnections(
+      browser.session.sessionId, browser.session.secret,
+    );
+    expect(grants).toEqual([]);
+  });
+});
