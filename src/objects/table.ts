@@ -1464,7 +1464,10 @@ export class TableDO extends DurableObject<Env> {
               this.tombstoneRow()?.terminal_state === "deleted" &&
               this.hasDeletionReceipt(guestId, requestId)
             ) {
-              return { ok: true, value: { state: "deleted" as const } } as const;
+              return {
+                ok: true,
+                value: { state: "deleted" as const },
+              } as const;
             }
             return { ok: false, code: "NOT_FOUND" } as const;
           }
