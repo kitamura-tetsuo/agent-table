@@ -559,7 +559,7 @@ export class TableDO extends DurableObject<Env> {
         } as const;
       }
       if (invitation.expires_at <= now) {
-        return { ok: false, code: "INVITATION_EXPIRED" } as const;
+        return { ok: false, code: "INVITATION_INVALID" } as const;
       }
       if (
         receipt ||
