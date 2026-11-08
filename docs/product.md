@@ -1,6 +1,6 @@
 # Product and scope
 
-Status: initial design proposal, 2026-11-07. No features are implemented yet.
+Status: initial design proposal, 2026-11-07, with the browser guest-choice/session portion now implemented. OAuth, agent grants, tables, invitations, and conversations remain design-stage features.
 
 ## Objective
 

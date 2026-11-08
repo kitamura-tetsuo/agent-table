@@ -6,10 +6,13 @@ import {
 
 describe("application schema manifest", () => {
   it("is a contiguous, immutable forward-only migration sequence", () => {
-    expect(migrations.map((migration) => migration.version)).toEqual([1]);
-    expect(APPLICATION_SCHEMA_VERSION).toBe(1);
+    expect(migrations.map((migration) => migration.version)).toEqual([1, 2]);
+    expect(APPLICATION_SCHEMA_VERSION).toBe(2);
     expect(
-      migrations.every((migration) => migration.statements.length > 0),
+      migrations.every(
+        (migration) =>
+          migration.statements.length > 0 || "componentStatements" in migration,
+      ),
     ).toBe(true);
   });
 });

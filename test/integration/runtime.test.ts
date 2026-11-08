@@ -1,16 +1,51 @@
 import { evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { env, exports } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
+import { APPLICATION_SCHEMA_VERSION } from "../../schema/migrations";
 import { GuestDO, TableDO } from "../../src/index";
 import { initializeApplicationSchema } from "../../src/shared/schema";
 
 describe("actual SQLite-backed Durable Object bindings", () => {
+  it("migrates an existing guest version 1 object without wiping its other data", async () => {
+    const guest = env.GUESTS.get(env.GUESTS.idFromName(crypto.randomUUID()));
+    expect(await guest.schemaVersion()).toBe(APPLICATION_SCHEMA_VERSION);
+    await runInDurableObject(guest, async (_instance, state) => {
+      state.storage.sql.exec(
+        "CREATE TABLE preserved_fixture (value TEXT NOT NULL)",
+      );
+      state.storage.sql.exec(
+        "INSERT INTO preserved_fixture (value) VALUES ('old-guest-data')",
+      );
+      state.storage.sql.exec("DROP TABLE guest_sessions");
+      state.storage.sql.exec("DROP TABLE guest_identity");
+      state.storage.sql.exec(
+        "UPDATE __agent_table_schema SET version = 1 WHERE singleton = 1",
+      );
+    });
+    await evictDurableObject(guest);
+    expect(await guest.schemaVersion()).toBe(APPLICATION_SCHEMA_VERSION);
+    await runInDurableObject(guest, async (_instance, state) => {
+      expect(
+        state.storage.sql
+          .exec<{ value: string }>("SELECT value FROM preserved_fixture")
+          .one().value,
+      ).toBe("old-guest-data");
+      expect(
+        state.storage.sql
+          .exec<{ name: string }>(
+            "SELECT name FROM sqlite_master WHERE name = 'guest_sessions'",
+          )
+          .toArray(),
+      ).toHaveLength(1);
+    });
+  });
+
   it("initializes TableDO and GuestDO independently, idempotently and durably", async () => {
     const table = env.TABLES.get(env.TABLES.idFromName(crypto.randomUUID()));
     const guest = env.GUESTS.get(env.GUESTS.idFromName(crypto.randomUUID()));
 
-    expect(await table.schemaVersion()).toBe(1);
-    expect(await guest.schemaVersion()).toBe(1);
+    expect(await table.schemaVersion()).toBe(APPLICATION_SCHEMA_VERSION);
+    expect(await guest.schemaVersion()).toBe(APPLICATION_SCHEMA_VERSION);
 
     await runInDurableObject(table, async (instance, state) => {
       expect(instance).toBeInstanceOf(TableDO);
@@ -21,7 +56,14 @@ describe("actual SQLite-backed Durable Object bindings", () => {
             "SELECT component, version FROM __agent_table_schema WHERE singleton = 1",
           )
           .one(),
-      ).toEqual({ component: "table", version: 1 });
+      ).toEqual({ component: "table", version: APPLICATION_SCHEMA_VERSION });
+      expect(
+        state.storage.sql
+          .exec<{ name: string }>(
+            "SELECT name FROM sqlite_master WHERE name = 'guest_sessions'",
+          )
+          .toArray(),
+      ).toEqual([]);
       initializeApplicationSchema(state.storage, "table");
     });
     await runInDurableObject(guest, async (instance, state) => {
@@ -32,14 +74,21 @@ describe("actual SQLite-backed Durable Object bindings", () => {
             "SELECT component, version FROM __agent_table_schema WHERE singleton = 1",
           )
           .one(),
-      ).toEqual({ component: "guest", version: 1 });
+      ).toEqual({ component: "guest", version: APPLICATION_SCHEMA_VERSION });
+      expect(
+        state.storage.sql
+          .exec<{ name: string }>(
+            "SELECT name FROM sqlite_master WHERE name = 'guest_sessions'",
+          )
+          .toArray(),
+      ).toHaveLength(1);
       initializeApplicationSchema(state.storage, "guest");
     });
 
     await evictDurableObject(table);
     await evictDurableObject(guest);
-    expect(await table.schemaVersion()).toBe(1);
-    expect(await guest.schemaVersion()).toBe(1);
+    expect(await table.schemaVersion()).toBe(APPLICATION_SCHEMA_VERSION);
+    expect(await guest.schemaVersion()).toBe(APPLICATION_SCHEMA_VERSION);
   });
 
   for (const { component, name, ObjectClass, createStub } of [
@@ -60,7 +109,7 @@ describe("actual SQLite-backed Durable Object bindings", () => {
   ] as const) {
     it(`refuses an unsafe ${name} schema after binding-driven reconstruction without clearing storage`, async () => {
       const stub = createStub();
-      expect(await stub.schemaVersion()).toBe(1);
+      expect(await stub.schemaVersion()).toBe(APPLICATION_SCHEMA_VERSION);
 
       await runInDurableObject(stub, async (_instance, state) => {
         state.storage.sql.exec(
@@ -101,7 +150,7 @@ describe("actual SQLite-backed Durable Object bindings", () => {
       });
 
       // A binding call, not a direct constructor call, must reject after eviction.
-      // A class-specific reset would otherwise silently return schema version 1.
+      // A class-specific reset would otherwise silently recreate the schema.
       await evictDurableObject(stub);
       await expect(stub.schemaVersion()).rejects.toThrow(
         /newer than supported/,

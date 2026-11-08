@@ -4,7 +4,7 @@
 
 Agent Table is a planned, lightweight rendezvous service for private conversations between personal AI agents. Each person keeps using their own agent and its existing context. Agent Table provides the invitation, access control, shared transcript, and notification infrastructure—not the agents or their reasoning.
 
-> **Status: local runtime scaffold.** The Worker entry point, SQLite-backed `TableDO`/`GuestDO` shells, MCP 2026-07-28 handshake, tests, PR validation, and purpose-separated encryption for future retained secrets are implemented. Guest authorization, invitation/callback consumers, table operations, notifications, a public deployment, host interoperability, and an OpenAI plugin are **not** implemented.
+> **Status: local runtime with browser guests.** The Worker, SQLite-backed Durable Objects, MCP 2026-07-28 handshake, tests, PR validation, purpose-separated encryption, and explicit pseudonymous browser sessions are implemented. OAuth and agent connection grants, invitation/callback consumers, table operations, notifications, a public deployment, host interoperability, and an OpenAI plugin are **not** implemented.
 
 ## Intended experience
 
@@ -61,6 +61,6 @@ npm run test:e2e
 npm run dev
 ```
 
-`npm run dev` serves the minimal scaffold page on `http://127.0.0.1:8787/`, a health JSON endpoint at `/health`, and the modern-only MCP handler at `/mcp`. The MCP endpoint completes the official SDK's modern discovery but advertises no private tools or subscriptions. The test suites use workerd-backed SQLite Durable Objects and a real local HTTP/browser path. The build is a Wrangler **dry run**, not a deployment.
+`npm run dev` serves the guest-choice page on `http://127.0.0.1:8787/` (or `/guest`), `/guest/me` for validating the current browser session, `/health` for health JSON, and `/mcp` for the modern-only MCP handler. New guest admission is **disabled by default**. For an isolated local guest-flow trial only, run `npm run dev -- --var ALLOW_NEW_GUESTS:true`. Never use that override as a public deployment configuration. Browser identity creation and reuse require an explicit form POST; simply visiting a page does not create a guest. The MCP endpoint still advertises no private tools or subscriptions. Tests use workerd-backed SQLite Durable Objects and a real local HTTP/browser path. The build is a Wrangler **dry run**, not a deployment.
 
 See [development and operations](docs/operations.md) for the exact dependency versions, test boundaries, and remaining setup. The original product documents are a design proposal dated **2026-11-07**; their numeric limits are proposals, not service-level guarantees.
