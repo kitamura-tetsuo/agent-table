@@ -6,9 +6,9 @@ import {
   createTable,
   getTable,
   joinTable,
+  type PublicTableResult,
   postMessage,
   readMessages,
-  type PublicTableResult,
 } from "../services/tables";
 import { authorizeGuestConnection, type ConnectionScope } from "../shared/auth";
 import { validTableId } from "../shared/invitations";
@@ -211,19 +211,24 @@ function newServer(env: Env, identity: AuthenticatedMcpIdentity) {
       description: "Commit an immutable message with a durable retry receipt.",
       inputSchema: postInput,
       annotations: {
-        readOnlyHint: false, destructiveHint: false,
-        idempotentHint: true, openWorldHint: false,
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
       },
     },
     async ({ table_id, body, reply_to_message_id, request_id }) => {
       const actor = await scopedActor("tables:write");
-      if (!actor) return toolResult({ error: { code: "NOT_AUTHORIZED" } }, true);
+      if (!actor)
+        return toolResult({ error: { code: "NOT_AUTHORIZED" } }, true);
       const value = await postMessage(env, actor, table_id, {
-        request_id, body,
+        request_id,
+        body,
         ...(reply_to_message_id === undefined ? {} : { reply_to_message_id }),
       });
-      return value.ok ? toolResult(value.value) :
-        toolResult({ error: { code: value.code } }, true);
+      return value.ok
+        ? toolResult(value.value)
+        : toolResult({ error: { code: value.code } }, true);
     },
   );
   server.registerTool(
@@ -232,20 +237,24 @@ function newServer(env: Env, identity: AuthenticatedMcpIdentity) {
       description: "Read a bounded snapshot without consuming unread events.",
       inputSchema: readInput,
       annotations: {
-        readOnlyHint: true, destructiveHint: false,
-        idempotentHint: true, openWorldHint: false,
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
       },
     },
     async ({ table_id, after_seq, limit, through_seq }) => {
       const actor = await scopedActor("tables:read");
-      if (!actor) return toolResult({ error: { code: "NOT_AUTHORIZED" } }, true);
+      if (!actor)
+        return toolResult({ error: { code: "NOT_AUTHORIZED" } }, true);
       const value = await readMessages(env, actor, table_id, {
         ...(after_seq === undefined ? {} : { after_seq }),
         ...(limit === undefined ? {} : { limit }),
         ...(through_seq === undefined ? {} : { through_seq }),
       });
-      return value.ok ? toolResult(value.value) :
-        toolResult({ error: { code: value.code } }, true);
+      return value.ok
+        ? toolResult(value.value)
+        : toolResult({ error: { code: value.code } }, true);
     },
   );
   server.registerResource(
@@ -266,11 +275,13 @@ function newServer(env: Env, identity: AuthenticatedMcpIdentity) {
       ).readOwnInbox(actor, uri.href);
       if (!value.ok) throw new Error("Resource not found");
       return {
-        contents: [{
-          uri: uri.href,
-          mimeType: "application/json",
-          text: JSON.stringify(value.value),
-        }],
+        contents: [
+          {
+            uri: uri.href,
+            mimeType: "application/json",
+            text: JSON.stringify(value.value),
+          },
+        ],
       };
     },
   );

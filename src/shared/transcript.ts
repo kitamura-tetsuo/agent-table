@@ -53,26 +53,37 @@ export function validPostInput(value: unknown): value is PostMessageInput {
     item.body.trim().length === 0 ||
     (item.reply_to_message_id !== undefined &&
       !validTableId(item.reply_to_message_id))
-  ) return false;
+  )
+    return false;
   for (const symbol of item.body) {
     const point = symbol.codePointAt(0);
     if (point !== undefined && point >= 0xd800 && point <= 0xdfff) return false;
   }
-  return new TextEncoder().encode(item.body).byteLength <= TABLE_LIMITS.messageBodyBytes;
+  return (
+    new TextEncoder().encode(item.body).byteLength <=
+    TABLE_LIMITS.messageBodyBytes
+  );
 }
 
 export function validReadInput(value: unknown): value is ReadMessagesInput {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const item = value as Record<string, unknown>;
-  if (Object.keys(item).some(
-    (key) => !["after_seq", "through_seq", "limit"].includes(key),
-  )) return false;
+  if (
+    Object.keys(item).some(
+      (key) => !["after_seq", "through_seq", "limit"].includes(key),
+    )
+  )
+    return false;
   const after = item.after_seq ?? 0;
   const limit = item.limit ?? TABLE_LIMITS.readPageDefault;
   return (
-    typeof after === "number" && Number.isSafeInteger(after) && after >= 0 &&
-    typeof limit === "number" && Number.isSafeInteger(limit) &&
-    limit >= 1 && limit <= TABLE_LIMITS.readPageMaximum &&
+    typeof after === "number" &&
+    Number.isSafeInteger(after) &&
+    after >= 0 &&
+    typeof limit === "number" &&
+    Number.isSafeInteger(limit) &&
+    limit >= 1 &&
+    limit <= TABLE_LIMITS.readPageMaximum &&
     (item.through_seq === undefined ||
       (typeof item.through_seq === "number" &&
         Number.isSafeInteger(item.through_seq) &&
@@ -93,9 +104,13 @@ export async function postDigest(value: PostMessageInput): Promise<string> {
     const value = data[key as keyof typeof data];
     if (value !== undefined) canonical[key] = value;
   }
-  const hash = new Uint8Array(await crypto.subtle.digest(
-    "SHA-256",
-    new TextEncoder().encode(JSON.stringify(canonical)),
-  ));
-  return Array.from(hash, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  const hash = new Uint8Array(
+    await crypto.subtle.digest(
+      "SHA-256",
+      new TextEncoder().encode(JSON.stringify(canonical)),
+    ),
+  );
+  return Array.from(hash, (byte) => byte.toString(16).padStart(2, "0")).join(
+    "",
+  );
 }

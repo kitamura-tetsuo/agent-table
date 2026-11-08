@@ -35,8 +35,8 @@ import {
   MAX_POSTS_PER_MINUTE,
   POST_WINDOW_MS,
   type PostReceipt,
-  type TranscriptPage,
   postDigest,
+  type TranscriptPage,
   validPostInput,
   validReadInput,
 } from "../shared/transcript";
@@ -687,7 +687,6 @@ export class TableDO extends DurableObject<Env> {
     };
   }
 
-
   /** One SQLite transaction owns the message, sequence, limits and receipt. */
   async postMessage(
     actor: VerifiedConnectionActor,
@@ -704,46 +703,65 @@ export class TableDO extends DurableObject<Env> {
       const table = this.metadataRow();
       const member = this.memberFor(actor.guestId);
       const now = Date.now();
-      if (!table || !member || member.table_id !== table.table_id ||
-          table.state === "deleted") {
+      if (
+        !table ||
+        !member ||
+        member.table_id !== table.table_id ||
+        table.state === "deleted"
+      ) {
         return { ok: false, code: "TABLE_NOT_FOUND" } as const;
       }
       if (table.state === "expired" || table.expires_at <= now) {
         return { ok: false, code: "TABLE_EXPIRED" } as const;
       }
-      const previous = this.ctx.storage.sql.exec<PostReceiptRow>(
-        "SELECT * FROM table_post_receipts WHERE guest_id = ? AND request_id = ?",
-        actor.guestId, input.request_id,
-      ).toArray()[0];
+      const previous = this.ctx.storage.sql
+        .exec<PostReceiptRow>(
+          "SELECT * FROM table_post_receipts WHERE guest_id = ? AND request_id = ?",
+          actor.guestId,
+          input.request_id,
+        )
+        .toArray()[0];
       if (previous) {
         if (previous.request_digest !== digest) {
           return { ok: false, code: "IDEMPOTENCY_CONFLICT" } as const;
         }
-        const original = this.ctx.storage.sql.exec<MessageRow>(
-          "SELECT * FROM table_messages WHERE seq = ?", previous.message_seq,
-        ).one();
-        return { ok: true, value: this.postReceipt(table.table_id, original) } as const;
+        const original = this.ctx.storage.sql
+          .exec<MessageRow>(
+            "SELECT * FROM table_messages WHERE seq = ?",
+            previous.message_seq,
+          )
+          .one();
+        return {
+          ok: true,
+          value: this.postReceipt(table.table_id, original),
+        } as const;
       }
       if (table.state !== "waiting" && table.state !== "open") {
         return { ok: false, code: "TABLE_TERMINAL" } as const;
       }
       if (input.reply_to_message_id !== undefined) {
-        const reference = this.ctx.storage.sql.exec(
-          "SELECT message_id FROM table_messages WHERE message_id = ?",
-          input.reply_to_message_id,
-        ).toArray()[0];
+        const reference = this.ctx.storage.sql
+          .exec(
+            "SELECT message_id FROM table_messages WHERE message_id = ?",
+            input.reply_to_message_id,
+          )
+          .toArray()[0];
         if (!reference) return { ok: false, code: "INVALID_REPLY" } as const;
       }
-      const usage = this.ctx.storage.sql.exec<{ body_bytes: number }>(
-        "SELECT body_bytes FROM table_transcript_usage WHERE singleton = 1",
-      ).one();
+      const usage = this.ctx.storage.sql
+        .exec<{ body_bytes: number }>(
+          "SELECT body_bytes FROM table_transcript_usage WHERE singleton = 1",
+        )
+        .one();
       if (table.last_seq >= 256 || usage.body_bytes + bytes > 2 * 1024 * 1024) {
         return { ok: false, code: "LIMIT_REACHED" } as const;
       }
-      const count = this.ctx.storage.sql.exec<{ total: number }>(
-        "SELECT COUNT(*) AS total FROM table_messages WHERE created_at > ?",
-        now - POST_WINDOW_MS,
-      ).one();
+      const count = this.ctx.storage.sql
+        .exec<{ total: number }>(
+          "SELECT COUNT(*) AS total FROM table_messages WHERE created_at > ?",
+          now - POST_WINDOW_MS,
+        )
+        .one();
       if (count.total >= MAX_POSTS_PER_MINUTE) {
         return { ok: false, code: "RATE_LIMITED" } as const;
       }
@@ -752,11 +770,17 @@ export class TableDO extends DurableObject<Env> {
         `INSERT INTO table_messages
           (seq, message_id, sender_membership_id, body, body_bytes, created_at, reply_to_message_id)
           VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        seq, messageId, member.membership_id, input.body, bytes, now,
+        seq,
+        messageId,
+        member.membership_id,
+        input.body,
+        bytes,
+        now,
         input.reply_to_message_id ?? null,
       );
       this.ctx.storage.sql.exec(
-        "UPDATE table_metadata SET last_seq = ? WHERE singleton = 1", seq,
+        "UPDATE table_metadata SET last_seq = ? WHERE singleton = 1",
+        seq,
       );
       this.ctx.storage.sql.exec(
         "UPDATE table_transcript_usage SET body_bytes = body_bytes + ? WHERE singleton = 1",
@@ -765,17 +789,27 @@ export class TableDO extends DurableObject<Env> {
       // The poster never receives a self-generated peer watermark.
       this.ctx.storage.sql.exec(
         "UPDATE table_memberships SET latest_peer_seq = ? WHERE guest_id <> ?",
-        seq, actor.guestId,
+        seq,
+        actor.guestId,
       );
       this.ctx.storage.sql.exec(
         "INSERT INTO table_post_receipts (guest_id, request_id, request_digest, message_seq) VALUES (?, ?, ?, ?)",
-        actor.guestId, input.request_id, digest, seq,
+        actor.guestId,
+        input.request_id,
+        digest,
+        seq,
       );
-      return { ok: true, value: this.postReceipt(table.table_id, {
-        seq, message_id: messageId, sender_membership_id: member.membership_id,
-        body: input.body, created_at: now,
-        reply_to_message_id: input.reply_to_message_id ?? null,
-      }) } as const;
+      return {
+        ok: true,
+        value: this.postReceipt(table.table_id, {
+          seq,
+          message_id: messageId,
+          sender_membership_id: member.membership_id,
+          body: input.body,
+          created_at: now,
+          reply_to_message_id: input.reply_to_message_id ?? null,
+        }),
+      } as const;
     });
   }
 
@@ -802,8 +836,12 @@ export class TableDO extends DurableObject<Env> {
     return this.ctx.storage.transactionSync(() => {
       const table = this.metadataRow();
       const member = this.memberFor(actor.guestId);
-      if (!table || !member || member.table_id !== table.table_id ||
-          table.state === "deleted") {
+      if (
+        !table ||
+        !member ||
+        member.table_id !== table.table_id ||
+        table.state === "deleted"
+      ) {
         return { ok: false, code: "TABLE_NOT_FOUND" } as const;
       }
       if (table.state === "expired" || table.expires_at <= Date.now()) {
@@ -815,23 +853,29 @@ export class TableDO extends DurableObject<Env> {
       if (through > table.last_seq || after > through) {
         return { ok: false, code: "INVALID_CURSOR" } as const;
       }
-      const rows = this.ctx.storage.sql.exec<MessageRow>(
-        `SELECT * FROM table_messages
+      const rows = this.ctx.storage.sql
+        .exec<MessageRow>(
+          `SELECT * FROM table_messages
          WHERE seq > ? AND seq <= ? ORDER BY seq ASC LIMIT ?`,
-        after, through, limit + 1,
-      ).toArray();
+          after,
+          through,
+          limit + 1,
+        )
+        .toArray();
       const more = rows.length > limit;
       const slice = more ? rows.slice(0, limit) : rows;
       return {
         ok: true,
         value: {
           messages: slice.map((row) => ({
-            seq: row.seq, message_id: row.message_id,
+            seq: row.seq,
+            message_id: row.message_id,
             sender_membership_id: row.sender_membership_id,
             body: row.body,
             created_at: new Date(row.created_at).toISOString(),
             ...(row.reply_to_message_id === null
-              ? {} : { reply_to_message_id: row.reply_to_message_id }),
+              ? {}
+              : { reply_to_message_id: row.reply_to_message_id }),
           })),
           next_after_seq: slice.at(-1)?.seq ?? after,
           through_seq: through,
