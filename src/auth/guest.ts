@@ -4,8 +4,11 @@ import type {
   GuestSessionPrincipal,
   NewGuestSession,
 } from "../objects/guest";
+import {
+  guestChallengeConfiguration,
+  verifyGuestChallenge,
+} from "../shared/admission";
 import { randomBase64Url } from "../shared/random";
-import { guestChallengeConfiguration, verifyGuestChallenge } from "../shared/admission";
 import { connectionsPage } from "../web/connections";
 import { guestPage } from "../web/guest";
 
@@ -158,8 +161,10 @@ export async function handleGuestPage(
   if (csrf !== csrfFromCookie) headers.append("Set-Cookie", csrfCookie(csrf));
   const challenge = guestChallengeConfiguration(env);
   if (challenge.mode === "required") {
-    headers.set("Content-Security-Policy",
-      "default-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; script-src https://challenges.cloudflare.com; frame-src https://challenges.cloudflare.com; connect-src https://challenges.cloudflare.com");
+    headers.set(
+      "Content-Security-Policy",
+      "default-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; script-src https://challenges.cloudflare.com; frame-src https://challenges.cloudflare.com; connect-src https://challenges.cloudflare.com",
+    );
   }
   return new Response(
     guestPage(
@@ -262,7 +267,12 @@ export async function handleGuestChoice(
     if (challenge.mode === "unavailable") {
       return response("Guest challenge unavailable", 503);
     }
-    if (!(await verifyGuestChallenge(env, form.get("cf-turnstile-response") ?? ""))) {
+    if (
+      !(await verifyGuestChallenge(
+        env,
+        form.get("cf-turnstile-response") ?? "",
+      ))
+    ) {
       return response("Guest challenge verification failed", 403);
     }
     const guestId = crypto.randomUUID();
