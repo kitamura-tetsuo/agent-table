@@ -1,6 +1,6 @@
 # Development and operations
 
-Status: local foundation runbook plus future deployment plan. The Worker/DO scaffold, dependency lockfile, test scripts, PR-only validation workflow, and purpose-separated encrypted-secret primitive exist. No public or staging deployment, OAuth authentication, invitation producer, callback producer, application tables, event delivery, or host interoperability has been completed.
+Status: local foundation runbook plus future deployment plan. The Worker/DO scaffold, guest sessions, connection grants, private creation reservations, dependency lockfile, test scripts, PR-only validation workflow, and purpose-separated encrypted-secret primitive exist. No public or staging deployment, OAuth authentication, invitation producer, callback producer, initialized application tables, event delivery, or host interoperability has been completed.
 
 ## Implemented foundation (Issue #2)
 
@@ -24,6 +24,12 @@ The pinned Agents release declares the MCP SDK `2.4.0` optional peer version. Te
 `src/shared/config.ts` validates the two independent encryption keyrings, and `src/shared/secret-envelope.ts` seals/opens authenticated v1 AES-256-GCM envelopes. `src/env.d.ts` declares their optional Worker secret bindings. They are deliberately **not** defined in `wrangler.jsonc` variables, nor used by a public endpoint. See [security.md](security.md) for the envelope and authorization boundaries.
 
 The workerd integration suite tests both purposes, authenticated metadata and record-ID binding, tampering, secret-safe errors, old-key overlap/deadline refusal, and ciphertext persisted through an actual SQLite-backed `TableDO` eviction and reconstruction. Run just that production-function suite using `npx vitest run test/integration/secret-envelope.test.ts`. Application consumers and credential records are future issues; these tests do not claim the service can already issue invites or deliver callbacks.
+
+### Durable creation reservations (Issue #7)
+
+`schema/004_creation_reservations.ts` applies only to GuestDO. The private `reserveCreation` binding commits one random table identity and one quota charge per valid new `(guest, create_table, request_id)`; identical retries within the original table lifetime return the same reservation. Changed arguments conflict. The current policy never refunds reservations, even if TableDO initialization later fails. The internal `getCreationReservation`, `recordCreationOutcome`, and bounded `pruneExpiredReservations` methods support recovery and eight-day retention. Neither this milestone nor a recorded `initialized` outcome implements the public `create_table` tool, creates membership, or authorizes reviving an expired table.
+
+Run `npx vitest run test/integration/creation-reservations.test.ts` for real workerd/SQLite binding tests covering grant revocation, original expiry, eviction/retry, and two requests held at the final quota decision boundary. No external account, deployment or OAuth host compatibility is claimed by these tests.
 
 ## Future repository layout
 

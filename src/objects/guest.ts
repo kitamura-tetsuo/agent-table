@@ -3,7 +3,15 @@ import {
   type ConnectionDecision,
   type ConnectionScope,
   isConnectionScope,
+  type VerifiedConnectionActor,
 } from "../shared/auth";
+import {
+  creationRequestDigest,
+  InvalidCreationRequestError,
+  parseCreationRequest,
+  validCreationRequestId,
+} from "../shared/creation";
+import { CREATION_LIMITS } from "../shared/limits";
 import { digestSessionSecret, randomBase64Url } from "../shared/random";
 import {
   initializeApplicationSchema,
@@ -61,6 +69,58 @@ export type ConnectionRevocation =
   | { status: "unauthorized" }
   | { status: "not-found" }
   | { status: "revoked"; session: NewGuestSession };
+
+type CreationRow = {
+  request_id: string;
+  guest_id: string;
+  request_digest: string;
+  table_id: string;
+  created_at: number;
+  expires_at: number;
+  retention_until: number;
+  charged_at: number;
+  outcome: "reserved" | "initialized" | "failed";
+};
+
+export type CreationReservation = {
+  requestId: string;
+  tableId: string;
+  requestDigest: string;
+  createdAt: number;
+  expiresAt: number;
+  retentionUntil: number;
+  chargedAt: number;
+  outcome: CreationRow["outcome"];
+};
+
+export type CreationFailureCode =
+  | "INVALID_REQUEST"
+  | "UNAUTHORIZED"
+  | "IDEMPOTENCY_CONFLICT"
+  | "LIMIT_REACHED"
+  | "TABLE_EXPIRED"
+  | "NOT_FOUND"
+  | "OUTCOME_CONFLICT";
+
+export type CreationFailure = {
+  ok: false;
+  code: CreationFailureCode;
+  retryAfterMs?: number;
+};
+
+export type CreationResult =
+  | { ok: true; reservation: CreationReservation }
+  | CreationFailure;
+
+export type CreationLookupResult =
+  | {
+      ok: true;
+      reservation: CreationReservation;
+      initializationAllowed: boolean;
+    }
+  | CreationFailure;
+
+export type CreationOutcome = "initialized" | "failed";
 
 function validCredential(sessionId: string, secret: string): boolean {
   return UUID_V4.test(sessionId) && SESSION_SECRET.test(secret);
@@ -451,6 +511,249 @@ export class GuestDO extends DurableObject<Env> {
           expiresAt,
         },
       };
+    });
+  }
+
+  private creationAuthorized(actor: VerifiedConnectionActor): boolean {
+    if (
+      actor?.kind !== "verified-connection" ||
+      actor.scope !== "tables:write"
+    ) {
+      return false;
+    }
+    // The actor is constructed by the server, but its grant is checked again
+    // at this effect boundary, inside the guest's own Durable Object.
+    return this.authorizeConnection(
+      actor.guestId,
+      actor.connectionId,
+      "tables:write",
+    ).allowed;
+  }
+
+  private creationRow(requestId: string): CreationRow | undefined {
+    return this.ctx.storage.sql
+      .exec<CreationRow>(
+        `SELECT request_id, guest_id, request_digest, table_id, created_at,
+                expires_at, retention_until, charged_at, outcome
+         FROM guest_creation_reservations WHERE request_id = ?`,
+        requestId,
+      )
+      .toArray()[0];
+  }
+
+  private toCreationReservation(row: CreationRow): CreationReservation {
+    return {
+      requestId: row.request_id,
+      tableId: row.table_id,
+      requestDigest: row.request_digest,
+      createdAt: row.created_at,
+      expiresAt: row.expires_at,
+      retentionUntil: row.retention_until,
+      chargedAt: row.charged_at,
+      outcome: row.outcome,
+    };
+  }
+
+  /** A private test probe at the exact pre-transaction admission boundary. */
+  private async beforeReservationDecision(): Promise<void> {}
+
+  /**
+   * Reserve one identity and quota charge, not a completed table. Only the
+   * later TableDO initializer can establish whether creation succeeded.
+   */
+  async reserveCreation(
+    actor: VerifiedConnectionActor,
+    input: unknown,
+  ): Promise<CreationResult> {
+    let parsed: ReturnType<typeof parseCreationRequest>;
+    try {
+      parsed = parseCreationRequest(input);
+    } catch (error) {
+      if (error instanceof InvalidCreationRequestError) {
+        return { ok: false, code: "INVALID_REQUEST" };
+      }
+      throw error;
+    }
+
+    const digest = await creationRequestDigest(parsed.arguments);
+    const proposedId = crypto.randomUUID();
+    await this.beforeReservationDecision();
+
+    return this.ctx.storage.transactionSync(() => {
+      if (!this.creationAuthorized(actor)) {
+        return { ok: false, code: "UNAUTHORIZED" } as const;
+      }
+      const now = Date.now();
+      const owner = this.guestId();
+      if (!owner) return { ok: false, code: "UNAUTHORIZED" } as const;
+
+      const previous = this.creationRow(parsed.requestId);
+      if (previous && previous.retention_until > now) {
+        if (previous.request_digest !== digest) {
+          return { ok: false, code: "IDEMPOTENCY_CONFLICT" } as const;
+        }
+        if (previous.expires_at <= now) {
+          return { ok: false, code: "TABLE_EXPIRED" } as const;
+        }
+        return {
+          ok: true,
+          reservation: this.toCreationReservation(previous),
+        } as const;
+      }
+      // A record beyond eight days is no longer part of the dedupe contract.
+      if (previous) {
+        this.ctx.storage.sql.exec(
+          "DELETE FROM guest_creation_reservations WHERE request_id = ?",
+          parsed.requestId,
+        );
+      }
+
+      const windowStart = now - CREATION_LIMITS.reservationWindowMs;
+      const quota = this.ctx.storage.sql
+        .exec<{ count: number; oldest: number | null }>(
+          `SELECT COUNT(*) AS count, MIN(charged_at) AS oldest
+           FROM guest_creation_reservations
+           WHERE guest_id = ? AND charged_at > ?`,
+          owner,
+          windowStart,
+        )
+        .one();
+      if (quota.count >= CREATION_LIMITS.maxReservationsPerWindow) {
+        return {
+          ok: false,
+          code: "LIMIT_REACHED",
+          retryAfterMs: Math.max(
+            1,
+            (quota.oldest ?? now) + CREATION_LIMITS.reservationWindowMs - now,
+          ),
+        } as const;
+      }
+
+      const expiresAt = now + parsed.arguments.ttl_seconds * 1_000;
+      const retentionUntil = now + CREATION_LIMITS.reservationRetentionMs;
+      this.ctx.storage.sql.exec(
+        `INSERT INTO guest_creation_reservations
+         (request_id, guest_id, request_digest, table_id, created_at,
+          expires_at, retention_until, charged_at, outcome)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'reserved')`,
+        parsed.requestId,
+        owner,
+        digest,
+        proposedId,
+        now,
+        expiresAt,
+        retentionUntil,
+        now,
+      );
+      return {
+        ok: true,
+        reservation: {
+          requestId: parsed.requestId,
+          tableId: proposedId,
+          requestDigest: digest,
+          createdAt: now,
+          expiresAt,
+          retentionUntil,
+          chargedAt: now,
+          outcome: "reserved",
+        },
+      } as const;
+    });
+  }
+
+  /** Read a retained receipt without implicitly authorizing initialization. */
+  getCreationReservation(
+    actor: VerifiedConnectionActor,
+    requestId: string,
+  ): CreationLookupResult {
+    if (!validCreationRequestId(requestId)) {
+      return { ok: false, code: "INVALID_REQUEST" };
+    }
+    if (!this.creationAuthorized(actor)) {
+      return { ok: false, code: "UNAUTHORIZED" };
+    }
+    const now = Date.now();
+    const row = this.creationRow(requestId);
+    if (!row || row.retention_until <= now) {
+      return { ok: false, code: "NOT_FOUND" };
+    }
+    return {
+      ok: true,
+      reservation: this.toCreationReservation(row),
+      initializationAllowed: row.expires_at > now,
+    };
+  }
+
+  /** An outcome annotation never refunds quota or proves TableDO membership. */
+  recordCreationOutcome(
+    actor: VerifiedConnectionActor,
+    requestId: string,
+    tableId: string,
+    outcome: CreationOutcome,
+  ): CreationResult {
+    if (
+      !validCreationRequestId(requestId) ||
+      !UUID_V4.test(tableId) ||
+      (outcome !== "initialized" && outcome !== "failed")
+    ) {
+      return { ok: false, code: "INVALID_REQUEST" };
+    }
+    return this.ctx.storage.transactionSync(() => {
+      if (!this.creationAuthorized(actor)) {
+        return { ok: false, code: "UNAUTHORIZED" } as const;
+      }
+      const row = this.creationRow(requestId);
+      const now = Date.now();
+      if (!row || row.retention_until <= now || row.table_id !== tableId) {
+        return { ok: false, code: "NOT_FOUND" } as const;
+      }
+      if (row.outcome === outcome) {
+        return {
+          ok: true,
+          reservation: this.toCreationReservation(row),
+        } as const;
+      }
+      if (row.outcome !== "reserved") {
+        return { ok: false, code: "OUTCOME_CONFLICT" } as const;
+      }
+      if (row.expires_at <= now) {
+        return { ok: false, code: "TABLE_EXPIRED" } as const;
+      }
+      this.ctx.storage.sql.exec(
+        "UPDATE guest_creation_reservations SET outcome = ? WHERE request_id = ?",
+        outcome,
+        requestId,
+      );
+      return {
+        ok: true,
+        reservation: { ...this.toCreationReservation(row), outcome },
+      } as const;
+    });
+  }
+
+  /** Physical pruning is bounded; deadline checks do not depend on it. */
+  pruneExpiredReservations(
+    limit: number = CREATION_LIMITS.maxCleanupBatch,
+  ): number {
+    if (
+      !Number.isInteger(limit) ||
+      limit < 1 ||
+      limit > CREATION_LIMITS.maxCleanupBatch
+    ) {
+      throw new Error("Invalid cleanup batch size");
+    }
+    return this.ctx.storage.transactionSync(() => {
+      this.ctx.storage.sql.exec(
+        `DELETE FROM guest_creation_reservations WHERE request_id IN (
+          SELECT request_id FROM guest_creation_reservations
+          WHERE retention_until <= ? ORDER BY retention_until LIMIT ?
+        )`,
+        Date.now(),
+        limit,
+      );
+      return this.ctx.storage.sql
+        .exec<{ count: number }>("SELECT changes() AS count")
+        .one().count;
     });
   }
 }

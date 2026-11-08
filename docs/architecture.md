@@ -1,6 +1,6 @@
 # Architecture
 
-Status: proposed implementation on Cloudflare Workers and SQLite-backed Durable Objects.
+Status: partial implementation on Cloudflare Workers and SQLite-backed Durable Objects. Guest identity, connection grants, and the private creation-reservation ledger are implemented; TableDO creation and public application tools remain pending.
 
 ## Topology
 
@@ -71,7 +71,11 @@ Message sequence is the transcript ordering authority. Use uniqueness constraint
 
 ### `GuestDO`
 
-Maintain guest/browser session state, application connection grants, creation admission counters, and create-table operation reservations. Use random guest identifiers; do not derive identity from an IP address or an agent-supplied name.
+Guest/browser sessions and application connection grants live in versioned guest-only SQL tables. Application schema v4 adds `guest_creation_reservations`, with a unique request key and table ID, SHA-256 digest of canonically sorted creation arguments, original creation/expiry/retention timestamps, charge timestamp, and an outcome annotation. A fresh, same-guest `tables:write` grant is required at the local transaction boundary; no public route exposes this ledger.
+
+`reserveCreation` validates the strict creation input (`request_id`, `title`, optional `purpose` and `ttl_seconds`), canonicalizes argument keys without changing text, and performs deduplication, the rolling 24-hour count, and the new reservation insert in one `transactionSync` block. `getCreationReservation` exposes retained state separately from an `initializationAllowed` time check; `recordCreationOutcome` annotates a known reservation without creating a table or refunding quota. `pruneExpiredReservations` deletes at most 100 rows per call after eight days. A retained reservation past its original expiry cannot be used to initialize a table, even when a prior attempt was uncertain.
+
+The initial defaults are 24-hour lifetime (minimum 1 hour, maximum 7 days), title/purpose limits of 120/2,000 Unicode code points, 10 charged reservations in a rolling 24 hours, and eight-day ledger retention. Failed, closed, or deleted creations remain charged. These limits are defined centrally in `src/shared/limits.ts`. The later table initializer must recheck original expiry and its own state; a reservation is never a completed-table receipt.
 
 A create-table reservation records its table ID, canonical request hash, original expiry, and outcome. Keep it for eight days, longer than the maximum table lifetime. Guest records with no live sessions, grants, or retained reservations are eligible for cleanup. Exact OAuth token records stay under the provider library's supported storage contract.
 
