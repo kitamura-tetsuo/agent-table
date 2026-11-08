@@ -305,7 +305,9 @@ describe("real authorization code and guest-grant flow", () => {
     const waitFor = async (requests: number, reads: number) => {
       for (let attempt = 0; attempt < 80; attempt++) {
         const state = await tokenDO.redemptionReadProbeState();
-        if (state.activeRequests >= requests && state.grantReads >= reads) {
+        // Count admitted requests monotonically: a racing unsynchronized
+        // exchange may finish before this poll observes activeRequests.
+        if (state.requestArrivals >= requests && state.grantReads >= reads) {
           return state;
         }
         await new Promise((resolve) => setTimeout(resolve, 25));

@@ -4,6 +4,7 @@ import { authorizationServer } from "./provider";
 interface RedemptionReadProbe {
   grantReads: number;
   providerEntries: number;
+  requestArrivals: number;
   release: () => void;
   barrier: Promise<void>;
 }
@@ -35,17 +36,19 @@ export class OAuthTokenDO extends DurableObject<Env> {
     const barrier = new Promise<void>((resolve) => {
       release = resolve;
     });
-    this.probe = { grantReads: 0, providerEntries: 0, barrier, release };
+    this.probe = { grantReads: 0, providerEntries: 0, requestArrivals: 0, barrier, release };
   }
 
   async redemptionReadProbeState(): Promise<{
     activeRequests: number;
+    requestArrivals: number;
     grantReads: number;
     providerEntries: number;
   }> {
     this.assertLocalProbe();
     return {
       activeRequests: this.activeRequests,
+      requestArrivals: this.probe?.requestArrivals ?? 0,
       grantReads: this.probe?.grantReads ?? 0,
       providerEntries: this.probe?.providerEntries ?? 0,
     };
@@ -101,6 +104,8 @@ export class OAuthTokenDO extends DurableObject<Env> {
     )
       return new Response("Not Found", { status: 404 });
     this.activeRequests++;
+    // Monotonic probe arrivals survive a fast request finishing before polling.
+    if (this.probe) this.probe.requestArrivals++;
     let release: () => void = () => {};
     const current = new Promise<void>((resolve) => {
       release = resolve;
