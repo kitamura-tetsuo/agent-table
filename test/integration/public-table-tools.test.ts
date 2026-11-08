@@ -1047,4 +1047,132 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
       await creator.close();
     }
   });
+
+  it("uses the real OAuth SDK boundary for post retries, private reads and fixed snapshots", async () => {
+    const owner = await tokenForGuest("tables:read tables:write");
+    const outsider = await tokenForGuest("tables:read tables:write");
+    const readOnly = await tokenForGuest("tables:read");
+    const [client, stranger, reader] = await Promise.all([
+      sdk(owner.token),
+      sdk(outsider.token),
+      sdk(readOnly.token),
+    ]);
+    try {
+      const created = await client.callTool({
+        name: "create_table",
+        arguments: {
+          ...input,
+          request_id: "sdk_transcript_create_0001",
+        },
+      });
+      expect(created.isError).not.toBe(true);
+      const metadata = output(created);
+      const tableId = String(metadata.tableId);
+      const body = "  é 😀\\nPreserve whitespace  ";
+      const original = {
+        table_id: tableId,
+        body,
+        request_id: "sdk_transcript_post_0001",
+      };
+      const first = await client.callTool({
+        name: "post_message",
+        arguments: original,
+      });
+      expect(first.isError).not.toBe(true);
+      expect(output(first)).toMatchObject({
+        table_id: tableId,
+        seq: 1,
+        persisted: true,
+      });
+      const receipt = output(first);
+      const retry = await client.callTool({
+        name: "post_message",
+        arguments: original,
+      });
+      expect(output(retry)).toEqual(receipt);
+      const conflict = await client.callTool({
+        name: "post_message",
+        arguments: { ...original, body: "Changed" },
+      });
+      expect(conflict.isError).toBe(true);
+      expect(output(conflict)).toMatchObject({
+        error: { code: "IDEMPOTENCY_CONFLICT" },
+      });
+      const noGrant = await reader.callTool({
+        name: "post_message",
+        arguments: original,
+      });
+      expect(noGrant.isError).toBe(true);
+      expect(output(noGrant)).toMatchObject({
+        error: { code: "NOT_AUTHORIZED" },
+      });
+      for (const peer of [stranger]) {
+        const foreignRead = await peer.callTool({
+          name: "read_messages",
+          arguments: { table_id: tableId },
+        });
+        expect(foreignRead.isError).toBe(true);
+        expect(output(foreignRead)).toMatchObject({
+          error: { code: "TABLE_NOT_FOUND" },
+        });
+        const foreignPost = await peer.callTool({
+          name: "post_message",
+          arguments: { ...original, request_id: "sdk_foreign_post_0001" },
+        });
+        expect(foreignPost.isError).toBe(true);
+        expect(output(foreignPost)).toMatchObject({
+          error: { code: "TABLE_NOT_FOUND" },
+        });
+      }
+      const firstPage = await client.callTool({
+        name: "read_messages",
+        arguments: { table_id: tableId, limit: 1 },
+      });
+      expect(firstPage.isError).not.toBe(true);
+      expect(output(firstPage)).toMatchObject({
+        through_seq: 1,
+        next_after_seq: 1,
+        has_more: false,
+        messages: [{ seq: 1, body }],
+      });
+      const second = await client.callTool({
+        name: "post_message",
+        arguments: {
+          table_id: tableId,
+          body: "Later",
+          request_id: "sdk_transcript_post_0002",
+        },
+      });
+      expect(output(second)).toMatchObject({ seq: 2, persisted: true });
+      const unchanged = await client.callTool({
+        name: "read_messages",
+        arguments: { table_id: tableId, after_seq: 1, through_seq: 1 },
+      });
+      expect(output(unchanged)).toMatchObject({
+        messages: [],
+        through_seq: 1,
+        next_after_seq: 1,
+        has_more: false,
+      });
+      const table = env.TABLES.get(env.TABLES.idFromName(tableId));
+      await evictDurableObject(table);
+      const replay = await client.callTool({
+        name: "post_message",
+        arguments: original,
+      });
+      expect(output(replay)).toEqual(receipt);
+      await runInDurableObject(table, async (_instance, state) => {
+        expect(
+          state.storage.sql.exec("SELECT * FROM table_messages").toArray(),
+        ).toHaveLength(2);
+        expect(
+          state.storage.sql.exec("SELECT * FROM table_post_receipts").toArray(),
+        ).toHaveLength(2);
+      });
+    } finally {
+      await client.close();
+      await stranger.close();
+      await reader.close();
+    }
+  });
 });
