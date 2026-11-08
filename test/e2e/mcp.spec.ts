@@ -160,7 +160,32 @@ test("official SDK negotiates against the authenticated live Wrangler HTTP serve
       }),
     );
     expect(client.getProtocolEra()).toBe("modern");
-    expect(client.getServerCapabilities()?.tools).toBeUndefined();
+    // Table tools are now advertised only after authorized MCP setup.
+    expect(client.getServerCapabilities()?.tools).toMatchObject({
+      listChanged: true,
+    });
+    const listed = await client.listTools();
+    expect(listed.tools.map((tool) => tool.name).sort()).toEqual([
+      "create_table",
+      "get_table",
+    ]);
+    expect(listed.tools.find((tool) => tool.name === "create_table")?.annotations)
+      .toMatchObject({ readOnlyHint: false, idempotentHint: true });
+    expect(listed.tools.find((tool) => tool.name === "get_table")?.annotations)
+      .toMatchObject({ readOnlyHint: true, idempotentHint: true });
+    // A read-only OAuth grant cannot create a table, even if the tool is listed.
+    const rejected = await client.callTool({
+      name: "create_table",
+      arguments: {
+        request_id: "live_read_only_request_001",
+        title: "Should not create",
+      },
+    });
+    expect(rejected.isError).toBe(true);
+    const message = rejected.content.find((entry) => entry.type === "text");
+    expect(message?.type === "text" ? JSON.parse(message.text) : null).toMatchObject({
+      error: { code: "NOT_AUTHORIZED" },
+    });
   } finally {
     await client.close();
   }
