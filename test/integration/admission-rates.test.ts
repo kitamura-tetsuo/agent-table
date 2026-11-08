@@ -1,0 +1,134 @@
+import { createExecutionContext, runInDurableObject } from "cloudflare:test";
+import { env } from "cloudflare:workers";
+import { describe, expect, it } from "vitest";
+import worker from "../../src/index";
+import { checkPrincipalAdmission } from "../../src/shared/admission";
+
+const ORIGIN = "http://localhost:8787";
+
+function dispatch(
+  environment: Env,
+  path: string,
+  options?: RequestInit,
+): Promise<Response> {
+  return worker.fetch(
+    new Request(`${ORIGIN}${path}`, options) as Parameters<
+      typeof worker.fetch
+    >[0],
+    environment,
+    createExecutionContext(),
+  );
+}
+
+async function createGuest(
+  environment: Env,
+  csrf: string,
+  csrfCookie: string,
+  source: string,
+  forwardedFor: string,
+): Promise<Response> {
+  return dispatch(environment, "/guest/session", {
+    method: "POST",
+    headers: {
+      Origin: ORIGIN,
+      Cookie: csrfCookie,
+      "CF-Connecting-IP": source,
+      "X-Forwarded-For": forwardedFor,
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body: new URLSearchParams({ choice: "new", csrf }),
+  });
+}
+
+async function admissionStub(environment: Env, identity: string) {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(identity),
+  );
+  const hash = Array.from(new Uint8Array(digest), (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("");
+  return environment.ADMISSION.get(environment.ADMISSION.idFromName(hash));
+}
+
+describe("cross-isolate admission policy", () => {
+  it("limits fresh guest HTTP sessions by one edge identity despite guest and forwarding churn", async () => {
+    const limited: Env = {
+      ...env,
+      ALLOW_NEW_GUESTS: "true",
+      GUEST_CHALLENGE_MODE: "off",
+      EDGE_GUEST_RATE_PER_MINUTE: "2",
+    };
+    const page = await dispatch(limited, "/guest");
+    expect(page.status).toBe(200);
+    const html = await page.text();
+    const csrf = html.match(/name="csrf" value="([A-Za-z0-9_-]{43})"/)?.[1];
+    const csrfCookie = page.headers
+      .getSetCookie()
+      .find((value) => value.startsWith("__Host-agent_table_csrf="))
+      ?.split(";")[0];
+    if (!csrf || !csrfCookie) throw new Error("Expected browser CSRF state");
+
+    const ip = "192.0.2.31";
+    const results = await Promise.all(
+      Array.from({ length: 6 }, (_, index) =>
+        createGuest(
+          limited,
+          csrf,
+          csrfCookie,
+          ip,
+          `198.51.100.${index + 10}`,
+        ),
+      ),
+    );
+    expect(results.filter((result) => result.status === 303)).toHaveLength(2);
+    expect(results.filter((result) => result.status === 429)).toHaveLength(4);
+    const denied = results.find((result) => result.status === 429);
+    expect(denied?.headers.get("Retry-After")).toMatch(/^[1-9][0-9]*$/);
+    expect(await denied?.text()).toBe("RATE_LIMITED");
+    expect(denied?.headers.has("Set-Cookie")).toBe(false);
+
+    const stub = await admissionStub(limited, `edge-v1:${ip}`);
+    await runInDurableObject(stub, async (_instance, state) => {
+      const count = state.storage.sql
+        .exec<{ count: number }>(
+          "SELECT COUNT(*) AS count FROM admission_hits WHERE category = 'guest'",
+        )
+        .one().count;
+      expect(count).toBe(2);
+    });
+
+    const unrelated = await createGuest(
+      limited,
+      csrf,
+      csrfCookie,
+      "192.0.2.32",
+      "198.51.100.99",
+    );
+    expect(unrelated.status).toBe(303);
+  });
+
+  it("charges a verified principal across connections and refuses invalid quota config", async () => {
+    const principal = crypto.randomUUID();
+    const limited: Env = { ...env, PRINCIPAL_RATE_PER_MINUTE: "2" };
+    expect(await checkPrincipalAdmission(limited, principal)).toBeNull();
+    expect(await checkPrincipalAdmission(limited, principal)).toBeNull();
+    const denied = await checkPrincipalAdmission(limited, principal);
+    expect(denied?.status).toBe(429);
+    expect(denied?.headers.get("Retry-After")).toMatch(/^[1-9][0-9]*$/);
+    expect(await checkPrincipalAdmission(limited, crypto.randomUUID())).toBeNull();
+
+    const stub = await admissionStub(limited, `principal-v1:${principal}`);
+    await runInDurableObject(stub, async (_instance, state) => {
+      expect(
+        state.storage.sql
+          .exec<{ count: number }>(
+            "SELECT COUNT(*) AS count FROM admission_hits WHERE category = 'application'",
+          )
+          .one().count,
+      ).toBe(2);
+    });
+    const invalid: Env = { ...env, PRINCIPAL_RATE_PER_MINUTE: "0" };
+    expect((await checkPrincipalAdmission(invalid, principal))?.status).toBe(503);
+  });
+});
