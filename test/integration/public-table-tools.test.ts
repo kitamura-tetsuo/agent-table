@@ -1660,10 +1660,14 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
         const arrivals = await runInDurableObject(table, async (instance) => {
           const testInstance = instance as unknown as {
             transcriptCommitBarrierArrivalsForTest: number;
+            transcriptCommitBarrierOverlappedForTest: boolean;
           };
-          return testInstance.transcriptCommitBarrierArrivalsForTest;
+          return {
+            count: testInstance.transcriptCommitBarrierArrivalsForTest,
+            overlapped: testInstance.transcriptCommitBarrierOverlappedForTest,
+          };
         });
-        expect(arrivals).toBe(2);
+        expect(arrivals).toEqual({ count: 2, overlapped: true });
         expect(results.filter((result) => !result.isError)).toHaveLength(1);
         const winnerIndex = results.findIndex((result) => !result.isError);
         const winner = winnerIndex === 0 ? creator : invitee;
@@ -1718,5 +1722,5 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
       await creator.close();
       await invitee.close();
     }
-  });
+  }, 10_000);
 });

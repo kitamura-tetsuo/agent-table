@@ -138,6 +138,8 @@ export class TableDO extends DurableObject<Env> {
   // harness. It is never exposed through a public RPC or production binding.
   private transcriptCommitBarrierEnabledForTest = false;
   private transcriptCommitBarrierArrivalsForTest = 0;
+  private transcriptCommitBarrierOverlappedForTest = false;
+  private transcriptCommitBarrierFirstWaitingForTest = false;
   private transcriptCommitBarrierReleaseForTest?: () => void;
 
   constructor(ctx: DurableObjectState, env: Env) {
@@ -711,13 +713,22 @@ export class TableDO extends DurableObject<Env> {
     if (this.transcriptCommitBarrierEnabledForTest) {
       this.transcriptCommitBarrierArrivalsForTest++;
       if (this.transcriptCommitBarrierArrivalsForTest === 1) {
-        // Create and release the promise in the same DO I/O context.
-        // A bounded fallback avoids hanging tests if the second RPC never arrives.
+        this.transcriptCommitBarrierFirstWaitingForTest = true;
+        // Keep every promise and timer in the TableDO I/O context.
+        // A short watchdog distinguishes serialization from real overlap.
         await new Promise<void>((resolve) => {
-          this.transcriptCommitBarrierReleaseForTest = resolve;
-          setTimeout(resolve, 5_000);
+          let settled = false;
+          const finish = () => {
+            if (settled) return;
+            settled = true;
+            this.transcriptCommitBarrierFirstWaitingForTest = false;
+            resolve();
+          };
+          this.transcriptCommitBarrierReleaseForTest = finish;
+          setTimeout(finish, 700);
         });
-      } else {
+      } else if (this.transcriptCommitBarrierFirstWaitingForTest) {
+        this.transcriptCommitBarrierOverlappedForTest = true;
         this.transcriptCommitBarrierReleaseForTest?.();
       }
     }
