@@ -194,4 +194,50 @@ describe("TableDO terminal lifecycle and durable cleanup", () => {
     );
     expect(retried.ok).toBe(false);
   });
+  it("orders an in-flight SDK-equivalent write behind a committed close at the DO mutation boundary", async () => {
+    const fixture = await tableFixture();
+    await runInDurableObject(fixture.stub, async (instance) => {
+      const table = instance as unknown as {
+        transcriptCommitBarrierEnabledForTest: boolean;
+      };
+      table.transcriptCommitBarrierEnabledForTest = true;
+    });
+    const pendingPost = fixture.stub.postMessage(fixture.writer, {
+      request_id: "lifecycle_contended_post_0001",
+      body: "This post must lose to a committed close",
+    });
+    let barrierArrived = false;
+    for (let i = 0; i < 30; i++) {
+      barrierArrived = await runInDurableObject(fixture.stub, async (instance) => {
+        const table = instance as unknown as {
+          transcriptCommitBarrierFirstWaitingForTest: boolean;
+        };
+        return table.transcriptCommitBarrierFirstWaitingForTest;
+      });
+      if (barrierArrived) break;
+      await new Promise<void>((resolve) => setTimeout(resolve, 5));
+    }
+    expect(barrierArrived).toBe(true);
+    try {
+      const close = await fixture.stub.closeTable(
+        fixture.writer,
+        "lifecycle_contended_close_001",
+      );
+      expect(close).toMatchObject({ ok: true, value: { state: "closed" } });
+      expect(await pendingPost).toEqual({ ok: false, code: "TABLE_TERMINAL" });
+      await runInDurableObject(fixture.stub, async (_instance, state) => {
+        expect(state.storage.sql.exec("SELECT last_seq FROM table_metadata").one()).toEqual({ last_seq: 0 });
+        expect(state.storage.sql.exec("SELECT COUNT(*) AS n FROM table_post_receipts").one()).toEqual({ n: 0 });
+        expect(state.storage.sql.exec("SELECT COUNT(*) AS n FROM table_messages").one()).toEqual({ n: 0 });
+      });
+    } finally {
+      await runInDurableObject(fixture.stub, async (instance) => {
+        const table = instance as unknown as {
+          transcriptCommitBarrierEnabledForTest: boolean;
+        };
+        table.transcriptCommitBarrierEnabledForTest = false;
+      });
+    }
+  }, 10_000);
+
 });
