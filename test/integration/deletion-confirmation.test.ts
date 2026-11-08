@@ -2,12 +2,12 @@ import { evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it, vi } from "vitest";
 import { SESSION_COOKIE_NAME } from "../../src/auth/guest";
-import { deletionSdkForBrowserGuest } from "./deletion-sdk";
 import worker from "../../src/index";
 import {
   authorizeGuestConnection,
   type ConnectionScope,
 } from "../../src/shared/auth";
+import { deletionSdkForBrowserGuest } from "./deletion-sdk";
 
 const ORIGIN = "http://localhost:8787";
 const context = {} as ExecutionContext;
@@ -339,7 +339,7 @@ describe("browser-confirmed deletion through real TableDO and GuestDO", () => {
     const f = await fixture();
     const sdk = await deletionSdkForBrowserGuest(f.owner.id, f.owner.cookie);
     try {
-        const key = "browser_failure_retry_0001";
+      const key = "browser_failure_retry_0001";
       const initiated = await sdk.client.callTool({
         name: "delete_table",
         arguments: { table_id: f.id, request_id: key },
