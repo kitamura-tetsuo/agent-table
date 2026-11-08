@@ -6,6 +6,7 @@ import {
   OAuthResourceServer,
 } from "@cloudflare/workers-oauth-provider";
 import { handleMcp } from "../mcp/server";
+import { checkPrincipalAdmission } from "../shared/admission";
 import {
   authorizeGuestConnection,
   CONNECTION_SCOPES,
@@ -418,6 +419,11 @@ export async function handleAuthenticatedMcp(
         if (!checked.allowed) {
           return safeError("Connection not authorized", 401);
         }
+        const rateRejected = await checkPrincipalAdmission(
+          environment,
+          props.guestId,
+        );
+        if (rateRejected) return rateRejected;
         // The actor is request-local. Private tools must independently enforce
         // the scope of each operation and check TableDO membership.
         return handleMcp(authRequest, environment, authCtx, {
