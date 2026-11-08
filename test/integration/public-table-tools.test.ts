@@ -1218,7 +1218,9 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
           state.storage.sql.exec("SELECT * FROM table_post_receipts").toArray(),
         ).toHaveLength(0);
         expect(
-          state.storage.sql.exec("SELECT body_bytes FROM table_transcript_usage").one(),
+          state.storage.sql
+            .exec("SELECT body_bytes FROM table_transcript_usage")
+            .one(),
         ).toMatchObject({ body_bytes: 0 });
         state.storage.sql.exec("DROP TRIGGER reject_transcript_insert");
       });
@@ -1297,12 +1299,22 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
             return new Proxy(stub, {
               get(target, property) {
                 if (property === "postMessage") {
-                  return async (actor: VerifiedConnectionActor, value: unknown) => {
+                  return async (
+                    actor: VerifiedConnectionActor,
+                    value: unknown,
+                  ) => {
                     entered++;
-                    for (let attempt = 0; entered < 2 && attempt < 500; attempt++) {
-                      await new Promise<void>((resolve) => setTimeout(resolve, 10));
+                    for (
+                      let attempt = 0;
+                      entered < 2 && attempt < 500;
+                      attempt++
+                    ) {
+                      await new Promise<void>((resolve) =>
+                        setTimeout(resolve, 10),
+                      );
                     }
-                    if (entered < 2) throw new Error("SDK posts did not overlap");
+                    if (entered < 2)
+                      throw new Error("SDK posts did not overlap");
                     return target.postMessage(actor, value);
                   };
                 }
@@ -1359,7 +1371,9 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
             state.storage.sql.exec("SELECT * FROM table_messages").toArray(),
           ).toHaveLength(10);
           expect(
-            state.storage.sql.exec("SELECT * FROM table_post_receipts").toArray(),
+            state.storage.sql
+              .exec("SELECT * FROM table_post_receipts")
+              .toArray(),
           ).toHaveLength(10);
         });
       } finally {
