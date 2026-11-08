@@ -2071,7 +2071,6 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
   });
 });
 
-
 describe("authenticated public SDK admission quota", () => {
   it("charges real OAuth-authenticated SDK MCP traffic in the principal's SQLite window", async () => {
     const principal = await tokenForGuest("tables:read tables:write");
