@@ -310,7 +310,9 @@ describe("real authorization code and guest-grant flow", () => {
         }
         await new Promise((resolve) => setTimeout(resolve, 25));
       }
-      throw new Error("Provider never reached the observed redemption boundary");
+      throw new Error(
+        "Provider never reached the observed redemption boundary",
+      );
     };
     await tokenDO.armRedemptionReadProbe();
     try {
