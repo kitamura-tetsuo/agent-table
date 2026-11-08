@@ -5,6 +5,7 @@ import {
   StreamableHTTPClientTransport,
 } from "@modelcontextprotocol/client";
 import { describe, expect, it } from "vitest";
+import { authorizeGuestConnection } from "../../src/shared/auth";
 
 const ORIGIN = "http://localhost:8787";
 const REDIRECT = "https://client.example/callback";
@@ -125,7 +126,10 @@ async function tokenForGuest(scope: string) {
   };
 }
 
-async function sdk(token: string) {
+async function sdk(
+  token: string,
+  transportFetch?: (request: Request) => Promise<Response>,
+) {
   const client = new Client(
     { name: "table-integration", version: "0.1.0" },
     { versionNegotiation: { mode: "auto" } },
@@ -136,7 +140,9 @@ async function sdk(token: string) {
       const request = new Request(url, init);
       // An in-process fetch needs the Host header a real HTTP client supplies.
       request.headers.set("Host", new URL(request.url).host);
-      return exports.default.fetch(request);
+      return transportFetch
+        ? transportFetch(request)
+        : exports.default.fetch(request);
     },
   });
   await client.connect(transport);
@@ -271,6 +277,290 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
     } finally {
       await first.close();
       await other.close();
+    }
+  });
+
+
+  it("reports a public SDK uncertainty after a committed reservation RPC loses its reply", async () => {
+    const owner = await tokenForGuest("tables:read tables:write");
+    const originalKey = {
+      ...input,
+      request_id: "sdk_reservation_response_loss_001",
+    };
+    let intercepted = 0;
+    await runInDurableObject(owner.guest, async (instance) => {
+      const internal = instance as unknown as {
+        reserveCreation: typeof instance.reserveCreation;
+      };
+      const original = internal.reserveCreation.bind(instance);
+      internal.reserveCreation = async (actor, request) => {
+        const result = await original(actor, request);
+        if (result.ok && intercepted++ === 0) {
+          throw new Error("Injected reservation reply loss after commit");
+        }
+        return result;
+      };
+    });
+    const client = await sdk(owner.token);
+    try {
+      const uncertain = await client.callTool({
+        name: "create_table",
+        arguments: originalKey,
+      });
+      expect(intercepted).toBe(1);
+      expect(uncertain.isError).toBe(true);
+      expect(output(uncertain)).toMatchObject({
+        error: {
+          code: "TEMPORARILY_UNAVAILABLE",
+          retry: "Retry with the same request_id and unchanged arguments.",
+        },
+      });
+      const rows = await runInDurableObject(owner.guest, async (_instance, state) =>
+        state.storage.sql
+          .exec<{ table_id: string; expires_at: number; charged_at: number; outcome: string }>(
+            "SELECT table_id, expires_at, charged_at, outcome FROM guest_creation_reservations",
+          )
+          .toArray(),
+      );
+      expect(rows).toHaveLength(1);
+      expect(rows[0].outcome).toBe("reserved");
+      const table = env.TABLES.get(env.TABLES.idFromName(rows[0].table_id));
+      expect((await table.getMetadata(
+        (await authorizeGuestConnection(
+          env, owner.guestId, owner.connectionId, "tables:read",
+        )) as { allowed: true; actor: Parameters<typeof table.getMetadata>[0] }).actor,
+      )).toMatchObject({ ok: false, code: "TABLE_NOT_FOUND" });
+      await evictDurableObject(owner.guest);
+      await evictDurableObject(table);
+      const recovered = await client.callTool({
+        name: "create_table",
+        arguments: originalKey,
+      });
+      expect(recovered.isError).not.toBe(true);
+      expect(output(recovered)).toMatchObject({
+        tableId: rows[0].table_id,
+        expiresAt: new Date(rows[0].expires_at).toISOString(),
+      });
+      await runInDurableObject(owner.guest, async (_instance, state) => {
+        const after = state.storage.sql.exec<{
+          table_id: string;
+          charged_at: number;
+          outcome: string;
+        }>(
+          "SELECT table_id, charged_at, outcome FROM guest_creation_reservations",
+        ).toArray();
+        expect(after).toEqual([{
+          table_id: rows[0].table_id,
+          charged_at: rows[0].charged_at,
+          outcome: "initialized",
+        }]);
+      });
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("returns an isError public result after TableDO commits but its RPC response is lost", async () => {
+    const owner = await tokenForGuest("tables:read tables:write");
+    const originalKey = {
+      ...input,
+      request_id: "sdk_initializer_response_loss_001",
+    };
+    const decision = await authorizeGuestConnection(
+      env, owner.guestId, owner.connectionId, "tables:write",
+    );
+    if (!decision.allowed) throw new Error("Expected active write grant");
+    const reserved = await owner.guest.reserveCreation(decision.actor, originalKey);
+    if (!reserved.ok) throw new Error("Missing durable reservation");
+    const table = env.TABLES.get(
+      env.TABLES.idFromName(reserved.reservation.tableId),
+    );
+    let committed = false;
+    await runInDurableObject(table, async (instance) => {
+      const internal = instance as unknown as {
+        initializeTable: typeof instance.initializeTable;
+      };
+      const original = internal.initializeTable.bind(instance);
+      internal.initializeTable = async (actor, request, receipt) => {
+        const actual = await original(actor, request, receipt);
+        if (actual.ok) {
+          committed = true;
+          throw new Error("Injected reply loss after persisted initialization");
+        }
+        return actual;
+      };
+    });
+    const client = await sdk(owner.token);
+    try {
+      const uncertain = await client.callTool({
+        name: "create_table",
+        arguments: originalKey,
+      });
+      expect(committed).toBe(true);
+      expect(uncertain.isError).toBe(true);
+      expect(output(uncertain)).toMatchObject({
+        error: {
+          code: "TEMPORARILY_UNAVAILABLE",
+          retry: "Retry with the same request_id and unchanged arguments.",
+        },
+      });
+      await runInDurableObject(table, async (_instance, state) => {
+        expect(state.storage.sql.exec("SELECT * FROM table_metadata").toArray()).toHaveLength(1);
+        expect(state.storage.sql.exec("SELECT * FROM table_memberships").toArray()).toHaveLength(1);
+      });
+      await evictDurableObject(owner.guest);
+      await evictDurableObject(table);
+      const retry = await client.callTool({
+        name: "create_table",
+        arguments: originalKey,
+      });
+      expect(retry.isError).not.toBe(true);
+      expect(output(retry)).toMatchObject({
+        tableId: reserved.reservation.tableId,
+        expiresAt: new Date(reserved.reservation.expiresAt).toISOString(),
+      });
+      await runInDurableObject(owner.guest, async (_instance, state) => {
+        const rows = state.storage.sql.exec<{ table_id: string; outcome: string }>(
+          "SELECT table_id, outcome FROM guest_creation_reservations",
+        ).toArray();
+        expect(rows).toEqual([{
+          table_id: reserved.reservation.tableId,
+          outcome: "initialized",
+        }]);
+      });
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("joins two overlapping public SDK creation retries before the reservation decision", async () => {
+    const owner = await tokenForGuest("tables:read tables:write");
+    const originalKey = {
+      ...input,
+      request_id: "sdk_parallel_reservation_001",
+    };
+    let entered = 0;
+    let signalBoth = () => {};
+    let release = () => {};
+    const ready = new Promise<void>((resolve) => {
+      signalBoth = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await runInDurableObject(owner.guest, async (instance) => {
+      const internal = instance as unknown as {
+        beforeReservationDecision: () => Promise<void>;
+      };
+      internal.beforeReservationDecision = async () => {
+        entered++;
+        if (entered === 2) signalBoth();
+        await gate;
+      };
+    });
+    const [left, right] = await Promise.all([
+      sdk(owner.token),
+      sdk(owner.token),
+    ]);
+    try {
+      const first = left.callTool({ name: "create_table", arguments: originalKey });
+      const second = right.callTool({ name: "create_table", arguments: originalKey });
+      try {
+        await Promise.race([
+          ready,
+          new Promise<never>((_resolve, reject) =>
+            setTimeout(
+              () => reject(new Error("Public SDK reservation attempts did not overlap")),
+              5_000,
+            ),
+          ),
+        ]);
+        expect(entered).toBe(2);
+      } finally {
+        release();
+      }
+      const [a, b] = await Promise.all([first, second]);
+      expect(a.isError).not.toBe(true);
+      expect(b.isError).not.toBe(true);
+      expect(output(a)).toEqual(output(b));
+      const tableId = String(output(a).tableId);
+      await runInDurableObject(owner.guest, async (_instance, state) => {
+        const rows = state.storage.sql.exec<{ table_id: string }>(
+          "SELECT table_id FROM guest_creation_reservations",
+        ).toArray();
+        expect(rows).toEqual([{ table_id: tableId }]);
+      });
+      const table = env.TABLES.get(env.TABLES.idFromName(tableId));
+      await runInDurableObject(table, async (_instance, state) => {
+        expect(state.storage.sql.exec("SELECT * FROM table_metadata").toArray()).toHaveLength(1);
+        expect(state.storage.sql.exec("SELECT * FROM table_memberships").toArray()).toHaveLength(1);
+      });
+    } finally {
+      release();
+      await left.close();
+      await right.close();
+    }
+  });
+
+  it("survives a committed public SDK response lost after the Worker reply", async () => {
+    const owner = await tokenForGuest("tables:read tables:write");
+    const originalKey = {
+      ...input,
+      request_id: "sdk_worker_response_drop_001",
+    };
+    let dropped = false;
+    const flaky = await sdk(owner.token, async (request) => {
+      let isCreate = false;
+      if (request.method === "POST") {
+        const body = await request.clone().json().catch(() => null) as
+          | { method?: string; params?: { name?: string } }
+          | null;
+        isCreate = body?.method === "tools/call" &&
+          body.params?.name === "create_table";
+      }
+      const response = await exports.default.fetch(request);
+      if (isCreate && !dropped) {
+        dropped = true;
+        throw new Error("Synthetic lost Worker-to-SDK response");
+      }
+      return response;
+    });
+    try {
+      await expect(flaky.callTool({
+        name: "create_table",
+        arguments: originalKey,
+      })).rejects.toThrow();
+      expect(dropped).toBe(true);
+    } finally {
+      await flaky.close();
+    }
+    const rows = await runInDurableObject(owner.guest, async (_instance, state) =>
+      state.storage.sql.exec<{ table_id: string; expires_at: number; outcome: string }>(
+        "SELECT table_id, expires_at, outcome FROM guest_creation_reservations",
+      ).toArray(),
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].outcome).toBe("initialized");
+    const table = env.TABLES.get(env.TABLES.idFromName(rows[0].table_id));
+    await evictDurableObject(owner.guest);
+    await evictDurableObject(table);
+    const fresh = await sdk(owner.token);
+    try {
+      const retry = await fresh.callTool({
+        name: "create_table",
+        arguments: originalKey,
+      });
+      expect(retry.isError).not.toBe(true);
+      expect(output(retry)).toMatchObject({
+        tableId: rows[0].table_id,
+        expiresAt: new Date(rows[0].expires_at).toISOString(),
+      });
+      await runInDurableObject(table, async (_instance, state) => {
+        expect(state.storage.sql.exec("SELECT * FROM table_metadata").toArray()).toHaveLength(1);
+        expect(state.storage.sql.exec("SELECT * FROM table_memberships").toArray()).toHaveLength(1);
+      });
+    } finally {
+      await fresh.close();
     }
   });
 
