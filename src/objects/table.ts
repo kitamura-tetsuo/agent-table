@@ -18,6 +18,7 @@ import {
   validTableId,
 } from "../shared/invitations";
 import { TABLE_LIMITS } from "../shared/limits";
+import type { CloseTableReceipt, LifecycleInvalidation, PurgeTableReceipt } from "../shared/lifecycle";
 import { digestSessionSecret, randomBase64Url } from "../shared/random";
 import { ownInboxUri, parseOwnInboxUri } from "../shared/resources";
 import {
@@ -146,6 +147,9 @@ export class TableDO extends DurableObject<Env> {
     super(ctx, env);
     initializeApplicationSchema(ctx.storage, "table");
     this.deadlines = new DurableDeadlineScheduler(ctx.storage);
+    ctx.blockConcurrencyWhile(async () => {
+      await this.deadlines.ensureExistingWakeup(() => this.earliestLifecycleDeadline());
+    });
   }
 
   // An application schema exists even when no table has ever been created.
@@ -162,6 +166,92 @@ export class TableDO extends DurableObject<Env> {
          FROM table_metadata WHERE singleton = 1`,
       )
       .toArray()[0];
+  }
+
+  /** Expiry and erased-state authority survives an object reconstruction. */
+  private tombstoneRow(): {
+    table_id: string;
+    terminal_state: "expired" | "deleted";
+    expires_at: number;
+    retain_until: number;
+  } | undefined {
+    return this.ctx.storage.sql
+      .exec<{
+        table_id: string;
+        terminal_state: "expired" | "deleted";
+        expires_at: number;
+        retain_until: number;
+      }>("SELECT table_id, terminal_state, expires_at, retain_until FROM table_tombstones LIMIT 1")
+      .toArray()[0];
+  }
+
+  private earliestLifecycleDeadline(): number | null {
+    const table = this.metadataRow();
+    if (table) return table.expires_at;
+    return this.tombstoneRow()?.retain_until ?? null;
+  }
+
+  /** Remove all implemented private table rows, preserving only a bounded tombstone. */
+  private purgeContent(now: number, state: "expired" | "deleted"): {
+    tableId: string;
+    expiresAt: number;
+  } | null {
+    const table = this.metadataRow();
+    if (!table) return null;
+    const retainUntil = table.expires_at + 24 * 60 * 60_000;
+    this.ctx.storage.sql.exec(
+      "INSERT INTO table_tombstones (table_id, terminal_state, expires_at, terminal_at, retain_until) VALUES (?, ?, ?, ?, ?)",
+      table.table_id, state, table.expires_at, now, retainUntil,
+    );
+    for (const member of this.memberships()) {
+      this.ctx.storage.sql.exec(
+        "INSERT INTO table_tombstone_guests (guest_id) VALUES (?)",
+        member.guest_id,
+      );
+    }
+    this.ctx.storage.sql.exec("DELETE FROM table_post_receipts");
+    this.ctx.storage.sql.exec("DELETE FROM table_messages");
+    this.ctx.storage.sql.exec("DELETE FROM table_transcript_usage");
+    this.ctx.storage.sql.exec("DELETE FROM table_join_receipts");
+    this.ctx.storage.sql.exec("DELETE FROM table_invitations");
+    this.ctx.storage.sql.exec("DELETE FROM table_memberships");
+    this.ctx.storage.sql.exec("DELETE FROM table_metadata");
+    return { tableId: table.table_id, expiresAt: table.expires_at };
+  }
+
+  private cleanupDueLifecycle(now: number, budget: number): number {
+    if (budget <= 0) return 0;
+    const table = this.metadataRow();
+    if (table && table.expires_at <= now) {
+      this.purgeContent(now, "expired");
+      return 1;
+    }
+    const tombstone = this.tombstoneRow();
+    if (tombstone && tombstone.retain_until <= now) {
+      this.ctx.storage.sql.exec("DELETE FROM table_tombstone_guests");
+      this.ctx.storage.sql.exec("DELETE FROM table_tombstones");
+      return 1;
+    }
+    return 0;
+  }
+
+  /**
+   * Only internal notification consumers may inspect dispatch eligibility.
+   * The result is authoritative at call time, not a delivery cancellation.
+   */
+  lifecycleStatus(): {
+    state: TableState | "missing";
+    canDispatch: boolean;
+  } {
+    const table = this.metadataRow();
+    if (table) {
+      const expired = table.expires_at <= Date.now();
+      return {
+        state: expired ? "expired" : table.state,
+        canDispatch: !expired && (table.state === "waiting" || table.state === "open"),
+      };
+    }
+    return { state: this.tombstoneRow()?.terminal_state ?? "missing", canDispatch: false };
   }
 
   private memberships(): MembershipRow[] {
@@ -291,11 +381,12 @@ export class TableDO extends DurableObject<Env> {
     }
 
     const trusted = authoritative.reservation;
-    return this.ctx.storage.transactionSync(() => {
+    const committed = await this.deadlines.commitWithWakeup(trusted.expiresAt, () => this.ctx.storage.transactionSync(() => {
       // The original expiry remains authoritative even after the remote read.
       if (Date.now() >= trusted.expiresAt) {
         return { ok: false, code: "TABLE_EXPIRED" } as const;
       }
+      if (this.tombstoneRow()) return { ok: false, code: "TABLE_TERMINAL" } as const;
       const previous = this.metadataRow();
       if (previous) {
         if (
@@ -357,7 +448,8 @@ export class TableDO extends DurableObject<Env> {
       if (!table || !creator)
         throw new Error("Incomplete table initialization");
       return { ok: true, value: this.publicMetadata(table, creator) } as const;
-    });
+    }));
+    return committed.value;
   }
 
   private inviteForRequest(key: string): InvitationRow | undefined {
@@ -570,7 +662,7 @@ export class TableDO extends DurableObject<Env> {
         invitation.state === "consumed" &&
         invitation.consumed_by === actor.guestId &&
         existing?.seat === 2 &&
-        (table.state === "open" || table.state === "closed")
+        table.state === "open"
       ) {
         if (!receipt) {
           this.ctx.storage.sql.exec(
@@ -942,13 +1034,103 @@ export class TableDO extends DurableObject<Env> {
   }
 
   /**
-   * No TableDO deadline consumer exists yet. Lifecycle and delivery producers
-   * will use this same per-object scheduler when their schemas are introduced.
+   * Close is the shared, idempotent terminal transition. It never changes the
+   * original expiry, and the returned hint is transient, not an outbox record.
    */
+  async closeTable(
+    actor: VerifiedConnectionActor,
+    requestId: string,
+  ): Promise<TableResult<CloseTableReceipt> & { terminalHint?: LifecycleInvalidation }> {
+    if (!validInvitationOperationId(requestId)) return { ok: false, code: "INVALID_REQUEST" };
+    if (!(await this.verifyActor(actor, "tables:write"))) {
+      return { ok: false, code: "TABLE_NOT_FOUND" };
+    }
+    const existing = this.metadataRow();
+    if (!existing || !this.memberFor(actor.guestId)) return { ok: false, code: "TABLE_NOT_FOUND" };
+    if (existing.expires_at <= Date.now()) return { ok: false, code: "TABLE_EXPIRED" };
+    const committed = await this.deadlines.commitWithWakeup(existing.expires_at, () =>
+      this.ctx.storage.transactionSync(() => {
+        const now = Date.now();
+        const table = this.metadataRow();
+        const member = this.memberFor(actor.guestId);
+        if (!table || !member) return { ok: false, code: "TABLE_NOT_FOUND" } as const;
+        if (table.expires_at <= now || table.state === "expired") {
+          return { ok: false, code: "TABLE_EXPIRED" } as const;
+        }
+        if (table.state === "deleted") {
+          return { ok: false, code: "TABLE_NOT_FOUND" } as const;
+        }
+        if (table.state === "closed") {
+          return {
+            ok: true,
+            value: {
+              table_id: table.table_id, state: "closed" as const,
+              closed_at: new Date(table.closed_at ?? now).toISOString(),
+              expires_at: new Date(table.expires_at).toISOString(),
+            },
+          } as const;
+        }
+        this.ctx.storage.sql.exec(
+          "UPDATE table_metadata SET state = 'closed', closed_at = ? WHERE singleton = 1",
+          now,
+        );
+        this.ctx.storage.sql.exec(
+          "UPDATE table_invitations SET state = 'revoked', response_envelope = NULL WHERE state = 'active'",
+        );
+        return {
+          ok: true,
+          value: {
+            table_id: table.table_id, state: "closed" as const,
+            closed_at: new Date(now).toISOString(),
+            expires_at: new Date(table.expires_at).toISOString(),
+          },
+          terminalHint: { tableId: table.table_id, state: "closed" as const },
+        } as const;
+      }),
+    );
+    return committed.value;
+  }
+
+  /**
+   * Private internal entry: public deletion MUST be gated by the later browser
+   * confirmation flow; no public MCP deletion tool calls this method.
+   */
+  async purgeTable(
+    actor: VerifiedConnectionActor,
+  ): Promise<TableResult<PurgeTableReceipt> & { terminalHint?: LifecycleInvalidation }> {
+    if (!(await this.verifyActor(actor, "tables:write"))) {
+      return { ok: false, code: "TABLE_NOT_FOUND" };
+    }
+    const existing = this.metadataRow();
+    if (!existing || !this.memberFor(actor.guestId)) return { ok: false, code: "TABLE_NOT_FOUND" };
+    if (existing.expires_at <= Date.now()) return { ok: false, code: "TABLE_EXPIRED" };
+    const committed = await this.deadlines.commitWithWakeup(
+      existing.expires_at + 24 * 60 * 60_000,
+      () => this.ctx.storage.transactionSync(() => {
+        const current = this.metadataRow();
+        if (!current || !this.memberFor(actor.guestId)) {
+          return { ok: false, code: "TABLE_NOT_FOUND" } as const;
+        }
+        if (current.expires_at <= Date.now()) {
+          return { ok: false, code: "TABLE_EXPIRED" } as const;
+        }
+        const purged = this.purgeContent(Date.now(), "deleted");
+        if (!purged) return { ok: false, code: "TABLE_NOT_FOUND" } as const;
+        return {
+          ok: true,
+          value: { table_id: purged.tableId, state: "deleted" as const },
+          terminalHint: { tableId: purged.tableId, state: "deleted" as const },
+        } as const;
+      }),
+    );
+    return committed.value;
+  }
+
+  /** Alarms are recoverable; no wakeup implies that content is readable. */
   async alarm(): Promise<void> {
     await this.deadlines.drainDueWork(
-      () => null,
-      () => 0,
+      () => this.earliestLifecycleDeadline(),
+      (now, budget) => this.cleanupDueLifecycle(now, budget),
     );
   }
 }
