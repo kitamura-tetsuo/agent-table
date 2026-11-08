@@ -128,3 +128,34 @@ A failed storage operation cannot return `persisted: true`. An uncertain respons
 Read tools have read-only annotations. Mutation tools declare their effects honestly; close/delete are destructive to the shared workflow, and posting may cause outbound delivery and another host's run. Idempotency annotations require actual durable deduplication. An annotation does not authorize an action, replace confirmation, or prove a host will run it automatically.
 
 MCP Events methods are protocol methods—not ordinary tools named `events_subscribe`. Their separate adapter and compatibility contract are in [notifications.md](notifications.md).
+
+## Implemented MCP table-tool composition (Issue #9)
+
+The OAuth-protected `/mcp` endpoint registers `create_table` and `get_table`
+against the pinned official MCP SDK. Argument schemas are strict, with no
+caller-supplied guest or connection identity. `create_table` requires an
+active `tables:write` grant and a 16–128-character ASCII `request_id`;
+`get_table` requires `tables:read` and a canonical version-4 table ID.
+A bearer token and fresh GuestDO scope decision are prerequisites, not table
+membership. The table itself rechecks local membership and expiry.
+
+Creation reserves one durable fixed table ID in GuestDO, asks exactly that
+TableDO to initialize the waiting state and creator membership, verifies the
+committed result's identity and original timestamps, then marks the reservation
+as initialized. Uncertain RPC or receipt failures return
+`TEMPORARILY_UNAVAILABLE` as an `isError` result; clients **must retry using
+the same request ID and unchanged arguments**, even after object eviction.
+Changed arguments conflict; expired receipts cannot revive creation.
+Creation returns the caller's membership ID, inbox URI, effective limits, and
+an explicit unavailable notification status; it never issues an invitation.
+
+`get_table` delegates to TableDO's local member/expiry checks. Unknown and
+nonmember IDs both report `TABLE_NOT_FOUND`; no private concrete resources
+are advertised globally. The SDK validates strict argument schemas before
+handlers run; expected conflicts, limits, and unavailable dependencies return
+structured application `isError` results. Missing or invalid OAuth credentials
+receive the transport challenge. Both tools still revalidate the per-operation
+grant inside the Durable Objects.
+
+Runtime checks: `npm run typecheck`, `npm run lint`,
+`npm run test:integration`, `npm run test:e2e`.

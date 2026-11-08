@@ -393,7 +393,8 @@ export async function handleAuthenticatedMcp(
       authorization_servers: [origin],
       resource_name: "Agent Table",
     },
-    requiredScopes: ["tables:read"],
+    // The individual tools enforce their own read/write grants.
+    requiredScopes: [],
     validateToken: (environment) => (audience, token) =>
       authorizationServer(environment).validateToken<OAuthActorProps>(
         audience,
@@ -419,7 +420,11 @@ export async function handleAuthenticatedMcp(
         }
         // The actor is request-local. Private tools must independently enforce
         // the scope of each operation and check TableDO membership.
-        return handleMcp(authRequest, environment, authCtx);
+        return handleMcp(authRequest, environment, authCtx, {
+          guestId: props.guestId,
+          connectionId: props.connectionId,
+          scopes,
+        });
       },
     },
   });
