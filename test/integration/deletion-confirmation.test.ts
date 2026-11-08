@@ -367,9 +367,10 @@ describe("browser-confirmed deletion through real TableDO and GuestDO", () => {
     );
     expect(failedApproval.status).toBe(503);
     expect(await failedApproval.text()).not.toContain("Deletion committed");
-    expect(
-      await f.table.deletionView(f.owner.id, key),
-    ).toMatchObject({ ok: true, value: { state: "pending" } });
+    expect(await f.table.deletionView(f.owner.id, key)).toMatchObject({
+      ok: true,
+      value: { state: "pending" },
+    });
     await runInDurableObject(f.table, async (_instance, state) => {
       expect(
         state.storage.sql
