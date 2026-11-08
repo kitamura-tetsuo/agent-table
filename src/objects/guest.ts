@@ -58,7 +58,8 @@ export type NewConnectionGrant = ConnectionSummary & {
 };
 
 export type ConnectionRevocation =
-  | { status: "unauthorized" | "not-found" }
+  | { status: "unauthorized" }
+  | { status: "not-found" }
   | { status: "revoked"; session: NewGuestSession };
 
 
