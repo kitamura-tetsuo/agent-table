@@ -14,6 +14,10 @@ if (!original.includes(safeBoundary) || original.includes(unsafeBoundary)) {
 }
 
 let passed = false;
+let output = "";
+let exitStatus = null;
+let processSignal = null;
+let processError = null;
 try {
   writeFileSync(source, original.replace(safeBoundary, unsafeBoundary));
   const run = spawnSync(
@@ -32,7 +36,10 @@ try {
       maxBuffer: 2 * 1024 * 1024,
     },
   );
-  const output = `${run.stdout ?? ""}\n${run.stderr ?? ""}`.replace(
+  exitStatus = run.status;
+  processSignal = run.signal;
+  processError = run.error?.code ?? null;
+  output = `${run.stdout ?? ""}\n${run.stderr ?? ""}`.replace(
     /\x1b\[[0-9;]*m/g,
     "",
   );
@@ -56,9 +63,9 @@ if (!passed) {
     .slice(-12);
   console.error(
     JSON.stringify({
-      exitStatus: run.status,
-      signal: run.signal,
-      processError: run.error?.code ?? null,
+      exitStatus,
+      signal: processSignal,
+      processError,
       resultLines: relevant,
     }),
   );
