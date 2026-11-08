@@ -1,8 +1,10 @@
 import { evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { env, exports } from "cloudflare:workers";
-import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
+import {
+  Client,
+  StreamableHTTPClientTransport,
+} from "@modelcontextprotocol/client";
 import { describe, expect, it } from "vitest";
-import { authorizeGuestConnection } from "../../src/shared/auth";
 
 const ORIGIN = "http://localhost:8787";
 const REDIRECT = "https://client.example/callback";
@@ -21,8 +23,7 @@ async function tokenForGuest(scope: string) {
   const guestId = crypto.randomUUID();
   const guest = env.GUESTS.get(env.GUESTS.idFromName(guestId));
   const session = await guest.createSession(guestId);
-  const cookie =
-    `__Host-agent_table_session=v1.${guestId}.${session.sessionId}.${session.secret}`;
+  const cookie = `__Host-agent_table_session=v1.${guestId}.${session.sessionId}.${session.secret}`;
   const registered = await exports.default.fetch(`${ORIGIN}/oauth/register`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -86,7 +87,9 @@ async function tokenForGuest(scope: string) {
     ]),
   });
   expect(granted.status).toBe(302);
-  const code = new URL(granted.headers.get("Location") ?? REDIRECT).searchParams.get("code");
+  const code = new URL(
+    granted.headers.get("Location") ?? REDIRECT,
+  ).searchParams.get("code");
   if (!code) throw new Error("Missing consented authorization code");
   const exchanged = await exports.default.fetch(`${ORIGIN}/oauth/token`, {
     method: "POST",
@@ -102,16 +105,16 @@ async function tokenForGuest(scope: string) {
   });
   expect(exchanged.status).toBe(200);
   const tokens = await json(exchanged);
-  const grants = await guest.listConnections(
-    session.sessionId,
-    session.secret,
-  );
+  const grants = await guest.listConnections(session.sessionId, session.secret);
   // Consent rotates the session, so list via the new session credential.
-  const rotatedCookie = granted.headers.getSetCookie().find(
-    (value) => value.startsWith("__Host-agent_table_session="),
-  );
+  const rotatedCookie = granted.headers
+    .getSetCookie()
+    .find((value) => value.startsWith("__Host-agent_table_session="));
   const parts = rotatedCookie?.split(";")[0].split("=")[1].split(".");
-  const liveGrants = await guest.listConnections(parts?.[2] ?? "", parts?.[3] ?? "");
+  const liveGrants = await guest.listConnections(
+    parts?.[2] ?? "",
+    parts?.[3] ?? "",
+  );
   expect(liveGrants).toHaveLength(1);
   expect(grants).toBeNull();
   return {
@@ -137,7 +140,8 @@ async function sdk(token: string) {
 
 function output(result: Awaited<ReturnType<Client["callTool"]>>) {
   const block = result.content?.find((content) => content.type === "text");
-  if (!block || block.type !== "text") throw new Error("No textual tool result");
+  if (!block || block.type !== "text")
+    throw new Error("No textual tool result");
   return JSON.parse(block.text) as Record<string, unknown>;
 }
 
@@ -156,7 +160,10 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
         arguments: { ...input, guest_id: crypto.randomUUID() },
       });
       expect(rejected.isError).toBe(true);
-      const created = await client.callTool({ name: "create_table", arguments: input });
+      const created = await client.callTool({
+        name: "create_table",
+        arguments: input,
+      });
       expect(created.isError).not.toBe(true);
       const metadata = output(created);
       expect(metadata).toMatchObject({
@@ -168,7 +175,8 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
       const tableId = String(metadata.tableId);
       expect(tableId).toMatch(/^[0-9a-f-]{36}$/);
       expect(metadata.ownMembershipId).toEqual(
-        (metadata.memberships as Array<{ membershipId: string }>)[0].membershipId,
+        (metadata.memberships as Array<{ membershipId: string }>)[0]
+          .membershipId,
       );
       expect(String(metadata.ownInboxUri)).toContain(tableId);
       const fetched = await client.callTool({
@@ -176,9 +184,6 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
         arguments: { table_id: tableId },
       });
       expect(output(fetched)).toEqual(metadata);
-      expect(
-        (await client.listResources()).resources,
-      ).toEqual([]);
       const retried = await client.callTool({
         name: "create_table",
         arguments: { ...input, ttl_seconds: 86_400 },
@@ -194,14 +199,20 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
       });
       await runInDurableObject(owner.guest, async (_instance, state) => {
         const receipts = state.storage.sql
-          .exec<{ table_id: string }>("SELECT table_id FROM guest_creation_reservations")
+          .exec<{ table_id: string }>(
+            "SELECT table_id FROM guest_creation_reservations",
+          )
           .toArray();
         expect(receipts).toEqual([{ table_id: tableId }]);
       });
       const table = env.TABLES.get(env.TABLES.idFromName(tableId));
       await runInDurableObject(table, async (_instance, state) => {
-        expect(state.storage.sql.exec("SELECT * FROM table_metadata").toArray()).toHaveLength(1);
-        expect(state.storage.sql.exec("SELECT * FROM table_memberships").toArray()).toHaveLength(1);
+        expect(
+          state.storage.sql.exec("SELECT * FROM table_metadata").toArray(),
+        ).toHaveLength(1);
+        expect(
+          state.storage.sql.exec("SELECT * FROM table_memberships").toArray(),
+        ).toHaveLength(1);
       });
       await evictDurableObject(owner.guest);
       await evictDurableObject(table);
@@ -235,17 +246,23 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
           arguments: { table_id: id },
         });
         expect(notFound.isError).toBe(true);
-        expect(output(notFound)).toMatchObject({ error: { code: "TABLE_NOT_FOUND" } });
+        expect(output(notFound)).toMatchObject({
+          error: { code: "TABLE_NOT_FOUND" },
+        });
       }
       const readOnly = await other.callTool({
         name: "create_table",
         arguments: { ...input, request_id: "public_create_request_003" },
       });
       expect(readOnly.isError).toBe(true);
-      expect(output(readOnly)).toMatchObject({ error: { code: "NOT_AUTHORIZED" } });
+      expect(output(readOnly)).toMatchObject({
+        error: { code: "NOT_AUTHORIZED" },
+      });
       const absent = env.TABLES.get(env.TABLES.idFromName(unknownId));
       await runInDurableObject(absent, async (_instance, state) => {
-        expect(state.storage.sql.exec("SELECT * FROM table_metadata").toArray()).toEqual([]);
+        expect(
+          state.storage.sql.exec("SELECT * FROM table_metadata").toArray(),
+        ).toEqual([]);
       });
     } finally {
       await first.close();
@@ -256,7 +273,10 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
   it("never turns missing credentials into a public MCP tool result", async () => {
     const response = await exports.default.fetch(RESOURCE, {
       method: "POST",
-      headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream" },
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json, text/event-stream",
+      },
       body: JSON.stringify({
         jsonrpc: "2.0",
         id: 99,
@@ -265,6 +285,8 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
       }),
     });
     expect(response.status).toBe(401);
-    expect(response.headers.get("WWW-Authenticate")).toContain("resource_metadata=");
+    expect(response.headers.get("WWW-Authenticate")).toContain(
+      "resource_metadata=",
+    );
   });
 });

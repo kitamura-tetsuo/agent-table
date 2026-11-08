@@ -1,6 +1,4 @@
-import {
-  type VerifiedConnectionActor,
-} from "../shared/auth";
+import type { VerifiedConnectionActor } from "../shared/auth";
 import {
   InvalidCreationRequestError,
   parseCreationRequest,

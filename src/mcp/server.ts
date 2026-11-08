@@ -2,11 +2,12 @@ import { McpServer } from "@modelcontextprotocol/server";
 import { createMcpHandler } from "agents/mcp/server";
 import * as z from "zod/v4";
 import {
-  authorizeGuestConnection,
-  type ConnectionScope,
-} from "../shared/auth";
+  createTable,
+  getTable,
+  type PublicTableResult,
+} from "../services/tables";
+import { authorizeGuestConnection, type ConnectionScope } from "../shared/auth";
 import { CREATION_LIMITS } from "../shared/limits";
-import { createTable, getTable, type PublicTableResult } from "../services/tables";
 
 export type AuthenticatedMcpIdentity = {
   readonly guestId: string;
@@ -46,9 +47,10 @@ function appResult(result: PublicTableResult) {
           ...(result.retryAfterMs === undefined
             ? {}
             : { retryAfterMs: result.retryAfterMs }),
-          retry: result.code === "TEMPORARILY_UNAVAILABLE"
-            ? "Retry with the same request_id and unchanged arguments."
-            : undefined,
+          retry:
+            result.code === "TEMPORARILY_UNAVAILABLE"
+              ? "Retry with the same request_id and unchanged arguments."
+              : undefined,
         },
       },
       true,
@@ -83,7 +85,8 @@ function newServer(env: Env, identity: AuthenticatedMcpIdentity) {
   server.registerTool(
     "create_table",
     {
-      description: "Create a private two-seat table. Reuse request_id on uncertain retries; no invitation is issued.",
+      description:
+        "Create a private two-seat table. Reuse request_id on uncertain retries; no invitation is issued.",
       inputSchema: createInput,
       annotations: {
         readOnlyHint: false,
@@ -94,14 +97,16 @@ function newServer(env: Env, identity: AuthenticatedMcpIdentity) {
     },
     async (input) => {
       const actor = await scopedActor("tables:write");
-      if (!actor) return toolResult({ error: { code: "NOT_AUTHORIZED" } }, true);
+      if (!actor)
+        return toolResult({ error: { code: "NOT_AUTHORIZED" } }, true);
       return appResult(await createTable(env, actor, input));
     },
   );
   server.registerTool(
     "get_table",
     {
-      description: "Read only your membership-authorized table metadata and notification availability.",
+      description:
+        "Read only your membership-authorized table metadata and notification availability.",
       inputSchema: getInput,
       annotations: {
         readOnlyHint: true,
@@ -112,7 +117,8 @@ function newServer(env: Env, identity: AuthenticatedMcpIdentity) {
     },
     async ({ table_id }) => {
       const actor = await scopedActor("tables:read");
-      if (!actor) return toolResult({ error: { code: "NOT_AUTHORIZED" } }, true);
+      if (!actor)
+        return toolResult({ error: { code: "NOT_AUTHORIZED" } }, true);
       return appResult(await getTable(env, actor, table_id));
     },
   );
@@ -132,15 +138,12 @@ export function handleMcp(
     allowedHostnames.push("localhost", "127.0.0.1", "[::1]");
   }
 
-  const handler = createMcpHandler(
-    () => newServer(env, identity),
-    {
-      route: "/mcp",
-      legacy: "reject",
-      corsOptions: false,
-      allowedHostnames,
-      allowedOriginHostnames: allowedHostnames,
-    },
-  );
+  const handler = createMcpHandler(() => newServer(env, identity), {
+    route: "/mcp",
+    legacy: "reject",
+    corsOptions: false,
+    allowedHostnames,
+    allowedOriginHostnames: allowedHostnames,
+  });
   return handler(request, env, ctx);
 }
