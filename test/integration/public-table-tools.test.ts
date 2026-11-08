@@ -2214,7 +2214,9 @@ describe("paused ingress preserves authenticated MCP terminal operations", () =>
         ).toEqual({ n: 0 });
         expect(
           state.storage.sql
-            .exec("SELECT guest_id, request_id FROM table_tombstone_delete_receipts")
+            .exec(
+              "SELECT guest_id, request_id FROM table_tombstone_delete_receipts",
+            )
             .one(),
         ).toEqual({
           guest_id: owner.guestId,
