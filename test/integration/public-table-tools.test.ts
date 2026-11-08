@@ -145,8 +145,7 @@ async function sdk(token: string) {
 
 function output(result: Awaited<ReturnType<Client["callTool"]>>) {
   const block = result.content?.find((content) => content.type === "text");
-  if (block?.type !== "text")
-    throw new Error("No textual tool result");
+  if (block?.type !== "text") throw new Error("No textual tool result");
   return JSON.parse(block.text) as Record<string, unknown>;
 }
 
