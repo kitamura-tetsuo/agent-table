@@ -129,4 +129,66 @@ describe("cross-isolate admission policy", () => {
       503,
     );
   });
+
+  it("charges real DCR, OAuth handshake and invite routes independently after size refusal", async () => {
+    const source = "192.0.2.49";
+    const limited: Env = {
+      ...env,
+      EDGE_DCR_RATE_PER_MINUTE: "1",
+      EDGE_PROTOCOL_RATE_PER_MINUTE: "1",
+      EDGE_INVITATION_RATE_PER_MINUTE: "1",
+    };
+    const headers = {
+      "CF-Connecting-IP": source,
+      "X-Forwarded-For": "203.0.113.2",
+    };
+    const oversized = await dispatch(limited, "/oauth/register", {
+      method: "POST",
+      headers: { ...headers, "Content-Type": "application/json" },
+      body: "x".repeat(8 * 1_024 + 1),
+    });
+    expect(oversized.status).toBe(413);
+
+    const register = () =>
+      dispatch(limited, "/oauth/register", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: "{}",
+      });
+    const firstDcr = await register();
+    expect(firstDcr.status).not.toBe(429);
+    const secondDcr = await register();
+    expect(secondDcr.status).toBe(429);
+    expect(secondDcr.headers.get("Retry-After")).toMatch(/^[1-9][0-9]*$/);
+
+    const token = () =>
+      dispatch(limited, "/oauth/token", {
+        method: "POST",
+        headers: {
+          ...headers,
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+        body: "grant_type=unsupported",
+      });
+    expect((await token()).status).not.toBe(429);
+    expect((await token()).status).toBe(429);
+
+    const join = () => dispatch(limited, "/join", { headers });
+    expect((await join()).status).toBe(200);
+    expect((await join()).status).toBe(429);
+
+    const stub = await admissionStub(limited, `edge-v1:${source}`);
+    await runInDurableObject(stub, async (_instance, state) => {
+      const rows = state.storage.sql
+        .exec<{ category: string; count: number }>(
+          "SELECT category, COUNT(*) AS count FROM admission_hits GROUP BY category ORDER BY category",
+        )
+        .toArray();
+      expect(rows).toEqual([
+        { category: "dcr", count: 1 },
+        { category: "invitation", count: 1 },
+        { category: "protocol", count: 1 },
+      ]);
+    });
+  });
 });
