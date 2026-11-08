@@ -81,17 +81,37 @@ describe("OAuth library and consent boundary", () => {
     expect(response.headers.get("location")).toBeNull();
   });
 
-  it("rejects invalid redirect and PKCE downgrade before consent", async () => {
+  it("rejects bad redirects, resource audiences and PKCE through a real browser guest", async () => {
+    const browser = await withBrowserGuest();
     const clientId = await register();
+    const valid = await start(clientId);
+    const control = await exports.default.fetch(valid.url, {
+      headers: { Cookie: browser.cookie },
+    });
+    expect(control.status).toBe(200);
+    expect(await control.text()).toContain("Synthetic OAuth client");
+
     const attempts: Record<string, string>[] = [
       { redirect_uri: "https://evil.example/callback" },
       { code_challenge_method: "plain" },
+      { resource: "https://unrelated.example/mcp" },
     ];
     for (const extra of attempts) {
       const { url } = await start(clientId, extra);
-      const result = await exports.default.fetch(url);
-      expect(result.status).not.toBe(302);
-      expect(result.headers.get("location")).toBeNull();
+      const result = await exports.default.fetch(url, {
+        headers: { Cookie: browser.cookie },
+        redirect: "manual",
+      });
+      expect(result.status).not.toBe(200);
+      const location = result.headers.get("location");
+      expect(location ?? "").not.toContain("code=");
+      expect(location ?? "").not.toContain("evil.example");
+      expect(
+        await browser.guest.listConnections(
+          browser.session.sessionId,
+          browser.session.secret,
+        ),
+      ).toEqual([]);
     }
   });
 
@@ -479,6 +499,40 @@ describe("real authorization code and guest-grant flow", () => {
     ]);
     expect(denied.status).toBe(401);
     expect(unaffected.status).not.toBe(401);
+  });
+
+  it("rejects a wrong resource during a real authorization-code exchange", async () => {
+    const browser = await withBrowserGuest();
+    const clientId = await register();
+    const approved = await approvedConsent(browser, clientId);
+    const before = await browser.guest.listConnections(
+      approved.sessionId,
+      approved.sessionSecret,
+    );
+    expect(before).toHaveLength(1);
+
+    const response = await exports.default.fetch(`${ORIGIN}/oauth/token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        client_id: clientId,
+        grant_type: "authorization_code",
+        code: approved.code,
+        redirect_uri: REDIRECT,
+        code_verifier: approved.verifier,
+        resource: "https://unrelated.example/mcp",
+      }),
+    });
+    expect(response.status).toBe(400);
+    const result = await jsonUrl(response);
+    expect(result.access_token).toBeUndefined();
+    expect(result.refresh_token).toBeUndefined();
+    expect(
+      await browser.guest.listConnections(
+        approved.sessionId,
+        approved.sessionSecret,
+      ),
+    ).toEqual(before);
   });
 
   it("rejects a wrong PKCE verifier for an actual consented code", async () => {
