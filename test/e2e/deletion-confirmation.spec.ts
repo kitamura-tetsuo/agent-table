@@ -15,7 +15,7 @@ function cookieFrom(response: APIResponse, name: string): string {
     .find(
       (entry) =>
         entry.name.toLowerCase() === "set-cookie" &&
-        entry.value.startsWith(name + "="),
+        entry.value.startsWith(`${name}=`),
     )?.value;
   if (!header) throw new Error("Missing authentication cookie");
   return header.split(";")[0];
@@ -100,20 +100,19 @@ test("official SDK deletion requires an explicit same-guest browser POST", async
     headers: {
       Origin: ORIGIN,
       "Sec-Fetch-Site": "same-origin",
+      "Content-Type": "application/x-www-form-urlencoded",
       Cookie: [originalCookie, ...consentCookies].join("; "),
     },
-    form: {
-      handle,
-      csrf: consentCsrf,
-      binding,
-      guest_id: guestId,
-      decision: "approve",
-      scope: [
-        "tables:read",
-        "tables:write",
-        "tables:delete",
-      ],
-    },
+    data: new URLSearchParams([
+      ["handle", handle],
+      ["csrf", consentCsrf],
+      ["binding", binding],
+      ["guest_id", guestId],
+      ["decision", "approve"],
+      ["scope", "tables:read"],
+      ["scope", "tables:write"],
+      ["scope", "tables:delete"],
+    ]).toString(),
     maxRedirects: 0,
   });
   expect(approved.status()).toBe(302);
