@@ -136,6 +136,8 @@ async function tokenForGuest(scope: string) {
     guestId,
     guest,
     token: String(tokens.access_token),
+    refreshToken: String(tokens.refresh_token),
+    clientId,
     connectionId: liveGrants?.[0].connectionId ?? "",
     browserCookie: rotatedCookie?.split(";")[0] ?? "",
   };
@@ -2280,6 +2282,88 @@ describe("authenticated public SDK admission quota", () => {
       });
     } finally {
       await client.close();
+    }
+  });
+
+  it("shares the default 60/minute budget across original and refreshed OAuth tokens and SDK connections", async () => {
+    const principal = await tokenForGuest("tables:read tables:write");
+    const refreshed = await exports.default.fetch(`${ORIGIN}/oauth/token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        client_id: principal.clientId,
+        grant_type: "refresh_token",
+        refresh_token: principal.refreshToken,
+        resource: RESOURCE,
+      }),
+    });
+    expect(refreshed.status).toBe(200);
+    const refreshedToken = String((await json(refreshed)).access_token);
+    expect(refreshedToken).not.toBe("undefined");
+
+    // Use the default principal limit, not a test override. Initial SDK
+    // handshakes count too; both tokens must share one durable counter.
+    const observed: Array<{ status: number; retryAfter: string | null }> = [];
+    const transportFetch = async (request: Request) => {
+      const response = await fetchThroughWorker(env)(request);
+      if (new URL(request.url).pathname === "/mcp") {
+        observed.push({
+          status: response.status,
+          retryAfter: response.headers.get("Retry-After"),
+        });
+      }
+      return response;
+    };
+    const first = await sdk(principal.token, transportFetch);
+    const second = await sdk(refreshedToken, transportFetch);
+    try {
+      for (let index = 0; index < 66; index++) {
+        const client = index % 2 === 0 ? first : second;
+        try {
+          await client.listTools();
+        } catch {
+          // Once the shared quota is full, the SDK surfaces HTTP 429.
+        }
+      }
+      const accepted = observed.filter((item) => item.status !== 429);
+      const denied = observed.filter((item) => item.status === 429);
+      expect(accepted).toHaveLength(60);
+      expect(denied.length).toBeGreaterThan(0);
+      expect(denied.every((item) => /^[1-9][0-9]*$/.test(item.retryAfter ?? ""))).toBe(true);
+      expect(accepted.every((item) => item.status < 400)).toBe(true);
+
+      const bytes = await crypto.subtle.digest(
+        "SHA-256",
+        new TextEncoder().encode(`principal-v1:${principal.guestId}`),
+      );
+      const hash = Array.from(new Uint8Array(bytes), (value) =>
+        value.toString(16).padStart(2, "0"),
+      ).join("");
+      const admission = env.ADMISSION.get(env.ADMISSION.idFromName(hash));
+      await runInDurableObject(admission, async (_instance, state) => {
+        expect(
+          state.storage.sql.exec<{ count: number }>(
+            "SELECT COUNT(*) AS count FROM admission_hits WHERE category = 'application'",
+          ).one().count,
+        ).toBe(60);
+      });
+      await evictDurableObject(admission);
+      try {
+        await second.listTools();
+      } catch {
+        // A restart must not restore the right to make an extra request.
+      }
+      expect(observed.at(-1)?.status).toBe(429);
+      await runInDurableObject(admission, async (_instance, state) => {
+        expect(
+          state.storage.sql.exec<{ count: number }>(
+            "SELECT COUNT(*) AS count FROM admission_hits WHERE category = 'application'",
+          ).one().count,
+        ).toBe(60);
+      });
+    } finally {
+      await first.close();
+      await second.close();
     }
   });
 });
