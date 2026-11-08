@@ -204,10 +204,7 @@ describe("cross-isolate admission policy", () => {
         },
         body: "{}",
       });
-    const first = await register(
-      "2001:0db8:0:0:0:0:0:beef",
-      "198.51.100.10",
-    );
+    const first = await register("2001:0db8:0:0:0:0:0:beef", "198.51.100.10");
     expect(first.status).not.toBe(429);
     const second = await register("2001:db8::beef", "198.51.100.11");
     expect(second.status).toBe(429);
@@ -253,5 +250,4 @@ describe("cross-isolate admission policy", () => {
       ).toBe(1);
     });
   });
-
 });
