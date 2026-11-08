@@ -887,7 +887,6 @@ export class TableDO extends DurableObject<Env> {
           setTimeout(finish, 700);
         });
       } else if (this.transcriptCommitBarrierFirstWaitingForTest) {
-        this.transcriptCommitBarrierOverlappedForTest = true;
         this.transcriptCommitBarrierReleaseForTest?.();
       }
     }
