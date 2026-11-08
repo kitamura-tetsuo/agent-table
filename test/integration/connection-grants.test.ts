@@ -353,7 +353,7 @@ describe("Worker and durable connection grant authority", () => {
       grant.connectionId,
       "events:subscribe",
     );
-    expect(expired.allowed).toBe(false);
+    if (expired.allowed) throw new Error("Expired grant authorized");
     // GuestDO may physically purge an already-expired grant on the alarm
     // between requests. Both expired and missing must deny authorization.
     expect(["expired", "missing"]).toContain(expired.reason);
