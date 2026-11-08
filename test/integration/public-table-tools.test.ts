@@ -1456,7 +1456,9 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
             .toArray();
           expect(rows).toHaveLength(1);
           expect(
-            state.storage.sql.exec("SELECT * FROM table_post_receipts").toArray(),
+            state.storage.sql
+              .exec("SELECT * FROM table_post_receipts")
+              .toArray(),
           ).toHaveLength(1);
           return rows[0];
         },
