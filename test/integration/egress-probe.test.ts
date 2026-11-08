@@ -108,4 +108,36 @@ describe("isolated diagnostic fetch probe (not connection-boundary proof)", () =
       spy.mockRestore();
     }
   });
+
+  it("echoes only sanitized test ID and safe category without leaking headers or bodies", async () => {
+    const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ secret: "upstream-leak" }), {
+        status: 200,
+        headers: {
+          "Set-Cookie": "session=secret",
+          Location: "https://evil.example.com",
+        },
+      }),
+    );
+    try {
+      const req = new Request("http://localhost/__egress_probe", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${config.PROBE_AUTH_TOKEN}`,
+          "X-Probe-Test-Id": "test-run-001",
+        },
+      });
+      const response = await probe.fetch(req, config);
+      expect(response.status).toBe(200);
+      const json = await response.json();
+      expect(json).toEqual({
+        result: "reachable",
+        testId: "test-run-001",
+      });
+      expect(response.headers.get("Set-Cookie")).toBeNull();
+      expect(response.headers.get("Location")).toBeNull();
+    } finally {
+      spy.mockRestore();
+    }
+  });
 });

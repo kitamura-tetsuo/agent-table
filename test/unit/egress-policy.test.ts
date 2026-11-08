@@ -163,6 +163,43 @@ describe("callback egress preflight", () => {
     ).toEqual({ ok: false, reason: "request-too-large" });
   });
 
+  it("maps deadline abort and network failures to typed outcomes without leaking exceptions", async () => {
+    const spy = vi.spyOn(globalThis, "fetch");
+    try {
+      vi.useFakeTimers();
+      spy.mockImplementationOnce(
+        () => new Promise(() => {}), // never resolves until timeout
+      );
+      const promise = sendVerifiedHttps(
+        "https://events.provider.example.org/callback",
+        reviewed,
+        { method: "POST", body: new Uint8Array([1]) },
+      );
+      await vi.advanceTimersByTimeAsync(10_000);
+      const deadlineResult = await promise;
+      expect(deadlineResult).toEqual({ ok: false, reason: "deadline" });
+    } finally {
+      vi.useRealTimers();
+    }
+
+    try {
+      spy.mockRejectedValueOnce(
+        new TypeError("fetch failed: connection refused"),
+      );
+      const transportErrorResult = await sendVerifiedHttps(
+        "https://events.provider.example.org/callback",
+        reviewed,
+        { method: "POST", body: new Uint8Array([1]) },
+      );
+      expect(transportErrorResult).toEqual({
+        ok: false,
+        reason: "transport-error",
+      });
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it("never allows an unreviewed destination, including when disabled", async () => {
     expect(
       await sendVerifiedHttps("https://127.0.0.1/callback", reviewed, {

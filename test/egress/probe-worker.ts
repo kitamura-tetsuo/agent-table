@@ -24,14 +24,22 @@ function result(
   status: number,
   category: ProbeResult,
   upstreamStatus?: number,
+  testId?: string,
 ): Response {
-  return Response.json(
-    upstreamStatus === undefined
-      ? { result: category }
-      : { result: category, upstreamStatus },
-    { status, headers: { "Cache-Control": "no-store" } },
-  );
+  const payload: {
+    result: ProbeResult;
+    upstreamStatus?: number;
+    testId?: string;
+  } = { result: category };
+  if (upstreamStatus !== undefined) payload.upstreamStatus = upstreamStatus;
+  if (testId !== undefined) payload.testId = testId;
+  return Response.json(payload, {
+    status,
+    headers: { "Cache-Control": "no-store" },
+  });
 }
+
+const TEST_ID_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/;
 
 export default {
   async fetch(request: Request, env: EgressProbeEnv): Promise<Response> {
@@ -39,13 +47,16 @@ export default {
     if (request.method !== "POST" || path !== "/__egress_probe") {
       return new Response(null, { status: 404 });
     }
+    const rawTestId = request.headers.get("x-probe-test-id");
+    const testId =
+      rawTestId && TEST_ID_PATTERN.test(rawTestId) ? rawTestId : undefined;
     if (
       !env.PROBE_AUTH_TOKEN ||
       !env.PROBE_CALLBACK_URL ||
       !env.PROBE_REVIEWED_ORIGIN ||
       !env.PROBE_REVIEWED_PATH_PREFIX
     ) {
-      return result(503, "disabled");
+      return result(503, "disabled", undefined, testId);
     }
     if (
       request.headers.get("Authorization") !== `Bearer ${env.PROBE_AUTH_TOKEN}`
@@ -63,13 +74,13 @@ export default {
       ],
       { method: "POST", body: SYNTHETIC_BODY },
     );
-    if (outcome.ok) return result(200, "reachable");
+    if (outcome.ok) return result(200, "reachable", undefined, testId);
     const status =
       outcome.reason === "deadline"
         ? 504
         : outcome.reason === "destination-rejected"
           ? 422
           : 502;
-    return result(status, outcome.reason, outcome.status);
+    return result(status, outcome.reason, outcome.status, testId);
   },
 };

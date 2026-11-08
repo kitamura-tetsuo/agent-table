@@ -308,11 +308,59 @@ observation, DNS test, or proof that the current candidate head is safe.
   abort deadline and streaming size caps remain necessary, and must be
   tested against an actual allowed receiver on the exact candidate head.
 
-**Still not run / blocked:** hosted exact-head positive and adversarial
-probes, the actual connect-time RFC1918/loopback/private-address refusal
-and in-flight DNS change/rebinding fixture, and original-URL-host TLS-name
-enforcement with traceable receiver/handshake evidence. Earlier Cloudflare
-Tunnel reachability and HTTP 526 are not substitutes. No external account
-permissions, public IPv4 receiver, production deployment, or wider
-authorization was obtained here. Continue to withhold acceptance for
-#19/REQ-002 and #19/REQ-006; keep this PR draft and public Events disabled.
+## Exact Candidate Head Remote Preview Execution (2026-11-09 JST)
+
+- **Execution Timestamp:** 2026-11-09 08:10 – 08:14 JST (2026-11-08 23:10 – 23:14 UTC)
+- **Baseline Git SHA:** `b89731ba14126b54c33035d09cb5138e3f322bc6` / branch `feat/issue-19-safe-egress-preflight`
+- **Toolchain:** Node `24.22.1`, Wrangler `4.158.0`, local `workerd 2026-11-04`, Biome `2.6.6`
+- **Execution Mode:** Cloudflare Workers Remote Preview (`npx wrangler dev --remote --config test/egress/wrangler.jsonc --ip 127.0.0.1 --port 8788`)
+- **Authenticated Cloudflare Account ID:** `0fbaae27d3ff021bc17109f1493d0b2d`
+- **Receiver Fixture:** Cloudflare Tunnel `https://probe.outliner-online.com/egress-check/*` backed by local Node HTTP listener on `127.0.0.1:8790` (PID 313679).
+- **Harness:** Opt-in isolated probe (`test/egress/probe-worker.ts`) calling candidate production `sendVerifiedHttps` with sanitized JSON response (`testId`, `result`, `upstreamStatus`), zero secret logging, zero header dumps, zero error body echoes.
+
+### Executed Scenarios & Empirical Receipts
+
+| Case / Target | Request & Parameters | Observed Worker Response | Receiver / Host Correlation | Status |
+| --- | --- | --- | --- | --- |
+| 1. Allowed HTTPS Host (Positive Baseline) | `POST /__egress_probe`<br>Target: `https://probe.outliner-online.com/egress-check/positive` | HTTP 200 `{"result":"reachable","testId":"positive-control-01"}` | Receiver logged `{"mode":"positive"}` and replied HTTP 204 | **PASS (reachability)** |
+| 2. Provider Opaque Query | `POST /__egress_probe`<br>Target: `https://probe.outliner-online.com/egress-check/positive?opaque_sub_id=sec-12345` | HTTP 200 `{"result":"reachable","testId":"opaque-query-02"}` | Receiver logged `{"mode":"positive"}` and replied HTTP 204 | **PASS** |
+| 3. HTTP 302 Redirect | `POST /__egress_probe`<br>Target: `https://probe.outliner-online.com/egress-check/redirect` | HTTP 502 `{"result":"redirect-refused","testId":"redirect-03"}` | Receiver logged single redirect request; Location header was NOT followed | **PASS** |
+| 4. Response > 64 KiB | `POST /__egress_probe`<br>Target: `https://probe.outliner-online.com/egress-check/large` (65,537 bytes) | HTTP 502 `{"result":"response-too-large","testId":"large-04"}` | Stream aborted at 64 KiB boundary; no excess bytes read or logged | **PASS** |
+| 5. Server Delay > 10 s | `POST /__egress_probe`<br>Target: `https://probe.outliner-online.com/egress-check/slow` (15 s delay) | HTTP 504 `{"result":"deadline","testId":"slow-05"}` (after ~10 s) | Worker `AbortSignal` fired at 10 s deadline; socket terminated | **PASS** |
+| 6. Valid Web PKI TLS Control | `POST /__egress_probe`<br>Target: `https://badssl.com/` | HTTP 502 `{"result":"upstream-non-2xx","upstreamStatus":405,"testId":"badssl-valid-cert-06"}` | OpenSSL reported `Verification: OK`, `Verified peername: badssl.com`. Origin Nginx server received POST and returned HTTP 405 Method Not Allowed | **PASS (TLS negotiation succeeded)** |
+| 7. TLS Hostname Mismatch | `POST /__egress_probe`<br>Target: `https://wrong.host.badssl.com/` | HTTP 502 `{"result":"upstream-non-2xx","upstreamStatus":526,"testId":"wrong-host-badssl-07"}` | OpenSSL reported `depth=0 CN=*.badssl.com verify error:num=62:hostname mismatch`. Cloudflare proxy aborted upstream TLS handshake and generated HTTP 526 (Invalid SSL Certificate) | **PASS (observed rejection); original-host TLS proof still BLOCKED** |
+| 8. DNS Change Public -> Private IP | Temporary record pointing to loopback/RFC1918 | N/A (Cannot create/update DNS records) | Cloudflare API returned `HTTP 403 Forbidden` (`code 10000: Authentication error`). `wrangler whoami` shows token has `zone (read)` but lacks `Zone.DNS:Edit` | **NOT RUN / BLOCKED** |
+| 9. In-flight TOCTOU DNS Rebinding | Alternating public/private responses per outbound fetch query | N/A (Requires dynamic authoritative DNS fixture) | Hosted Workers egress lacks socket IP inspection; workerd `connect_allowed` local code evidence is distinct from hosted proxy guarantee | **NOT RUN / BLOCKED** |
+
+### DNS Permission and Authority Status
+
+`wrangler whoami` Token Scopes:
+- Included: `user (read)`, `account (read)`, `workers (write)`, `workers_kv (write)`, `zone (read)`, `connectivity (admin)`
+- Missing: `Zone.DNS:Edit` / `DNS:Edit` / `DNS:Write`
+
+Per project safety rules:
+- No permission bypass was attempted.
+- Operating production DNS records (`probe.outliner-online.com`) were NOT modified.
+- No untrusted third-party dynamic DNS services were invoked.
+- Case 8 and Case 9 remain strictly **NOT RUN / BLOCKED**.
+
+### Requirement Status Summary
+
+- **REQ-002: BLOCKED / NOT COMPLETE**
+  - Destination origin/prefix policy preflight: **PASS**
+  - Original-host TLS certificate validation: **OBSERVED** (OpenSSL hostname mismatch correlated with HTTP 526), but native `fetch` exposes no certificate SAN validation trace to application code.
+  - Actual TCP/TLS connection-time private IP exclusion: **BLOCKED** (`fetch()` provides no connection IP inspection API; DNS write permission missing to prove proxy-level RFC1918 refusal).
+  - DNS Rebinding defense: **BLOCKED** (no hosted empirical alternating-DNS test; workerd source `connect_allowed` is local implementation evidence, not hosted proof).
+- **REQ-006: BLOCKED / PARTIAL**
+  - Real Workers positive reachability control: **PASS** (synthetically verified against live Cloudflare Tunnel receiver).
+  - Real Workers negative behavioral controls (redirect, timeout, size limit, policy rejection): **PASS**.
+  - Real Workers adversarial connection-time IP and DNS rebinding traces: **BLOCKED**.
+
+### Gating Conditions Enforced
+
+- `ENABLE_OPENAI_EVENTS=false` remains enforced in `wrangler.jsonc`.
+- `callbackTransportReadiness()` returns `{ enabled: false, reason: "connection-boundary-unverified" }`.
+- PR #33 remains in **DRAFT** status.
+- P1 review thread on unmet runtime security proof remains **OPEN**.
+- Issue #19 remains **OPEN**.
+- No production deployment, public Events release, or PR merge is authorized.

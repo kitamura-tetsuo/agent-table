@@ -151,3 +151,12 @@ Cloudflare-fronted HTTPS hostnames. The operator reviews the exact provider
 origin and a path-prefix policy; no public IPv4 server or production webhook
 receiver operated by Agent Table is required. The isolated native-`fetch`
 diagnostic Worker never enables application callback delivery.
+
+As of 2026-11-09, Remote Preview tests with sanitized test IDs verified positive
+reachability through Cloudflare Tunnel, opaque query handling, redirect refusal,
+10-second deadline abort, 64 KiB response streaming cap, and TLS certificate
+hostname mismatch rejection (correlating OpenSSL mismatch with HTTP 526).
+However, connection-time private IP refusal and in-flight DNS rebinding remain
+unproven on hosted Workers due to lack of DNS write permissions (`Zone.DNS:Edit`)
+and absence of runtime socket IP inspection. REQ-002 and REQ-006 remain
+BLOCKED; `ENABLE_OPENAI_EVENTS=false` and draft PR status are strictly preserved.
