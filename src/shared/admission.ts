@@ -173,11 +173,15 @@ export async function verifyGuestChallenge(
           secret: env.TURNSTILE_SECRET as string,
           response: token,
         }),
-        redirect: "error",
+        // Workers accepts manual, not the Fetch standard's "error" mode.
+        redirect: "manual",
         signal: AbortSignal.timeout(3_000),
       },
     );
-    if (!response.ok) return false;
+    // Never follow verifier redirects, even if the target returns a Location.
+    if (response.type === "opaqueredirect" ||
+        (response.status >= 300 && response.status < 400) ||
+        !response.ok) return false;
     // Never retain response content or include token/error details in diagnostics.
     const verdict: unknown = await response.json();
     if (!verdict || typeof verdict !== "object" || Array.isArray(verdict)) {
