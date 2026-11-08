@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 
 const paths = [
   "src/objects/table.ts",
@@ -9,10 +10,11 @@ const paths = [
   "test/integration/public-table-tools.test.ts",
 ];
 for (const path of paths) {
-  const formatted = execFileSync("./node_modules/.bin/biome", ["format", path], {
+  execFileSync("./node_modules/.bin/biome", ["check", "--write", path], {
     encoding: "utf8",
     maxBuffer: 8 * 1024 * 1024,
   });
+  const formatted = readFileSync(path, "utf8");
   process.stdout.write(`__FORMAT_BEGIN__ ${path}\n`);
   const encoded = Buffer.from(formatted).toString("base64");
   for (let i = 0; i < encoded.length; i += 4000) {
