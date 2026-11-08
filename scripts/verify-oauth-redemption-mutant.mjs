@@ -67,6 +67,11 @@ if (!passed) {
       signal: processSignal,
       processError,
       resultLines: relevant,
+      failureDetail: output
+        .split(/Failed Tests [0-9]+/i)
+        .slice(-1)[0]
+        .slice(0, 1700)
+        .replace(/[A-Za-z0-9_-]{64,}/g, "[redacted]"),
     }),
   );
   throw new Error("OAuth replay oracle did not kill the no-serialization mutant");
