@@ -9,7 +9,6 @@ import {
   StreamableHTTPClientTransport,
 } from "@modelcontextprotocol/client";
 import { describe, expect, it } from "vitest";
-import { TABLE_LIMITS } from "../../src/shared/limits";
 import worker from "../../src/index";
 import type {
   CreationReservation,
@@ -19,6 +18,7 @@ import {
   authorizeGuestConnection,
   type VerifiedConnectionActor,
 } from "../../src/shared/auth";
+import { TABLE_LIMITS } from "../../src/shared/limits";
 import type { SafeTableMetadata, TableResult } from "../../src/shared/table";
 
 const ORIGIN = "http://localhost:8787";
@@ -1609,7 +1609,8 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
                         setTimeout(resolve, 10),
                       );
                     }
-                    if (arrived < 2) throw new Error("SDK posts did not overlap");
+                    if (arrived < 2)
+                      throw new Error("SDK posts did not overlap");
                     return target.postMessage(actor, value);
                   };
                 }
