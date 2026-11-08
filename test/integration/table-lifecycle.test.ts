@@ -1,6 +1,6 @@
 import { evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { closeTable as serviceCloseTable } from "../../src/services/tables";
 import { authorizeGuestConnection, type ConnectionScope } from "../../src/shared/auth";
 
@@ -12,7 +12,7 @@ async function guest() {
     session.sessionId,
     session.secret,
     ["tables:read", "tables:write"],
-    Date.now() + 24 * 60 * 60_000,
+    Date.now() + 10 * 24 * 60 * 60_000,
   );
   if (!grant) throw new Error("Missing test guest grant");
   const connectionId = grant.connectionId;
@@ -154,46 +154,105 @@ describe("TableDO terminal lifecycle and durable cleanup", () => {
     });
   });
 
-  it("denies expiry before delayed alarms and cleans the bounded tombstone afterwards", async () => {
+  it("rejects an immutable lifetime at E and after cleanup with delayed alarms", async () => {
     const fixture = await tableFixture();
-    expect((await fixture.stub.postMessage(fixture.writer, {
-      request_id: "lifecycle_expiry_post_0001", body: "Expiring",
-    })).ok).toBe(true);
-    // Shift only the synthetic test table's original lifetime to the past.
-    // The existing alarm may still be armed for the original future deadline.
-    await runInDurableObject(fixture.stub, async (_instance, state) => {
-      state.storage.sql.exec(
-        "UPDATE table_metadata SET created_at = ?, expires_at = ?",
-        Date.now() - 120_000, Date.now() - 1,
-      );
-    });
-    expect(await fixture.stub.readMessages(await fixture.owner.actor("tables:read"), {})).toEqual({
-      ok: false, code: "TABLE_EXPIRED",
-    });
-    expect(await fixture.stub.postMessage(fixture.writer, {
-      request_id: "lifecycle_expired_new_post_001", body: "Too late",
-    })).toEqual({ ok: false, code: "TABLE_EXPIRED" });
-    expect(await fixture.stub.closeTable(fixture.writer, "lifecycle_expired_close_0001")).toEqual({
-      ok: false, code: "TABLE_EXPIRED",
-    });
-    await runInDurableObject(fixture.stub, (instance) => instance.alarm());
-    await runInDurableObject(fixture.stub, async (_instance, state) => {
-      expect(state.storage.sql.exec("SELECT COUNT(*) AS total FROM table_metadata").one()).toEqual({ total: 0 });
-      expect(state.storage.sql.exec("SELECT COUNT(*) AS total FROM table_messages").one()).toEqual({ total: 0 });
-      expect(state.storage.sql.exec("SELECT terminal_state FROM table_tombstones").one()).toEqual({ terminal_state: "expired" });
-      state.storage.sql.exec("UPDATE table_tombstones SET retain_until = ?", Date.now() - 1);
-    });
-    await evictDurableObject(fixture.stub);
-    await runInDurableObject(fixture.stub, (instance) => instance.alarm());
-    await runInDurableObject(fixture.stub, async (_instance, state) => {
-      expect(state.storage.sql.exec("SELECT COUNT(*) AS n FROM table_tombstones").one()).toEqual({ n: 0 });
-      expect(state.storage.sql.exec("SELECT COUNT(*) AS n FROM table_tombstone_guests").one()).toEqual({ n: 0 });
-    });
-    const retried = await fixture.stub.initializeTable(
-      fixture.writer, fixture.input, fixture.reserved.reservation,
-    );
-    expect(retried.ok).toBe(false);
+    const expiresAt = fixture.reserved.reservation.expiresAt;
+    const retainUntil = expiresAt + 24 * 60 * 60_000;
+    const post = {
+      request_id: "lifecycle_expiry_post_0001",
+      body: "Expiring synthetic content",
+    };
+    expect((await fixture.stub.postMessage(fixture.writer, post)).ok).toBe(true);
+
+    // Date-only fakes leave the Durable Object alarm/timer implementation real.
+    // Both GuestDO reservation checks and TableDO mutation paths must see E.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(expiresAt - 1);
+      expect(
+        await fixture.owner.stub.getCreationReservation(
+          fixture.writer,
+          fixture.input.request_id,
+        ),
+      ).toMatchObject({ ok: true, initializationAllowed: true });
+      expect(
+        (await fixture.stub.readMessages(await fixture.owner.actor("tables:read"), {})).ok,
+      ).toBe(true);
+
+      // Let the alarm remain delayed: terminal checks cannot depend on cleanup.
+      vi.setSystemTime(expiresAt);
+      expect(
+        await fixture.owner.stub.getCreationReservation(
+          fixture.writer,
+          fixture.input.request_id,
+        ),
+      ).toMatchObject({ ok: true, initializationAllowed: false });
+      expect(
+        await fixture.stub.readMessages(await fixture.owner.actor("tables:read"), {}),
+      ).toEqual({ ok: false, code: "TABLE_EXPIRED" });
+      expect(
+        await fixture.stub.postMessage(fixture.writer, {
+          request_id: "lifecycle_expired_post_at_E",
+          body: "Refused at exact expiry",
+        }),
+      ).toEqual({ ok: false, code: "TABLE_EXPIRED" });
+      expect(
+        await fixture.stub.closeTable(fixture.writer, "lifecycle_expired_close_E"),
+      ).toEqual({ ok: false, code: "TABLE_EXPIRED" });
+      expect(
+        await fixture.stub.initializeTable(
+          fixture.writer,
+          fixture.input,
+          fixture.reserved.reservation,
+        ),
+      ).toEqual({ ok: false, code: "TABLE_EXPIRED" });
+
+      vi.setSystemTime(expiresAt + 1);
+      await runInDurableObject(fixture.stub, (instance) => instance.alarm());
+      await runInDurableObject(fixture.stub, async (_instance, state) => {
+        expect(
+          state.storage.sql.exec("SELECT COUNT(*) AS total FROM table_metadata").one(),
+        ).toEqual({ total: 0 });
+        expect(
+          state.storage.sql.exec("SELECT COUNT(*) AS total FROM table_messages").one(),
+        ).toEqual({ total: 0 });
+        expect(
+          state.storage.sql.exec("SELECT terminal_state, retain_until FROM table_tombstones").one(),
+        ).toEqual({ terminal_state: "expired", retain_until: retainUntil });
+      });
+      await evictDurableObject(fixture.stub);
+      expect(await fixture.stub.postMessage(fixture.writer, post)).toEqual({
+        ok: false,
+        code: "TABLE_NOT_FOUND",
+      });
+
+      vi.setSystemTime(retainUntil);
+      await runInDurableObject(fixture.stub, (instance) => instance.alarm());
+      await runInDurableObject(fixture.stub, async (_instance, state) => {
+        expect(
+          state.storage.sql.exec("SELECT COUNT(*) AS n FROM table_tombstones").one(),
+        ).toEqual({ n: 0 });
+        expect(
+          state.storage.sql.exec("SELECT COUNT(*) AS n FROM table_tombstone_guests").one(),
+        ).toEqual({ n: 0 });
+      });
+      await evictDurableObject(fixture.stub);
+      expect(
+        await fixture.stub.initializeTable(
+          fixture.writer,
+          fixture.input,
+          fixture.reserved.reservation,
+        ),
+      ).toEqual({ ok: false, code: "TABLE_EXPIRED" });
+      expect(await fixture.stub.readMessages(await fixture.owner.actor("tables:read"), {})).toEqual({
+        ok: false,
+        code: "TABLE_NOT_FOUND",
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
+
   it("orders an in-flight SDK-equivalent write behind a committed close at the DO mutation boundary", async () => {
     const fixture = await tableFixture();
     await runInDurableObject(fixture.stub, async (instance) => {
