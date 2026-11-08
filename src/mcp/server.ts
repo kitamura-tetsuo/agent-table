@@ -1,4 +1,4 @@
-import { McpServer } from "@modelcontextprotocol/server";
+import { McpServer, ResourceTemplate } from "@modelcontextprotocol/server";
 import { createMcpHandler } from "agents/mcp/server";
 import * as z from "zod/v4";
 import {
@@ -6,11 +6,13 @@ import {
   createTable,
   getTable,
   joinTable,
+  postMessage,
+  readMessages,
   type PublicTableResult,
 } from "../services/tables";
 import { authorizeGuestConnection, type ConnectionScope } from "../shared/auth";
 import { validTableId } from "../shared/invitations";
-import { CREATION_LIMITS } from "../shared/limits";
+import { CREATION_LIMITS, TABLE_LIMITS } from "../shared/limits";
 
 export type AuthenticatedMcpIdentity = {
   readonly guestId: string;
@@ -40,6 +42,19 @@ const inviteInput = z.strictObject({
 const joinInput = z.strictObject({
   invitation: z.string().min(1).max(160),
   request_id: z.string().regex(/^[A-Za-z0-9_-]{16,128}$/),
+});
+
+const postInput = z.strictObject({
+  table_id: z.string().regex(TABLE_ID),
+  body: z.string(),
+  reply_to_message_id: z.string().regex(TABLE_ID).optional(),
+  request_id: z.string().regex(/^[A-Za-z0-9_-]{16,128}$/),
+});
+const readInput = z.strictObject({
+  table_id: z.string().regex(TABLE_ID),
+  after_seq: z.number().int().nonnegative().optional(),
+  through_seq: z.number().int().nonnegative().optional(),
+  limit: z.number().int().min(1).max(TABLE_LIMITS.readPageMaximum).optional(),
 });
 
 function toolResult(value: unknown, isError = false) {
@@ -189,7 +204,76 @@ function newServer(env: Env, identity: AuthenticatedMcpIdentity) {
       return appResult(await joinTable(env, actor, invitation, request_id));
     },
   );
-  // No concrete private resources are globally listed or registered.
+
+  server.registerTool(
+    "post_message",
+    {
+      description: "Commit an immutable message with a durable retry receipt.",
+      inputSchema: postInput,
+      annotations: {
+        readOnlyHint: false, destructiveHint: false,
+        idempotentHint: true, openWorldHint: false,
+      },
+    },
+    async ({ table_id, body, reply_to_message_id, request_id }) => {
+      const actor = await scopedActor("tables:write");
+      if (!actor) return toolResult({ error: { code: "NOT_AUTHORIZED" } }, true);
+      const value = await postMessage(env, actor, table_id, {
+        request_id, body,
+        ...(reply_to_message_id === undefined ? {} : { reply_to_message_id }),
+      });
+      return value.ok ? toolResult(value.value) :
+        toolResult({ error: { code: value.code } }, true);
+    },
+  );
+  server.registerTool(
+    "read_messages",
+    {
+      description: "Read a bounded snapshot without consuming unread events.",
+      inputSchema: readInput,
+      annotations: {
+        readOnlyHint: true, destructiveHint: false,
+        idempotentHint: true, openWorldHint: false,
+      },
+    },
+    async ({ table_id, after_seq, limit, through_seq }) => {
+      const actor = await scopedActor("tables:read");
+      if (!actor) return toolResult({ error: { code: "NOT_AUTHORIZED" } }, true);
+      const value = await readMessages(env, actor, table_id, {
+        ...(after_seq === undefined ? {} : { after_seq }),
+        ...(limit === undefined ? {} : { limit }),
+        ...(through_seq === undefined ? {} : { through_seq }),
+      });
+      return value.ok ? toolResult(value.value) :
+        toolResult({ error: { code: value.code } }, true);
+    },
+  );
+  server.registerResource(
+    "own-inbox",
+    new ResourceTemplate(
+      "agent-table://tables/{tableId}/inbox/{membershipId}",
+      { list: undefined },
+    ),
+    { title: "Own inbox status", mimeType: "application/json" },
+    async (uri) => {
+      const actor = await scopedActor("tables:read");
+      if (!actor) throw new Error("Resource not found");
+      const { parseOwnInboxUri } = await import("../shared/resources");
+      const identity = parseOwnInboxUri(uri.href);
+      if (!identity) throw new Error("Resource not found");
+      const value = await env.TABLES.get(
+        env.TABLES.idFromName(identity.tableId),
+      ).readOwnInbox(actor, uri.href);
+      if (!value.ok) throw new Error("Resource not found");
+      return {
+        contents: [{
+          uri: uri.href,
+          mimeType: "application/json",
+          text: JSON.stringify(value.value),
+        }],
+      };
+    },
+  );
   return server;
 }
 

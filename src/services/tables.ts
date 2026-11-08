@@ -4,7 +4,8 @@ import {
   parseCreationRequest,
 } from "../shared/creation";
 import { parseOwnInboxUri } from "../shared/resources";
-import type { SafeTableMetadata } from "../shared/table";
+import type { SafeTableMetadata, TableResult } from "../shared/table";
+import type { PostMessageInput, PostReceipt, ReadMessagesInput, TranscriptPage } from "../shared/transcript";
 
 export type PublicTableResult =
   | { ok: true; value: SafeTableMetadata }
@@ -125,6 +126,27 @@ export async function joinTable(
     return await env.TABLES.get(
       env.TABLES.idFromName(parsed.tableId),
     ).redeemInvite(actor, invitation, requestId);
+  } catch {
+    return { ok: false, code: "TEMPORARILY_UNAVAILABLE" };
+  }
+}
+
+/** Route only a validated table ID to the authoritative TableDO. */
+export async function postMessage(
+  env: Env, actor: VerifiedConnectionActor, id: string, input: PostMessageInput,
+): Promise<TableResult<PostReceipt>> {
+  try {
+    return await env.TABLES.get(env.TABLES.idFromName(id)).postMessage(actor, input);
+  } catch {
+    return { ok: false, code: "TEMPORARILY_UNAVAILABLE" };
+  }
+}
+
+export async function readMessages(
+  env: Env, actor: VerifiedConnectionActor, id: string, input: ReadMessagesInput,
+): Promise<TableResult<TranscriptPage>> {
+  try {
+    return await env.TABLES.get(env.TABLES.idFromName(id)).readMessages(actor, input);
   } catch {
     return { ok: false, code: "TEMPORARILY_UNAVAILABLE" };
   }

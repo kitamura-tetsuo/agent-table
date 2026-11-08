@@ -31,6 +31,15 @@ import {
   type TableResult,
   type TableState,
 } from "../shared/table";
+import {
+  MAX_POSTS_PER_MINUTE,
+  POST_WINDOW_MS,
+  type PostReceipt,
+  type TranscriptPage,
+  postDigest,
+  validPostInput,
+  validReadInput,
+} from "../shared/transcript";
 import type { CreationLookupResult, CreationReservation } from "./guest";
 
 type MetadataRow = {
@@ -71,6 +80,20 @@ type InvitationRow = {
   consumed_at: number | null;
 };
 
+type MessageRow = {
+  seq: number;
+  message_id: string;
+  sender_membership_id: string;
+  body: string;
+  created_at: number;
+  reply_to_message_id: string | null;
+};
+type PostReceiptRow = {
+  guest_id: string;
+  request_id: string;
+  request_digest: string;
+  message_seq: number;
+};
 type JoinReceiptRow = {
   guest_id: string;
   request_id: string;
@@ -569,11 +592,12 @@ export class TableDO extends DurableObject<Env> {
       }
       const membershipId = crypto.randomUUID();
       this.ctx.storage.sql.exec(
-        "INSERT INTO table_memberships (membership_id, table_id, guest_id, seat, role, joined_at, latest_peer_seq) VALUES (?, ?, ?, 2, 'invitee', ?, 0)",
+        "INSERT INTO table_memberships (membership_id, table_id, guest_id, seat, role, joined_at, latest_peer_seq) VALUES (?, ?, ?, 2, 'invitee', ?, ?)",
         membershipId,
         table.table_id,
         actor.guestId,
         now,
+        table.last_seq,
       );
       this.ctx.storage.sql.exec(
         "UPDATE table_invitations SET state = 'consumed', consumed_by = ?, consumed_at = ?, response_envelope = NULL WHERE invite_id = ? AND state = 'active'",
@@ -661,6 +685,162 @@ export class TableDO extends DurableObject<Env> {
         expiresAt: new Date(table.expires_at).toISOString(),
       },
     };
+  }
+
+
+  /** One SQLite transaction owns the message, sequence, limits and receipt. */
+  async postMessage(
+    actor: VerifiedConnectionActor,
+    input: unknown,
+  ): Promise<TableResult<PostReceipt>> {
+    if (!validPostInput(input)) return { ok: false, code: "INVALID_REQUEST" };
+    if (!(await this.verifyActor(actor, "tables:write"))) {
+      return { ok: false, code: "TABLE_NOT_FOUND" };
+    }
+    const digest = await postDigest(input);
+    const bytes = new TextEncoder().encode(input.body).byteLength;
+    const messageId = crypto.randomUUID();
+    return this.ctx.storage.transactionSync(() => {
+      const table = this.metadataRow();
+      const member = this.memberFor(actor.guestId);
+      const now = Date.now();
+      if (!table || !member || member.table_id !== table.table_id ||
+          table.state === "deleted") {
+        return { ok: false, code: "TABLE_NOT_FOUND" } as const;
+      }
+      if (table.state === "expired" || table.expires_at <= now) {
+        return { ok: false, code: "TABLE_EXPIRED" } as const;
+      }
+      const previous = this.ctx.storage.sql.exec<PostReceiptRow>(
+        "SELECT * FROM table_post_receipts WHERE guest_id = ? AND request_id = ?",
+        actor.guestId, input.request_id,
+      ).toArray()[0];
+      if (previous) {
+        if (previous.request_digest !== digest) {
+          return { ok: false, code: "IDEMPOTENCY_CONFLICT" } as const;
+        }
+        const original = this.ctx.storage.sql.exec<MessageRow>(
+          "SELECT * FROM table_messages WHERE seq = ?", previous.message_seq,
+        ).one();
+        return { ok: true, value: this.postReceipt(table.table_id, original) } as const;
+      }
+      if (table.state !== "waiting" && table.state !== "open") {
+        return { ok: false, code: "TABLE_TERMINAL" } as const;
+      }
+      if (input.reply_to_message_id !== undefined) {
+        const reference = this.ctx.storage.sql.exec(
+          "SELECT message_id FROM table_messages WHERE message_id = ?",
+          input.reply_to_message_id,
+        ).toArray()[0];
+        if (!reference) return { ok: false, code: "INVALID_REPLY" } as const;
+      }
+      const usage = this.ctx.storage.sql.exec<{ body_bytes: number }>(
+        "SELECT body_bytes FROM table_transcript_usage WHERE singleton = 1",
+      ).one();
+      if (table.last_seq >= 256 || usage.body_bytes + bytes > 2 * 1024 * 1024) {
+        return { ok: false, code: "LIMIT_REACHED" } as const;
+      }
+      const count = this.ctx.storage.sql.exec<{ total: number }>(
+        "SELECT COUNT(*) AS total FROM table_messages WHERE created_at > ?",
+        now - POST_WINDOW_MS,
+      ).one();
+      if (count.total >= MAX_POSTS_PER_MINUTE) {
+        return { ok: false, code: "RATE_LIMITED" } as const;
+      }
+      const seq = table.last_seq + 1;
+      this.ctx.storage.sql.exec(
+        `INSERT INTO table_messages
+          (seq, message_id, sender_membership_id, body, body_bytes, created_at, reply_to_message_id)
+          VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        seq, messageId, member.membership_id, input.body, bytes, now,
+        input.reply_to_message_id ?? null,
+      );
+      this.ctx.storage.sql.exec(
+        "UPDATE table_metadata SET last_seq = ? WHERE singleton = 1", seq,
+      );
+      this.ctx.storage.sql.exec(
+        "UPDATE table_transcript_usage SET body_bytes = body_bytes + ? WHERE singleton = 1",
+        bytes,
+      );
+      // The poster never receives a self-generated peer watermark.
+      this.ctx.storage.sql.exec(
+        "UPDATE table_memberships SET latest_peer_seq = ? WHERE guest_id <> ?",
+        seq, actor.guestId,
+      );
+      this.ctx.storage.sql.exec(
+        "INSERT INTO table_post_receipts (guest_id, request_id, request_digest, message_seq) VALUES (?, ?, ?, ?)",
+        actor.guestId, input.request_id, digest, seq,
+      );
+      return { ok: true, value: this.postReceipt(table.table_id, {
+        seq, message_id: messageId, sender_membership_id: member.membership_id,
+        body: input.body, created_at: now,
+        reply_to_message_id: input.reply_to_message_id ?? null,
+      }) } as const;
+    });
+  }
+
+  private postReceipt(tableId: string, row: MessageRow): PostReceipt {
+    return {
+      table_id: tableId,
+      message_id: row.message_id,
+      seq: row.seq,
+      sender_membership_id: row.sender_membership_id,
+      created_at: new Date(row.created_at).toISOString(),
+      persisted: true,
+    };
+  }
+
+  /** Snapshot reads never acknowledge events or modify server cursors. */
+  async readMessages(
+    actor: VerifiedConnectionActor,
+    input: unknown,
+  ): Promise<TableResult<TranscriptPage>> {
+    if (!validReadInput(input)) return { ok: false, code: "INVALID_REQUEST" };
+    if (!(await this.verifyActor(actor, "tables:read"))) {
+      return { ok: false, code: "TABLE_NOT_FOUND" };
+    }
+    return this.ctx.storage.transactionSync(() => {
+      const table = this.metadataRow();
+      const member = this.memberFor(actor.guestId);
+      if (!table || !member || member.table_id !== table.table_id ||
+          table.state === "deleted") {
+        return { ok: false, code: "TABLE_NOT_FOUND" } as const;
+      }
+      if (table.state === "expired" || table.expires_at <= Date.now()) {
+        return { ok: false, code: "TABLE_EXPIRED" } as const;
+      }
+      const after = input.after_seq ?? 0;
+      const through = input.through_seq ?? table.last_seq;
+      const limit = input.limit ?? 50;
+      if (through > table.last_seq || after > through) {
+        return { ok: false, code: "INVALID_CURSOR" } as const;
+      }
+      const rows = this.ctx.storage.sql.exec<MessageRow>(
+        `SELECT * FROM table_messages
+         WHERE seq > ? AND seq <= ? ORDER BY seq ASC LIMIT ?`,
+        after, through, limit + 1,
+      ).toArray();
+      const more = rows.length > limit;
+      const slice = more ? rows.slice(0, limit) : rows;
+      return {
+        ok: true,
+        value: {
+          messages: slice.map((row) => ({
+            seq: row.seq, message_id: row.message_id,
+            sender_membership_id: row.sender_membership_id,
+            body: row.body,
+            created_at: new Date(row.created_at).toISOString(),
+            ...(row.reply_to_message_id === null
+              ? {} : { reply_to_message_id: row.reply_to_message_id }),
+          })),
+          next_after_seq: slice.at(-1)?.seq ?? after,
+          through_seq: through,
+          has_more: more,
+          own_inbox_uri: ownInboxUri(table.table_id, member.membership_id),
+          latest_peer_seq: member.latest_peer_seq,
+        },
+      } as const;
+    });
   }
 
   /**

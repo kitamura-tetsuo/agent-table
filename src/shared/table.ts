@@ -51,7 +51,12 @@ export type TableFailureCode =
   | "INVITATION_CONSUMED"
   | "IDEMPOTENCY_CONFLICT"
   | "INVALID_RESERVATION"
-  | "TEMPORARILY_UNAVAILABLE";
+  | "TEMPORARILY_UNAVAILABLE"
+  | "INVALID_REQUEST"
+  | "INVALID_REPLY"
+  | "INVALID_CURSOR"
+  | "LIMIT_REACHED"
+  | "RATE_LIMITED";
 
 export type TableResult<T> =
   | { ok: true; value: T }
