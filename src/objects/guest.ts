@@ -11,6 +11,7 @@ import {
   parseCreationRequest,
   validCreationRequestId,
 } from "../shared/creation";
+import { DurableDeadlineScheduler } from "../shared/deadlines";
 import { CREATION_LIMITS } from "../shared/limits";
 import { digestSessionSecret, randomBase64Url } from "../shared/random";
 import {
@@ -137,9 +138,15 @@ function digestMatches(left: string, right: string): boolean {
 }
 
 export class GuestDO extends DurableObject<Env> {
+  private readonly deadlines: DurableDeadlineScheduler;
+
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     initializeApplicationSchema(ctx.storage, "guest");
+    this.deadlines = new DurableDeadlineScheduler(ctx.storage);
+    ctx.blockConcurrencyWhile(async () => {
+      await this.deadlines.ensureExistingWakeup(() => this.earliestDeadline());
+    });
   }
 
   schemaVersion(): number {
@@ -193,24 +200,26 @@ export class GuestDO extends DurableObject<Env> {
     const now = Date.now();
     const expiresAt = now + SESSION_LIFETIME_MS;
 
-    this.ctx.storage.transactionSync(() => {
-      if (this.guestId() !== null) {
-        throw new Error("Guest already initialized");
-      }
-      this.ctx.storage.sql.exec(
-        "INSERT INTO guest_identity (singleton, guest_id, created_at) VALUES (1, ?, ?)",
-        guestId,
-        now,
-      );
-      this.ctx.storage.sql.exec(
-        `INSERT INTO guest_sessions
+    await this.deadlines.commitWithWakeup(expiresAt, () => {
+      this.ctx.storage.transactionSync(() => {
+        if (this.guestId() !== null) {
+          throw new Error("Guest already initialized");
+        }
+        this.ctx.storage.sql.exec(
+          "INSERT INTO guest_identity (singleton, guest_id, created_at) VALUES (1, ?, ?)",
+          guestId,
+          now,
+        );
+        this.ctx.storage.sql.exec(
+          `INSERT INTO guest_sessions
          (session_id, secret_digest, created_at, expires_at, invalidated_at)
          VALUES (?, ?, ?, ?, NULL)`,
-        sessionId,
-        digest,
-        now,
-        expiresAt,
-      );
+          sessionId,
+          digest,
+          now,
+          expiresAt,
+        );
+      });
     });
     return { guestId, sessionId, secret, createdAt: now, expiresAt };
   }
@@ -239,35 +248,39 @@ export class GuestDO extends DurableObject<Env> {
     const nextSecret = randomBase64Url(32);
     const nextDigest = await digestSessionSecret(nextSecret);
     const nextSessionId = crypto.randomUUID();
-    const now = Date.now();
-    const expiresAt = now + SESSION_LIFETIME_MS;
-
-    return this.ctx.storage.transactionSync(() => {
-      const prior = this.activeSession(sessionId, digest, now);
-      const guestId = this.guestId();
-      if (!prior || !guestId) return null;
-      this.ctx.storage.sql.exec(
-        "UPDATE guest_sessions SET invalidated_at = ? WHERE session_id = ?",
-        now,
-        sessionId,
-      );
-      this.ctx.storage.sql.exec(
-        `INSERT INTO guest_sessions
+    const safetyDeadline = Date.now() + SESSION_LIFETIME_MS;
+    return (
+      await this.deadlines.commitWithWakeup(safetyDeadline, () =>
+        this.ctx.storage.transactionSync(() => {
+          const now = Date.now();
+          const expiresAt = now + SESSION_LIFETIME_MS;
+          const prior = this.activeSession(sessionId, digest, now);
+          const guestId = this.guestId();
+          if (!prior || !guestId) return null;
+          this.ctx.storage.sql.exec(
+            "UPDATE guest_sessions SET invalidated_at = ? WHERE session_id = ?",
+            now,
+            sessionId,
+          );
+          this.ctx.storage.sql.exec(
+            `INSERT INTO guest_sessions
          (session_id, secret_digest, created_at, expires_at, invalidated_at)
          VALUES (?, ?, ?, ?, NULL)`,
-        nextSessionId,
-        nextDigest,
-        now,
-        expiresAt,
-      );
-      return {
-        guestId,
-        sessionId: nextSessionId,
-        secret: nextSecret,
-        createdAt: now,
-        expiresAt,
-      };
-    });
+            nextSessionId,
+            nextDigest,
+            now,
+            expiresAt,
+          );
+          return {
+            guestId,
+            sessionId: nextSessionId,
+            secret: nextSecret,
+            createdAt: now,
+            expiresAt,
+          };
+        }),
+      )
+    ).value;
   }
 
   async invalidateSession(sessionId: string, secret: string): Promise<boolean> {
@@ -347,30 +360,39 @@ export class GuestDO extends DurableObject<Env> {
     const digest = await digestSessionSecret(secret);
     const connectionId = crypto.randomUUID();
     const scopes = [...approvedScopes].sort();
-    return this.ctx.storage.transactionSync(() => {
-      const guestId = this.guestId();
-      if (!guestId || !this.activeSession(sessionId, digest, Date.now())) {
-        return null;
-      }
-      this.ctx.storage.sql.exec(
-        `INSERT INTO guest_connections
+    return (
+      await this.deadlines.commitWithWakeup(expiresAt, () =>
+        this.ctx.storage.transactionSync(() => {
+          const effectiveNow = Date.now();
+          if (expiresAt <= effectiveNow) return null;
+          const guestId = this.guestId();
+          if (
+            !guestId ||
+            !this.activeSession(sessionId, digest, effectiveNow)
+          ) {
+            return null;
+          }
+          this.ctx.storage.sql.exec(
+            `INSERT INTO guest_connections
          (connection_id, guest_id, scopes_json, created_at, expires_at, revoked_at)
          VALUES (?, ?, ?, ?, ?, NULL)`,
-        connectionId,
-        guestId,
-        JSON.stringify(scopes),
-        now,
-        expiresAt,
-      );
-      return {
-        connectionId,
-        guestId,
-        scopes,
-        createdAt: now,
-        expiresAt,
-        revokedAt: null,
-      };
-    });
+            connectionId,
+            guestId,
+            JSON.stringify(scopes),
+            effectiveNow,
+            expiresAt,
+          );
+          return {
+            connectionId,
+            guestId,
+            scopes,
+            createdAt: effectiveNow,
+            expiresAt,
+            revokedAt: null,
+          };
+        }),
+      )
+    ).value;
   }
 
   /** Every new protected operation calls this read; there is no allow cache. */
@@ -471,47 +493,53 @@ export class GuestDO extends DurableObject<Env> {
     const nextSecret = randomBase64Url(32);
     const nextDigest = await digestSessionSecret(nextSecret);
     const nextSessionId = crypto.randomUUID();
-    return this.ctx.storage.transactionSync(() => {
-      const now = Date.now();
-      const owner = this.guestId();
-      const session = this.activeSession(sessionId, digest, now);
-      if (!owner || !session) return { status: "unauthorized" };
-      const row = this.connectionRow(connectionId);
-      if (!row || row.guest_id !== owner) return { status: "not-found" };
-      if (row.revoked_at === null) {
-        this.ctx.storage.sql.exec(
-          "UPDATE guest_connections SET revoked_at = ? WHERE connection_id = ? AND guest_id = ? AND revoked_at IS NULL",
-          now,
-          connectionId,
-          owner,
-        );
-      }
-      this.ctx.storage.sql.exec(
-        "UPDATE guest_sessions SET invalidated_at = ? WHERE session_id = ?",
-        now,
-        sessionId,
-      );
-      const expiresAt = now + SESSION_LIFETIME_MS;
-      this.ctx.storage.sql.exec(
-        `INSERT INTO guest_sessions
+    const expiresAt = Date.now() + SESSION_LIFETIME_MS;
+    return (
+      await this.deadlines.commitWithWakeup<ConnectionRevocation>(
+        expiresAt,
+        () =>
+          this.ctx.storage.transactionSync(() => {
+            const now = Date.now();
+            const owner = this.guestId();
+            const session = this.activeSession(sessionId, digest, now);
+            if (!owner || !session) return { status: "unauthorized" };
+            const row = this.connectionRow(connectionId);
+            if (!row || row.guest_id !== owner) return { status: "not-found" };
+            if (row.revoked_at === null) {
+              this.ctx.storage.sql.exec(
+                "UPDATE guest_connections SET revoked_at = ? WHERE connection_id = ? AND guest_id = ? AND revoked_at IS NULL",
+                now,
+                connectionId,
+                owner,
+              );
+            }
+            this.ctx.storage.sql.exec(
+              "UPDATE guest_sessions SET invalidated_at = ? WHERE session_id = ?",
+              now,
+              sessionId,
+            );
+            this.ctx.storage.sql.exec(
+              `INSERT INTO guest_sessions
          (session_id, secret_digest, created_at, expires_at, invalidated_at)
          VALUES (?, ?, ?, ?, NULL)`,
-        nextSessionId,
-        nextDigest,
-        now,
-        expiresAt,
-      );
-      return {
-        status: "revoked",
-        session: {
-          guestId: owner,
-          sessionId: nextSessionId,
-          secret: nextSecret,
-          createdAt: now,
-          expiresAt,
-        },
-      };
-    });
+              nextSessionId,
+              nextDigest,
+              now,
+              expiresAt,
+            );
+            return {
+              status: "revoked",
+              session: {
+                guestId: owner,
+                sessionId: nextSessionId,
+                secret: nextSecret,
+                createdAt: now,
+                expiresAt,
+              },
+            };
+          }),
+      )
+    ).value;
   }
 
   private creationAuthorized(actor: VerifiedConnectionActor): boolean {
@@ -579,86 +607,94 @@ export class GuestDO extends DurableObject<Env> {
     const proposedId = crypto.randomUUID();
     await this.beforeReservationDecision();
 
-    return this.ctx.storage.transactionSync(() => {
-      if (!this.creationAuthorized(actor)) {
-        return { ok: false, code: "UNAUTHORIZED" } as const;
-      }
-      const now = Date.now();
-      const owner = this.guestId();
-      if (!owner) return { ok: false, code: "UNAUTHORIZED" } as const;
+    const retentionDeadline =
+      Date.now() + CREATION_LIMITS.reservationRetentionMs;
+    return (
+      await this.deadlines.commitWithWakeup(retentionDeadline, () =>
+        this.ctx.storage.transactionSync(() => {
+          if (!this.creationAuthorized(actor)) {
+            return { ok: false, code: "UNAUTHORIZED" } as const;
+          }
+          const now = Date.now();
+          const owner = this.guestId();
+          if (!owner) return { ok: false, code: "UNAUTHORIZED" } as const;
 
-      const previous = this.creationRow(parsed.requestId);
-      if (previous && previous.retention_until > now) {
-        if (previous.request_digest !== digest) {
-          return { ok: false, code: "IDEMPOTENCY_CONFLICT" } as const;
-        }
-        if (previous.expires_at <= now) {
-          return { ok: false, code: "TABLE_EXPIRED" } as const;
-        }
-        return {
-          ok: true,
-          reservation: this.toCreationReservation(previous),
-        } as const;
-      }
-      // A record beyond eight days is no longer part of the dedupe contract.
-      if (previous) {
-        this.ctx.storage.sql.exec(
-          "DELETE FROM guest_creation_reservations WHERE request_id = ?",
-          parsed.requestId,
-        );
-      }
+          const previous = this.creationRow(parsed.requestId);
+          if (previous && previous.retention_until > now) {
+            if (previous.request_digest !== digest) {
+              return { ok: false, code: "IDEMPOTENCY_CONFLICT" } as const;
+            }
+            if (previous.expires_at <= now) {
+              return { ok: false, code: "TABLE_EXPIRED" } as const;
+            }
+            return {
+              ok: true,
+              reservation: this.toCreationReservation(previous),
+            } as const;
+          }
+          // A record beyond eight days is no longer part of the dedupe contract.
+          if (previous) {
+            this.ctx.storage.sql.exec(
+              "DELETE FROM guest_creation_reservations WHERE request_id = ?",
+              parsed.requestId,
+            );
+          }
 
-      const windowStart = now - CREATION_LIMITS.reservationWindowMs;
-      const quota = this.ctx.storage.sql
-        .exec<{ count: number; oldest: number | null }>(
-          `SELECT COUNT(*) AS count, MIN(charged_at) AS oldest
+          const windowStart = now - CREATION_LIMITS.reservationWindowMs;
+          const quota = this.ctx.storage.sql
+            .exec<{ count: number; oldest: number | null }>(
+              `SELECT COUNT(*) AS count, MIN(charged_at) AS oldest
            FROM guest_creation_reservations
            WHERE guest_id = ? AND charged_at > ?`,
-          owner,
-          windowStart,
-        )
-        .one();
-      if (quota.count >= CREATION_LIMITS.maxReservationsPerWindow) {
-        return {
-          ok: false,
-          code: "LIMIT_REACHED",
-          retryAfterMs: Math.max(
-            1,
-            (quota.oldest ?? now) + CREATION_LIMITS.reservationWindowMs - now,
-          ),
-        } as const;
-      }
+              owner,
+              windowStart,
+            )
+            .one();
+          if (quota.count >= CREATION_LIMITS.maxReservationsPerWindow) {
+            return {
+              ok: false,
+              code: "LIMIT_REACHED",
+              retryAfterMs: Math.max(
+                1,
+                (quota.oldest ?? now) +
+                  CREATION_LIMITS.reservationWindowMs -
+                  now,
+              ),
+            } as const;
+          }
 
-      const expiresAt = now + parsed.arguments.ttl_seconds * 1_000;
-      const retentionUntil = now + CREATION_LIMITS.reservationRetentionMs;
-      this.ctx.storage.sql.exec(
-        `INSERT INTO guest_creation_reservations
+          const expiresAt = now + parsed.arguments.ttl_seconds * 1_000;
+          const retentionUntil = now + CREATION_LIMITS.reservationRetentionMs;
+          this.ctx.storage.sql.exec(
+            `INSERT INTO guest_creation_reservations
          (request_id, guest_id, request_digest, table_id, created_at,
           expires_at, retention_until, charged_at, outcome)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'reserved')`,
-        parsed.requestId,
-        owner,
-        digest,
-        proposedId,
-        now,
-        expiresAt,
-        retentionUntil,
-        now,
-      );
-      return {
-        ok: true,
-        reservation: {
-          requestId: parsed.requestId,
-          tableId: proposedId,
-          requestDigest: digest,
-          createdAt: now,
-          expiresAt,
-          retentionUntil,
-          chargedAt: now,
-          outcome: "reserved",
-        },
-      } as const;
-    });
+            parsed.requestId,
+            owner,
+            digest,
+            proposedId,
+            now,
+            expiresAt,
+            retentionUntil,
+            now,
+          );
+          return {
+            ok: true,
+            reservation: {
+              requestId: parsed.requestId,
+              tableId: proposedId,
+              requestDigest: digest,
+              createdAt: now,
+              expiresAt,
+              retentionUntil,
+              chargedAt: now,
+              outcome: "reserved",
+            },
+          } as const;
+        }),
+      )
+    ).value;
   }
 
   /** Read a retained receipt without implicitly authorizing initialization. */
@@ -755,5 +791,59 @@ export class GuestDO extends DurableObject<Env> {
         .exec<{ count: number }>("SELECT changes() AS count")
         .one().count;
     });
+  }
+
+  /** The next durable cleanup deadline, independent of any in-memory timer. */
+  private earliestDeadline(): number | null {
+    return this.ctx.storage.sql
+      .exec<{ deadline: number | null }>(
+        `SELECT MIN(next_deadline) AS deadline FROM (
+          SELECT MIN(expires_at) AS next_deadline FROM guest_sessions
+          UNION ALL SELECT MIN(expires_at) FROM guest_connections
+          UNION ALL SELECT MIN(retention_until) FROM guest_creation_reservations
+        )`,
+      )
+      .one().deadline;
+  }
+
+  private deleteDue(
+    kind: "sessions" | "connections" | "reservations",
+    now: number,
+    limit: number,
+  ) {
+    if (limit <= 0) return 0;
+    const statements = {
+      sessions: `DELETE FROM guest_sessions WHERE rowid IN (
+        SELECT rowid FROM guest_sessions WHERE expires_at <= ?
+        ORDER BY expires_at LIMIT ?
+      )`,
+      connections: `DELETE FROM guest_connections WHERE rowid IN (
+        SELECT rowid FROM guest_connections WHERE expires_at <= ?
+        ORDER BY expires_at LIMIT ?
+      )`,
+      reservations: `DELETE FROM guest_creation_reservations WHERE rowid IN (
+        SELECT rowid FROM guest_creation_reservations WHERE retention_until <= ?
+        ORDER BY retention_until LIMIT ?
+      )`,
+    } as const;
+    this.ctx.storage.sql.exec(statements[kind], now, limit);
+    return this.ctx.storage.sql
+      .exec<{ count: number }>("SELECT changes() AS count")
+      .one().count;
+  }
+
+  private pruneDue(now: number, budget: number): number {
+    let total = this.deleteDue("sessions", now, budget);
+    total += this.deleteDue("connections", now, budget - total);
+    total += this.deleteDue("reservations", now, budget - total);
+    return total;
+  }
+
+  /** At-least-once alarm processing; remaining work is always rearmed. */
+  async alarm(): Promise<void> {
+    await this.deadlines.drainDueWork(
+      () => this.earliestDeadline(),
+      (now, budget) => this.pruneDue(now, budget),
+    );
   }
 }

@@ -249,8 +249,20 @@ describe("browser -> Worker -> real GuestDO guest sessions", () => {
     await evictDurableObject(stub);
     expect((await browserIdentity(cookie)).status).toBe(401);
     expect(await stub.validateSession(sessionId, secret)).toBe(null);
-    expect(await stub.pruneExpiredSessions(1)).toBe(1);
+    // The new durable alarm can prune this expired row automatically during
+    // reconstruction; explicit cleanup remains bounded and idempotent.
+    expect([0, 1]).toContain(await stub.pruneExpiredSessions(1));
     expect(await stub.pruneExpiredSessions(1)).toBe(0);
+    await runInDurableObject(stub, async (_instance, state) => {
+      expect(
+        state.storage.sql
+          .exec<{ count: number }>(
+            "SELECT COUNT(*) AS count FROM guest_sessions WHERE session_id = ?",
+            sessionId,
+          )
+          .one().count,
+      ).toBe(0);
+    });
     expect((await browserIdentity(cookie)).status).toBe(401);
 
     const renewed = await selectGuest("new", await guestForm());
