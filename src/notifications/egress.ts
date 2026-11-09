@@ -323,11 +323,11 @@ export async function extractSafeCloudflareErrorCode(
       // Search after every chunk so an early 1xxx hint does not wait for EOF.
       const text = new TextDecoder().decode(prefix.subarray(0, used));
       const match =
-        text.match(/class=["']cf-error-code["']>\\s*(1\\d{3})\\s*</i) ??
-        text.match(/data-translate=["']error_(1\\d{3})["']/i) ??
-        text.match(/error\\s*(?:reference\\s*number|code)?[:\\s]+(1\\d{3})\\b/i) ??
-        text.match(/error\\s+(1\\d{3})\\b/i) ??
-        text.match(/"code"\\s*:\\s*(1\\d{3})\\b/);
+        text.match(/class=["']cf-error-code["']>\s*(1\d{3})\s*</i) ??
+        text.match(/data-translate=["']error_(1\d{3})["']/i) ??
+        text.match(/error\s*(?:reference\s*number|code)?[:\s]+(1\d{3})\b/i) ??
+        text.match(/error\s+(1\d{3})\b/i) ??
+        text.match(/"code"\s*:\s*(1\d{3})\b/);
       if (match) {
         const parsed = Number(match[1]);
         if (parsed >= 1000 && parsed <= 1999) return parsed;
