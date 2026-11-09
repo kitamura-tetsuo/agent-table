@@ -156,7 +156,9 @@ export async function handleJoinPage(
       );
     }
     return page(
-      "<p>Joining committed. This guest can now read the full shared transcript using an independently authorized agent connection. No automatic posting or agreement occurred.</p>",
+      '<p>Joining committed. You can <a href="/guest/table?table_id=' +
+        parsed.tableId +
+        '">view the shared transcript</a> with this browser guest or use an independently authorized agent connection. No automatic posting or agreement occurred.</p>',
     );
   } catch {
     return plain(

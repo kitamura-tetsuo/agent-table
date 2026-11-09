@@ -49,6 +49,7 @@ import {
   POST_WINDOW_MS,
   type PostReceipt,
   postDigest,
+  type ReadMessagesInput,
   type TranscriptPage,
   type TransientPeerUpdateHint,
   validPostInput,
@@ -855,6 +856,29 @@ export class TableDO extends DurableObject<Env> {
       : access;
   }
 
+  /** Browser reads check the independently held session, never an OAuth grant. */
+  async getBrowserMetadata(
+    credential: BrowserDeletionCredential,
+  ): Promise<TableResult<SafeTableMetadata>> {
+    if (!(await this.verifyBrowserSession(credential))) {
+      return { ok: false, code: "TABLE_NOT_FOUND" };
+    }
+    const table = this.metadataRow();
+    const member = this.memberFor(credential.guestId);
+    if (
+      !table ||
+      !member ||
+      member.table_id !== table.table_id ||
+      table.state === "deleted"
+    ) {
+      return { ok: false, code: "TABLE_NOT_FOUND" };
+    }
+    if (table.state === "expired" || table.expires_at <= Date.now()) {
+      return { ok: false, code: "TABLE_EXPIRED" };
+    }
+    return { ok: true, value: this.publicMetadata(table, member) };
+  }
+
   async readOwnInbox(
     actor: VerifiedConnectionActor,
     inboxUri: string,
@@ -1087,9 +1111,28 @@ export class TableDO extends DurableObject<Env> {
     if (!(await this.verifyActor(actor, "tables:read"))) {
       return { ok: false, code: "TABLE_NOT_FOUND" };
     }
+    return this.readMessagesForGuest(actor.guestId, input);
+  }
+
+  /** Browser and agent transcript reads share the exact snapshot/membership query. */
+  async readBrowserMessages(
+    credential: BrowserDeletionCredential,
+    input: unknown,
+  ): Promise<TableResult<TranscriptPage>> {
+    if (!validReadInput(input)) return { ok: false, code: "INVALID_REQUEST" };
+    if (!(await this.verifyBrowserSession(credential))) {
+      return { ok: false, code: "TABLE_NOT_FOUND" };
+    }
+    return this.readMessagesForGuest(credential.guestId, input);
+  }
+
+  private readMessagesForGuest(
+    guestId: string,
+    input: ReadMessagesInput,
+  ): TableResult<TranscriptPage> {
     return this.ctx.storage.transactionSync(() => {
       const table = this.metadataRow();
-      const member = this.memberFor(actor.guestId);
+      const member = this.memberFor(guestId);
       if (
         !table ||
         !member ||

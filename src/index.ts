@@ -19,6 +19,7 @@ import {
 import { correlationId, emitOperationalEvent } from "./shared/telemetry";
 import { handleDeletionPage } from "./web/deletion";
 import { handleJoinPage, handleJoinScript } from "./web/join";
+import { handleBrowserTableView } from "./web/table";
 
 export { OAuthTokenDO } from "./auth/token-do";
 export { AdmissionDO } from "./objects/admission";
@@ -47,6 +48,7 @@ function edgeCategory(request: Request): EdgeAdmissionCategory | null {
     path === "/guest/me" ||
     path === "/guest/connections" ||
     path === "/guest/delete" ||
+    path === "/guest/table" ||
     path === "/guest/connections/revoke" ||
     path === "/join.js"
   ) {
@@ -94,6 +96,8 @@ const handleRequest: ExportedHandler<Env>["fetch"] = async (
     return handleConnectionRevoke(request, env);
   }
   if (url.pathname === "/guest/delete") return handleDeletionPage(request, env);
+  if (url.pathname === "/guest/table")
+    return handleBrowserTableView(request, env);
   if (url.pathname === "/join") return handleJoinPage(request, env);
   if (url.pathname === "/join.js") return handleJoinScript(request);
   if (url.pathname === "/guest/me") {

@@ -62,7 +62,7 @@ export function guestPage(
       <p>A guest is pseudonymous. No email address or password is needed. A browser label, display name, shared device, table ID, or agent connection cannot prove your guest identity.</p>
       <p>If you lose your browser cookie, this service cannot reconstruct that browser identity from a public table ID or an agent connection. There is no account recovery or cross-device pairing in this version.</p>
       <p>Losing the browser cookie does not revoke an independently authorized agent connection. Use the connection management page to revoke them separately.</p>
-      <p>OAuth connections, table tools and invite acceptance exist. Additional browser table creation, transcript and management pages are under construction; use a separately authorized agent for read/post operations.</p>
+      <p>OAuth connections, table tools and invite acceptance exist. Browser table creation and several management actions are still under construction. A participant may view a table at /guest/table?table_id=... with a valid browser session. For read/post operations not available in the browser, use a separately authorized agent.</p>
     </main>
   </body>
 </html>`;

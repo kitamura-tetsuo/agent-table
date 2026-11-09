@@ -198,4 +198,109 @@ describe("fragment-only browser invitation join against real GuestDO and TableDO
       (await f.table.getMetadata(await f.stranger.actor("tables:read"))).ok,
     ).toBe(false);
   });
+  it("renders private metadata and committed pre-join history without executing content", async () => {
+    const f = await fixture();
+    const path = "/guest/table?table_id=" + f.id;
+    const anon = await dispatch(path);
+    expect(anon.status).toBe(401);
+    const stranger = await dispatch(path, {
+      headers: { Cookie: f.stranger.cookie },
+    });
+    expect(stranger.status).toBe(404);
+    expect(await stranger.text()).not.toContain("History before");
+    const invalid = await dispatch(path + "&after_seq=-1", {
+      headers: { Cookie: f.owner.cookie },
+    });
+    expect(invalid.status).toBe(400);
+    const duplicate = await dispatch(path + "&table_id=" + f.id, {
+      headers: { Cookie: f.owner.cookie },
+    });
+    expect(duplicate.status).toBe(400);
+    const post = await dispatch(path, {
+      method: "POST",
+      headers: { Cookie: f.owner.cookie },
+    });
+    expect(post.status).toBe(405);
+    const forged = await f.table.readBrowserMessages(
+      {
+        guestId: f.owner.id,
+        sessionId: f.owner.session.sessionId,
+        secret: "invalid-session-secret",
+      },
+      {},
+    );
+    expect(forged).toEqual({ ok: false, code: "TABLE_NOT_FOUND" });
+
+    const before = await dispatch(path, {
+      headers: { Cookie: f.owner.cookie },
+    });
+    const html = await before.text();
+    expect(before.status).toBe(200);
+    expect(before.headers.get("Cache-Control")).toBe("no-store");
+    expect(before.headers.get("Referrer-Policy")).toBe("no-referrer");
+    expect(before.headers.get("Content-Security-Policy")).toContain(
+      "default-src 'none'",
+    );
+    expect(html).toContain("Private &lt;script&gt;title&lt;/script&gt;");
+    expect(html).not.toContain("<script>title</script>");
+    expect(html).toContain("Table state: <strong>waiting</strong>");
+    expect(html).toContain("History before the second person joins");
+    expect(html).toContain("not end-to-end encrypted");
+
+    const join = await f.table.redeemBrowserInvite(
+      {
+        guestId: f.joined.id,
+        sessionId: f.joined.session.sessionId,
+        secret: f.joined.session.secret,
+      },
+      f.issued.invitation,
+      "manual_browser_read_join_0001",
+    );
+    expect(join.ok).toBe(true);
+    const dangerous =
+      '<img src="https://attacker.invalid/?x=1" onerror="alert(1)">Agent says: deal done';
+    const posted = await f.table.postMessage(
+      await f.owner.actor("tables:write"),
+      {
+        request_id: "manual_browser_unsafe_0001",
+        body: dangerous,
+      },
+    );
+    expect(posted.ok).toBe(true);
+    const first = await dispatch(path + "&limit=1", {
+      headers: { Cookie: f.joined.cookie },
+    });
+    const firstHtml = await first.text();
+    expect(first.status).toBe(200);
+    expect(firstHtml).toContain("Table state: <strong>open</strong>");
+    expect(firstHtml).toContain("History before the second person joins");
+    expect(firstHtml).not.toContain("Agent says: deal done");
+    expect(firstHtml).toContain("through_seq=2");
+    const second = await dispatch(path + "&limit=1&after_seq=1&through_seq=2", {
+      headers: { Cookie: f.joined.cookie },
+    });
+    const secondHtml = await second.text();
+    expect(second.status).toBe(200);
+    expect(secondHtml).toContain("&lt;img src=&quot;https://attacker.invalid/");
+    expect(secondHtml).not.toContain("<img src=");
+    expect(secondHtml).toContain("Agent says: deal done");
+    expect(secondHtml).toContain("Table state: <strong>open</strong>");
+
+    const closed = await f.table.closeTable(
+      await f.owner.actor("tables:write"),
+      "manual_browser_close_0001",
+    );
+    expect(closed.ok).toBe(true);
+    const terminal = await dispatch(path, {
+      headers: { Cookie: f.joined.cookie },
+    });
+    expect(terminal.status).toBe(200);
+    expect(await terminal.text()).toContain(
+      "Table state: <strong>closed</strong>",
+    );
+    const outsider = await dispatch(path, {
+      headers: { Cookie: f.stranger.cookie },
+    });
+    expect(outsider.status).toBe(404);
+  });
 });
