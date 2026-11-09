@@ -8,7 +8,7 @@ describe("telemetry from real GuestDO cleanup alarms", () => {
   it("logs committed cleanup counts without credentials", async () => {
     const captured: string[] = [];
     vi.spyOn(console, "log").mockImplementation((value) => {
-      captured.push(String(value));
+      captured.push(JSON.stringify(value));
     });
     const guestId = crypto.randomUUID();
     const stub = env.GUESTS.get(env.GUESTS.idFromName(guestId));
@@ -35,7 +35,7 @@ describe("telemetry from real GuestDO cleanup alarms", () => {
   it("redacts a sentinel-bearing cleanup failure instead of logging an error", async () => {
     const captured: string[] = [];
     vi.spyOn(console, "log").mockImplementation((value) => {
-      captured.push(String(value));
+      captured.push(JSON.stringify(value));
     });
     const guestId = crypto.randomUUID();
     const stub = env.GUESTS.get(env.GUESTS.idFromName(guestId));

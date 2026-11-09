@@ -14,13 +14,13 @@ describe("allowlisted Worker operational telemetry", () => {
   it("captures real successful and rejected routes without private input", async () => {
     const captured: string[] = [];
     vi.spyOn(console, "log").mockImplementation((value) => {
-      captured.push(String(value));
+      captured.push(JSON.stringify(value));
     });
     const sentinel = `private-secret-${crypto.randomUUID()}`;
     const passed = await worker.fetch(
       new Request(`http://localhost:8787/health?title=${sentinel}`, {
         headers: { Cookie: `session=${sentinel}` },
-      }),
+      }) as Parameters<typeof worker.fetch>[0],
       env,
       createExecutionContext(),
     );
@@ -30,7 +30,7 @@ describe("allowlisted Worker operational telemetry", () => {
         method: "POST",
         headers: { Authorization: `Bearer ${sentinel}` },
         body: sentinel,
-      }),
+      }) as Parameters<typeof worker.fetch>[0],
       env,
       createExecutionContext(),
     );
@@ -49,7 +49,7 @@ describe("allowlisted Worker operational telemetry", () => {
   it("refuses unbounded or user-controlled diagnostic fields", () => {
     const captured: string[] = [];
     vi.spyOn(console, "log").mockImplementation((value) => {
-      captured.push(String(value));
+      captured.push(JSON.stringify(value));
     });
     emitOperationalEvent({
       kind: "http",

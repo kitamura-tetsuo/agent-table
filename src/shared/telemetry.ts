@@ -89,7 +89,7 @@ function publish(record: Record<string, string | number | null>): void {
   try {
     // Explicit scalar fields only: never serialize a request, error, body,
     // URL, guest/table identifier, or arbitrary user-controlled object.
-    console.log(JSON.stringify({ schema: "agent-table.telemetry.v1", ...record }));
+    console.log({ schema: "agent-table.telemetry.v1", ...record });
   } catch {
     // Observability must not change the operation's authoritative outcome.
   }
