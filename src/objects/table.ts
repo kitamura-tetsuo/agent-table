@@ -675,12 +675,36 @@ export class TableDO extends DurableObject<Env> {
     };
   }
 
-  /**
-   * The seat insert, consumed receipt, and waiting-to-open transition commit
-   * in one SQLite transaction. Cross-DO grant validation precedes the lock.
-   */
+  /** Agent admission continues to require the current connection grant. */
   async redeemInvite(
     actor: VerifiedConnectionActor,
+    encoded: string,
+    requestId: string,
+  ): Promise<TableResult<SafeTableMetadata>> {
+    if (!(await this.verifyActor(actor, "tables:write"))) {
+      return { ok: false, code: "INVITATION_INVALID" };
+    }
+    return this.redeemInviteForGuest(actor.guestId, encoded, requestId);
+  }
+
+  /** Browser admission uses only the independently validated guest session. */
+  async redeemBrowserInvite(
+    credential: BrowserDeletionCredential,
+    encoded: string,
+    requestId: string,
+  ): Promise<TableResult<SafeTableMetadata>> {
+    if (!(await this.verifyBrowserSession(credential))) {
+      return { ok: false, code: "INVITATION_INVALID" };
+    }
+    return this.redeemInviteForGuest(credential.guestId, encoded, requestId);
+  }
+
+  /**
+   * Both entrypoints use the same durable invitation transaction: the seat
+   * insert, consumed receipt, and waiting-to-open transition commit atomically.
+   */
+  private async redeemInviteForGuest(
+    guestId: string,
     encoded: string,
     requestId: string,
   ): Promise<TableResult<SafeTableMetadata>> {
@@ -690,9 +714,6 @@ export class TableDO extends DurableObject<Env> {
       !validInvitationOperationId(requestId) ||
       !this.ctx.id.equals(this.env.TABLES.idFromName(parts.tableId))
     ) {
-      return { ok: false, code: "INVITATION_INVALID" };
-    }
-    if (!(await this.verifyActor(actor, "tables:write"))) {
       return { ok: false, code: "INVITATION_INVALID" };
     }
     const digest = await digestSessionSecret(parts.secret);
@@ -711,7 +732,7 @@ export class TableDO extends DurableObject<Env> {
       const receipt = this.ctx.storage.sql
         .exec<JoinReceiptRow>(
           "SELECT * FROM table_join_receipts WHERE guest_id = ? AND request_id = ?",
-          actor.guestId,
+          guestId,
           requestId,
         )
         .toArray()[0];
@@ -731,17 +752,17 @@ export class TableDO extends DurableObject<Env> {
       if (!invitation || invitation.secret_digest !== digest) {
         return { ok: false, code: "INVITATION_INVALID" } as const;
       }
-      const existing = this.memberFor(actor.guestId);
+      const existing = this.memberFor(guestId);
       if (
         invitation.state === "consumed" &&
-        invitation.consumed_by === actor.guestId &&
+        invitation.consumed_by === guestId &&
         existing?.seat === 2 &&
         table.state === "open"
       ) {
         if (!receipt) {
           this.ctx.storage.sql.exec(
             "INSERT INTO table_join_receipts (guest_id, request_id, invite_id, secret_digest, membership_id) VALUES (?, ?, ?, ?, ?)",
-            actor.guestId,
+            guestId,
             requestId,
             parts.inviteId,
             digest,
@@ -770,13 +791,13 @@ export class TableDO extends DurableObject<Env> {
         "INSERT INTO table_memberships (membership_id, table_id, guest_id, seat, role, joined_at, latest_peer_seq) VALUES (?, ?, ?, 2, 'invitee', ?, ?)",
         membershipId,
         table.table_id,
-        actor.guestId,
+        guestId,
         now,
         table.last_seq,
       );
       this.ctx.storage.sql.exec(
         "UPDATE table_invitations SET state = 'consumed', consumed_by = ?, consumed_at = ?, response_envelope = NULL WHERE invite_id = ? AND state = 'active'",
-        actor.guestId,
+        guestId,
         now,
         parts.inviteId,
       );
@@ -785,14 +806,14 @@ export class TableDO extends DurableObject<Env> {
       );
       this.ctx.storage.sql.exec(
         "INSERT INTO table_join_receipts (guest_id, request_id, invite_id, secret_digest, membership_id) VALUES (?, ?, ?, ?, ?)",
-        actor.guestId,
+        guestId,
         requestId,
         parts.inviteId,
         digest,
         membershipId,
       );
       const updated = this.metadataRow();
-      const member = this.memberFor(actor.guestId);
+      const member = this.memberFor(guestId);
       if (!updated || !member) throw new Error("Incomplete invitation claim");
       return { ok: true, value: this.publicMetadata(updated, member) } as const;
     });
@@ -1257,7 +1278,7 @@ export class TableDO extends DurableObject<Env> {
   }
 
   /** Validate the real browser session independently of an agent token or URL. */
-  private async verifyDeletionBrowser(
+  private async verifyBrowserSession(
     credential: BrowserDeletionCredential,
   ): Promise<boolean> {
     if (
@@ -1378,7 +1399,7 @@ export class TableDO extends DurableObject<Env> {
     credential: BrowserDeletionCredential,
     requestId: string,
   ): Promise<TableResult<DeletionReceipt>> {
-    if (!(await this.verifyDeletionBrowser(credential))) {
+    if (!(await this.verifyBrowserSession(credential))) {
       return { ok: false, code: "NOT_AUTHORIZED" };
     }
     return this.startDeletion(credential.guestId, requestId);
@@ -1429,7 +1450,7 @@ export class TableDO extends DurableObject<Env> {
     ) {
       return { ok: false, code: "INVALID_REQUEST" };
     }
-    if (!(await this.verifyDeletionBrowser(credential))) {
+    if (!(await this.verifyBrowserSession(credential))) {
       return { ok: false, code: "NOT_AUTHORIZED" };
     }
     const guestId = credential.guestId;

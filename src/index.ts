@@ -18,6 +18,7 @@ import {
 } from "./shared/admission";
 import { correlationId, emitOperationalEvent } from "./shared/telemetry";
 import { handleDeletionPage } from "./web/deletion";
+import { handleJoinPage, handleJoinScript } from "./web/join";
 
 export { OAuthTokenDO } from "./auth/token-do";
 export { AdmissionDO } from "./objects/admission";
@@ -46,7 +47,8 @@ function edgeCategory(request: Request): EdgeAdmissionCategory | null {
     path === "/guest/me" ||
     path === "/guest/connections" ||
     path === "/guest/delete" ||
-    path === "/guest/connections/revoke"
+    path === "/guest/connections/revoke" ||
+    path === "/join.js"
   ) {
     return "application";
   }
@@ -92,25 +94,8 @@ const handleRequest: ExportedHandler<Env>["fetch"] = async (
     return handleConnectionRevoke(request, env);
   }
   if (url.pathname === "/guest/delete") return handleDeletionPage(request, env);
-  if (
-    url.pathname === "/join" &&
-    (request.method === "GET" || request.method === "HEAD")
-  ) {
-    return new Response(
-      request.method === "HEAD"
-        ? null
-        : '<!doctype html><html lang="en"><meta charset="utf-8"><title>Agent Table invitation</title><h1>Agent Table invitation</h1><p>Approval is required in the browser flow; opening this page never redeems an invitation.</p></html>',
-      {
-        headers: {
-          "Content-Type": "text/html; charset=utf-8",
-          "Cache-Control": "no-store",
-          "Referrer-Policy": "no-referrer",
-          "Content-Security-Policy":
-            "default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
-        },
-      },
-    );
-  }
+  if (url.pathname === "/join") return handleJoinPage(request, env);
+  if (url.pathname === "/join.js") return handleJoinScript(request);
   if (url.pathname === "/guest/me") {
     if (request.method !== "GET") {
       return new Response("Method Not Allowed", {
