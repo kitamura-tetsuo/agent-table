@@ -228,7 +228,7 @@ test("official SDK deletion requires an explicit same-guest browser POST", async
     ]);
     expect(
       approvalResponse?.status(),
-      await page.locator("body").innerText(),
+      (await page.locator("body").textContent()) ?? "",
     ).toBe(200);
     await expect(page.locator("main")).toContainText("Deletion committed");
     const after = await client.callTool({

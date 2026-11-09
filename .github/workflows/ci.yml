@@ -20,6 +20,8 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm run lint
+      - run: npx biome check scripts/manage-ingress-waf.mjs scripts/manage-ingress-waf.test.mjs scripts/wrangler-sqlite.test.mjs
+      - run: node --test scripts/*.test.mjs
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
