@@ -47,13 +47,17 @@ describe("actual host interoperability evidence gate", () => {
     );
   });
 
-  it("does not certify an owner-observed Deny without persisted no-grant proof", () => {
+  it("accepts a documented host Deny case without certifying the whole suite", () => {
     const result = evaluateHostEvidence(deniedHostRecord);
     expect(result.structurallyValid).toBe(true);
     expect(result.completeRecord).toBe(false);
+    expect(deniedHostRecord.cases.deniedConsent.status).toBe("passed");
+    expect(result.missing).not.toContain(
+      "actual client and server evidence for deniedConsent",
+    );
     expect(result.missing).toContain("exact host product/build identity");
     expect(result.missing).toContain(
-      "actual client and server evidence for deniedConsent",
+      "actual client and server evidence for refreshedToken",
     );
   });
 

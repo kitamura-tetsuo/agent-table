@@ -6,8 +6,9 @@ connected to an isolated staging Worker. Real host-origin create/read operations
 a `refresh_token` exchange and post-browser-revocation HTTP 401 have been
 reported with redacted server receipts. This is **not** a completed nine-case
 host acceptance result: a later **separate** owner-origin Deny has matching
-Cloudflare HTTP 200/302 observations, but persisted no-new-grant proof, independent
-per-case receipt review and a trustworthy deployed Git-SHA mapping remain outstanding. See
+Cloudflare HTTP observations and a same-guest, DO-backed connection-list
+readback with no new grant. Independent paired receipt review and a trustworthy
+deployed Git-SHA mapping remain outstanding. See
 Issue [#23](https://github.com/kitamura-tetsuo/agent-table/issues/23) and
 [PR #41](https://github.com/kitamura-tetsuo/agent-table/pull/41).
 The local MCP SDK/OAuth regression tests cannot replace real-host evidence.
@@ -118,7 +119,7 @@ claim, not a blanket provider label.
 
 | Required host case | Observed result | Evidence and remaining limitation |
 | --- | --- | --- |
-| Denied consent without grant | **HOST DENY OBSERVED; NO-GRANT UNVERIFIED** | Owner selected Deny on another private app and host showed connection failure; Cloudflare `/authorize` 200/302 matches, but no independent grant-state query, callback `access_denied` or post-Deny protected refusal ([redacted edge receipt](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6754509851)) |
+| Denied consent without grant | **PASSED FOR TESTED GUEST (OWNER STATE READBACK)** | Owner selected Deny, host showed connection failure, Cloudflare `/authorize` 200/302 matches and same-guest DO-backed connection list contains the same two prior rows with no new grant ([edge receipt](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6754509851), [state readback](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6754667287)). Direct independent DO export and raw `access_denied` callback were not captured. |
 | Deliberate guest choice/reuse | **OWNER OBSERVED** | Same guest shown across old revoked and fresh active grants; [browser report](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6743908128) |
 | Approved consent | **OBSERVED** | Actual reconnect Allow and `/authorize` 200/302 followed by token 200; [client report](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6743908128), [server status](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6744413982) |
 | Host `create_table` | **HOST TOOL OBSERVED** | Actual private-app tool result; direct independent DO table persistence audit still needed ([client report](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6743636141)) |
@@ -135,10 +136,10 @@ for **new** test runs. The redacted, **incomplete** snapshots
 `evidence.chatgpt-work-2026-11-09.json`,
 `evidence.chatgpt-work-2026-11-10-pinned.json` and
 `evidence.chatgpt-work-2026-11-10-deny.json` preserve **distinct**
-deployment/test or connection windows. Deny remains marked `blocked` until
-persisted no-grant proof is independently reviewed. Their validation cannot
-authenticate external receipts or merge older observations into a newer
-version's acceptance result.
+deployment/test or connection windows. Only the Deny case in its own record
+is `passed` after the owner supplied a same-guest, DO-backed connection list;
+the overall record remains **incomplete**. Validation cannot authenticate
+external receipts or merge older observations into a newer version's result.
 
 ### Source-labeled staging smoke test — 2026-11-09 22:39–22:43 UTC
 
@@ -175,9 +176,9 @@ version's acceptance result.
   23:35:00–23:38:00Z observed three **pre-consent** `/mcp` **401** events,
   OAuth discovery 200, `/oauth/register` **201** at 23:35:35Z, `/authorize`
   **200** at 23:35:51Z and **302** at 23:35:56Z. The narrow sampled result
-  contained no `/oauth/token` request. This is consistent with Deny but does
-  **not** establish post-Deny protected refusal or the absence of a persisted
-  grant. [Redacted PR receipt](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6754509851).
+  contained no `/oauth/token` request. By itself this matches Deny but
+  establishes neither post-Deny protected refusal nor the absence of a
+  persisted grant. [Redacted PR receipt](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6754509851).
 - Wrangler still reports staging version
   `8a44a405-6ed3-4f8d-b392-234313f322dd`, tagged with the full source SHA
   `ffb8676010dae337c08c70db91f29429afbe22e5` and `audit=off`.
@@ -187,13 +188,19 @@ version's acceptance result.
   so a status-only observation cannot prove the branch executed. The version
   annotation is operator-provided provenance rather than a cryptographic
   deployed-bundle attestation.
-- Remaining evidence for this Deny case: independently read the same guest's
-  browser connection-management list after Deny to confirm **no new active
-  grant**; capture a redacted `access_denied` callback if available. Keep this
-  separate from the older cross-version refresh and revocation observations.
+- The owner subsequently supplied the same guest's post-Deny browser
+  `Connection permissions` list: the only rows are the **unchanged** Active
+  connection created at 15:23:34.309Z and Revoked connection created at
+  13:55:38.644Z, both **before** the 23:35:56Z Deny. `GuestDO.listConnections()`
+  reads all that guest's persisted rows (including revoked entries) ordered
+  newest-first, with a 200-row limit; with only two returned, no fresh grant
+  appears for that guest. This is a **server-backed UI readback supplied by the
+  owner**, not an independent raw DO export or captured OAuth callback.
+  The case is marked `passed` with those evidence limitations.
+  [Redacted review](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6754667287).
 
-Before closing #23, independently verify the actual-host Deny leaves no new
-usable grant; compare paired host/Worker/DO grant and table receipts, and ensure
+Before closing #23, independently review the paired host/Worker/DO grant and
+table receipts for all cases, and ensure
 any **new** head-specific acceptance run uses the tagged deployment instead
 of pooling historical refresh/revocation versions.
 Then review and merge only after all six requirements are satisfied. Host

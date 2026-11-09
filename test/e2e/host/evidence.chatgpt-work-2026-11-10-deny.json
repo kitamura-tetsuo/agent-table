@@ -16,9 +16,9 @@
   "syntheticRunTag": "chatgpt_work_20261110_deny",
   "cases": {
     "deniedConsent": {
-      "status": "blocked",
-      "clientObservationRef": "pr41_6754509851_owner_deny",
-      "serverObservationRef": "pr41_6754509851_edge_authorize"
+      "status": "passed",
+      "clientObservationRef": "pr41_6754667287_owner_deny_readback",
+      "serverObservationRef": "pr41_6754667287_guestdo_list_edge"
     },
     "guestChoice": {
       "status": "not-run",
