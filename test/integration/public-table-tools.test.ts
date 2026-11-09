@@ -474,7 +474,6 @@ describe("Privacy-safe invitation and storage telemetry through OAuth/MCP", () =
       await joiner.close();
     }
   });
-
 });
 
 describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () => {
