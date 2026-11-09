@@ -330,7 +330,9 @@ describe("callback egress preflight", () => {
       '<html><div class="cf-error-code">1016</div></html>',
       { status: 530, headers: { server: "Apache" } },
     );
-    expect(await extractSafeCloudflareErrorCode(ordinaryOrigin)).toBeUndefined();
+    expect(
+      await extractSafeCloudflareErrorCode(ordinaryOrigin),
+    ).toBeUndefined();
 
     // These headers and this body can be synthesized by an upstream; no
     // authenticated connection-time policy decision follows from the hint.
@@ -356,8 +358,8 @@ describe("callback egress preflight", () => {
     const encoder = new TextEncoder();
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {
-        controller.enqueue(encoder.encode('<html><p>Error 10'));
-        controller.enqueue(encoder.encode('16</p></html>'));
+        controller.enqueue(encoder.encode("<html><p>Error 10"));
+        controller.enqueue(encoder.encode("16</p></html>"));
       },
       cancel() {
         cancelled = true;
