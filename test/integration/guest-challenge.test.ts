@@ -89,6 +89,53 @@ describe("server-verified guest admission challenge", () => {
     ).toBe(false);
   });
 
+  it("bounds Siteverify body bytes and rejects forged lengths", async () => {
+    const valid = {
+      success: true,
+      hostname: "localhost",
+      action: "create_guest",
+      challenge_ts: new Date().toISOString(),
+    };
+    const oversized = JSON.stringify({ ...valid, padding: "x".repeat(4_096) });
+    const verifier = async () =>
+      new Response(oversized, {
+        headers: { "Content-Type": "application/json" },
+      });
+    // The verifier's response would otherwise be accepted despite the padding.
+    expect(await verifyGuestChallenge(required, TOKEN, verifier)).toBe(false);
+
+    const shortBody = JSON.stringify(valid);
+    const forgedLength = async () =>
+      new Response(shortBody, {
+        headers: {
+          "Content-Type": "application/json",
+          "Content-Length": "5000",
+        },
+      });
+    expect(
+      await verifyGuestChallenge(required, TOKEN, forgedLength),
+    ).toBe(false);
+
+    const streamed = async () =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            const encoder = new TextEncoder();
+            controller.enqueue(encoder.encode(oversized.slice(0, 100)));
+            controller.enqueue(encoder.encode(oversized.slice(100)));
+            controller.close();
+          },
+        }),
+        { headers: { "Content-Type": "application/json" } },
+      );
+    expect(await verifyGuestChallenge(required, TOKEN, streamed)).toBe(false);
+    expect(
+      await verifyGuestChallenge(required, TOKEN, async () =>
+        Response.json(valid),
+      ),
+    ).toBe(true);
+  });
+
   it("renders a challenge and refuses missing proof on real guest routes", async () => {
     const page = await worker.fetch(
       new Request(`${ORIGIN}/guest`) as Parameters<typeof worker.fetch>[0],
