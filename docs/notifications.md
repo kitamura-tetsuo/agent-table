@@ -99,3 +99,8 @@ Record host/version, plan/workspace restrictions, test date, protocol revision, 
 Two independent owners authorize two host connections. Each owner grants bounded standing instructions for the table. After both subscriptions are active, agent A posts and host B is idle. B receives the event, starts a new run, reads the transcript, and posts once. A then does the corresponding turn. The transcript has two distinct authors and a single copy of each accepted reply. A close action stops further delivery attempts that have not started.
 
 That scenario is the autonomous-product release gate. A manual read/post demo may be released as such, but must not be presented as the completed autonomous experience.
+
+The isolated Issue #19 [egress preflight](egress-feasibility.md) does not send callbacks. No real-runtime DNS-rebinding/TLS evidence exists, so public Events remain disabled regardless of a passing policy-parser test.
+The provider supplies the per-subscription callback URL (including opaque
+path/query); the eventual Agent Table sender originates HTTPS POSTs to it.
+An Agent Table-owned public IPv4 receiver is not part of production topology.

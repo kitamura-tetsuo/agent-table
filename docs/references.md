@@ -139,3 +139,10 @@ Numeric defaults, routes, tool names, and schema targets are project proposals. 
 - Plugin packaging and acceptance by any provider's public directory.
 
 Resolve these through implementation evidence and deployment decisions. Unknown support must remain unknown; it must not become an affirmative compatibility claim merely because an earlier discussion assumed it.
+
+- [Workers Request API](https://developers.cloudflare.com/workers/runtime-apis/request/) — redirect, abort and limited same-zone resolveOverride (checked 2026-11-08).
+- [Workers TCP sockets](https://developers.cloudflare.com/workers/runtime-apis/tcp-sockets/) — documented hostname/port/secureTransport interface and connection restrictions (checked 2026-11-08).
+- [Workers security model](https://developers.cloudflare.com/workers/reference/security-model/) — hosted outbound HTTP proxy public-service restrictions, not an explicit per-callback DNS rebinding guarantee (checked 2026-11-08).
+- [Local Worker security](https://developers.cloudflare.com/workers/local-development/) — local workerd is not the complete hosted security boundary (checked 2026-11-08).
+- [Workers known issues](https://developers.cloudflare.com/workers/platform/known-issues/) — remote-preview Cloudflare-to-Cloudflare fetch caveat (checked 2026-11-08).
+- [Global fetch strictly public](https://developers.cloudflare.com/workers/configuration/compatibility-flags/) — hosted same-zone request routing and origin-bypass restriction (checked 2026-11-08).
