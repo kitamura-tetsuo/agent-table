@@ -5,8 +5,9 @@ An owner-authorized ChatGPT Work private MCP app (`Agent Table Test2`) was
 connected to an isolated staging Worker. Real host-origin create/read operations,
 a `refresh_token` exchange and post-browser-revocation HTTP 401 have been
 reported with redacted server receipts. This is **not** a completed nine-case
-host acceptance result: an actual-host Deny test, independent per-case receipt
-review and a trustworthy deployed Git-SHA mapping remain outstanding. See
+host acceptance result: a later **separate** owner-origin Deny has matching
+Cloudflare HTTP 200/302 observations, but persisted no-new-grant proof, independent
+per-case receipt review and a trustworthy deployed Git-SHA mapping remain outstanding. See
 Issue [#23](https://github.com/kitamura-tetsuo/agent-table/issues/23) and
 [PR #41](https://github.com/kitamura-tetsuo/agent-table/pull/41).
 The local MCP SDK/OAuth regression tests cannot replace real-host evidence.
@@ -117,7 +118,7 @@ claim, not a blanket provider label.
 
 | Required host case | Observed result | Evidence and remaining limitation |
 | --- | --- | --- |
-| Denied consent without grant | **NOT RUN** | Must Deny on a separate actual-host test connection, then confirm absent usable grant/protected-call refusal |
+| Denied consent without grant | **HOST DENY OBSERVED; NO-GRANT UNVERIFIED** | Owner selected Deny on another private app and host showed connection failure; Cloudflare `/authorize` 200/302 matches, but no independent grant-state query, callback `access_denied` or post-Deny protected refusal ([redacted edge receipt](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6754509851)) |
 | Deliberate guest choice/reuse | **OWNER OBSERVED** | Same guest shown across old revoked and fresh active grants; [browser report](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6743908128) |
 | Approved consent | **OBSERVED** | Actual reconnect Allow and `/authorize` 200/302 followed by token 200; [client report](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6743908128), [server status](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6744413982) |
 | Host `create_table` | **HOST TOOL OBSERVED** | Actual private-app tool result; direct independent DO table persistence audit still needed ([client report](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6743636141)) |
@@ -131,10 +132,13 @@ claim, not a blanket provider label.
 
 The default `evidence.template.json` intentionally remains entirely blocked
 for **new** test runs. The redacted, **incomplete** snapshots
-`evidence.chatgpt-work-2026-11-09.json` and
-`evidence.chatgpt-work-2026-11-10-pinned.json` preserve two **different**
-deployment/test windows. Their validation cannot authenticate external receipts
-or merge older observations into a newer version's acceptance result.
+`evidence.chatgpt-work-2026-11-09.json`,
+`evidence.chatgpt-work-2026-11-10-pinned.json` and
+`evidence.chatgpt-work-2026-11-10-deny.json` preserve **distinct**
+deployment/test or connection windows. Deny remains marked `blocked` until
+persisted no-grant proof is independently reviewed. Their validation cannot
+authenticate external receipts or merge older observations into a newer
+version's acceptance result.
 
 ### Source-labeled staging smoke test — 2026-11-09 22:39–22:43 UTC
 
@@ -160,10 +164,38 @@ or merge older observations into a newer version's acceptance result.
   Host SaaS build remains undisclosed; the metadata-only schema must reject
   sentinels such as `not-exposed` as a completed build identity.
 
-Before closing #23, run actual-host Deny on another connection without touching
-the existing active connection; independently compare the paired grant/table
-receipts and ensure any **new** head-specific acceptance run uses the tagged
-deployment, rather than pooling the historical refresh/revocation versions.
+### Separate owner-origin Deny attempt — 2026-11-09 23:35 UTC
+
+- The owner configured another ChatGPT Work private MCP connection to the same
+  staging resource, selected **Deny** at OAuth consent and returned to
+  `https://chatgpt.com/plugins`, which displayed a connection failure. This is
+  owner-reported actual-host UI evidence; no raw callback URL was retained.
+  The existing `Agent Table Test2` connection was not revoked.
+- A fresh, read-only Cloudflare HTTP Analytics query for
+  23:35:00–23:38:00Z observed three **pre-consent** `/mcp` **401** events,
+  OAuth discovery 200, `/oauth/register` **201** at 23:35:35Z, `/authorize`
+  **200** at 23:35:51Z and **302** at 23:35:56Z. The narrow sampled result
+  contained no `/oauth/token` request. This is consistent with Deny but does
+  **not** establish post-Deny protected refusal or the absence of a persisted
+  grant. [Redacted PR receipt](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6754509851).
+- Wrangler still reports staging version
+  `8a44a405-6ed3-4f8d-b392-234313f322dd`, tagged with the full source SHA
+  `ffb8676010dae337c08c70db91f29429afbe22e5` and `audit=off`.
+  `src/auth/provider.ts` has no diff between that SHA and the current PR head.
+  In this source, `decision=deny` calls `oauth.denyConsent` and returns 302
+  **before** `guest.createConnection`. Both Deny and Allow can produce 302,
+  so a status-only observation cannot prove the branch executed. The version
+  annotation is operator-provided provenance rather than a cryptographic
+  deployed-bundle attestation.
+- Remaining evidence for this Deny case: independently read the same guest's
+  browser connection-management list after Deny to confirm **no new active
+  grant**; capture a redacted `access_denied` callback if available. Keep this
+  separate from the older cross-version refresh and revocation observations.
+
+Before closing #23, independently verify the actual-host Deny leaves no new
+usable grant; compare paired host/Worker/DO grant and table receipts, and ensure
+any **new** head-specific acceptance run uses the tagged deployment instead
+of pooling historical refresh/revocation versions.
 Then review and merge only after all six requirements are satisfied. Host
 disconnect remains separately identified, not silently presumed. No public
 IPv4 receiver or production deployment is needed for this OAuth gate.

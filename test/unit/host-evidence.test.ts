@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { evaluateHostEvidence, HOST_CASES } from "../e2e/host/evidence";
 import partialHostRecord from "../e2e/host/evidence.chatgpt-work-2026-11-09.json";
+import deniedHostRecord from "../e2e/host/evidence.chatgpt-work-2026-11-10-deny.json";
 import pinnedHostRecord from "../e2e/host/evidence.chatgpt-work-2026-11-10-pinned.json";
 import template from "../e2e/host/evidence.template.json";
 
@@ -43,6 +44,16 @@ describe("actual host interoperability evidence gate", () => {
     );
     expect(result.missing).toContain(
       "actual client and server evidence for createdTable",
+    );
+  });
+
+  it("does not certify an owner-observed Deny without persisted no-grant proof", () => {
+    const result = evaluateHostEvidence(deniedHostRecord);
+    expect(result.structurallyValid).toBe(true);
+    expect(result.completeRecord).toBe(false);
+    expect(result.missing).toContain("exact host product/build identity");
+    expect(result.missing).toContain(
+      "actual client and server evidence for deniedConsent",
     );
   });
 
