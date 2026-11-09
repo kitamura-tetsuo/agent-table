@@ -142,6 +142,8 @@ export function guestChallengeConfiguration(
   return { mode: "required", siteKey: env.TURNSTILE_SITE_KEY as string };
 }
 
+const MAX_CHALLENGE_VERDICT_BYTES = 4 * 1024;
+
 /**
  * Verify a single-use Turnstile token with the official server-side endpoint.
  * A browser verdict, forwarded IP address or unrecognized response is never proof.
@@ -190,7 +192,7 @@ export async function verifyGuestChallenge(
     const declaredBytes = response.headers.get("Content-Length");
     if (
       declaredBytes !== null &&
-      (!/^\\d{1,10}$/.test(declaredBytes) ||
+      (!/^\d{1,10}$/.test(declaredBytes) ||
         Number(declaredBytes) > MAX_CHALLENGE_VERDICT_BYTES)
     ) {
       return false;
