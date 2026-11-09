@@ -515,13 +515,20 @@ def run_probe(test_id: str, probe_token: str) -> dict:
         f"x-probe-test-id: {test_id}",
         "--config",
         "-",
+        "--max-time",
+        "15",
         url,
     ]
     # Curl accepts one config directive per line. This token is not placed in
     # argv, environment variables, or a temporary file.
     config = f'header = "Authorization: Bearer {probe_token}"\n'
     for _ in range(3):
-        res = subprocess.run(cmd, input=config, capture_output=True, text=True, check=False)
+        try:
+            res = subprocess.run(
+                cmd, input=config, capture_output=True, text=True, check=False, timeout=20
+            )
+        except subprocess.TimeoutExpired:
+            continue
         if res.returncode != 0:
             continue
         parts = res.stdout.split("\r\n\r\n", 1)
