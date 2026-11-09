@@ -34,7 +34,8 @@ function edgeCategory(request: Request): EdgeAdmissionCategory | null {
     path === "/authorize" ||
     path === "/oauth/token" ||
     path === "/oauth/revoke" ||
-    path.startsWith("/.well-known/oauth-")
+    path.startsWith("/.well-known/oauth-") ||
+    path === "/.well-known/oauth-protected-resource/mcp"
   ) {
     return "protocol";
   }
