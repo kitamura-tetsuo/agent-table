@@ -259,7 +259,9 @@ export async function handleAuthorize(
       headers.set("Referrer-Policy", "same-origin");
       headers.set(
         "Content-Security-Policy",
-        "default-src 'none'; style-src 'none'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+        // Chromium checks form-action on the OAuth POST's cross-origin 302, too.
+        // Only allow the redirect origin already validated for this client.
+        `default-src 'none'; style-src 'none'; form-action 'self' ${new URL(details.redirectUri).origin}; base-uri 'none'; frame-ancestors 'none'`,
       );
       headers.append(
         "Set-Cookie",
