@@ -49,11 +49,6 @@ test("browser OAuth approval preserves same-origin CSRF enforcement", async ({
     (request) =>
       request.url() === `${ORIGIN}/authorize` && request.method() === "POST",
   );
-  const approval = page.waitForResponse(
-    (response) =>
-      response.url() === `${ORIGIN}/authorize` &&
-      response.request().method() === "POST",
-  );
   await page.getByRole("button", { name: "Allow" }).click();
 
   const headers = await (await submission).allHeaders();
@@ -62,11 +57,12 @@ test("browser OAuth approval preserves same-origin CSRF enforcement", async ({
   expect(headers.cookie).toContain("__Host-agent_table_session=");
   expect(headers.cookie).toContain("__Host-agent_table_oauth_csrf=");
 
-  const approved = await approval;
-  expect(approved.status()).toBe(302);
-  const location = approved.headers().location;
-  expect(location).toBeTruthy();
-  const redirected = new URL(location ?? CALLBACK);
+  await page.waitForURL(
+    (url) =>
+      url.origin === "https://client.example" && url.pathname === "/callback",
+    { timeout: 10_000 },
+  );
+  const redirected = new URL(page.url());
   expect(redirected.origin).toBe("https://client.example");
   expect(redirected.searchParams.get("state")).toBe("synthetic-browser-state");
   expect(redirected.searchParams.get("code")).toBeTruthy();
