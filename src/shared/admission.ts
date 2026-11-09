@@ -424,12 +424,7 @@ export async function checkEdgeAdmission(
   // Cloudflare adds CF-Worker after WAF rule evaluation. Its value is not
   // trusted as identity; every present value shares one durable Worker quota.
   if (request.headers.has("CF-Worker")) {
-    return consumeAdmission(
-      env,
-      "edge-v1:worker-subrequest",
-      category,
-      limit,
-    );
+    return consumeAdmission(env, "edge-v1:worker-subrequest", category, limit);
   }
   return null;
 }
