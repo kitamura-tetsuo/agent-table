@@ -410,6 +410,45 @@ describe("cross-isolate admission policy", () => {
     ).not.toBe(429);
   });
 
+  it("does not consume the shared Worker budget when source admission already refused", async () => {
+    const limited: Env = { ...env, EDGE_DCR_RATE_PER_MINUTE: "2" };
+    const register = (source: string, workerHeader: boolean) =>
+      dispatch(limited, "/oauth/register", {
+        method: "POST",
+        headers: {
+          "CF-Connecting-IP": source,
+          ...(workerHeader ? { "CF-Worker": "spoofed.example" } : {}),
+          "Content-Type": "application/json",
+        },
+        body: "{}",
+      });
+    const sourceA = "192.0.2.94";
+    const sourceB = "192.0.2.95";
+    const sourceC = "192.0.2.96";
+    expect((await register(sourceA, true)).status).not.toBe(429);
+    expect((await register(sourceA, false)).status).not.toBe(429);
+    const sourceDenied = await register(sourceA, true);
+    expect(sourceDenied.status).toBe(429);
+    expect((await register(sourceB, true)).status).not.toBe(429);
+    const workerDenied = await register(sourceC, true);
+    expect(workerDenied.status).toBe(429);
+    expect(workerDenied.headers.get("Retry-After")).toMatch(/^[1-9][0-9]*$/);
+
+    const workerStub = await admissionStub(
+      limited,
+      "edge-v1:worker-subrequest",
+    );
+    await runInDurableObject(workerStub, async (_instance, state) => {
+      expect(
+        state.storage.sql
+          .exec<{ count: number }>(
+            "SELECT COUNT(*) AS count FROM admission_hits WHERE category = 'dcr'",
+          )
+          .one().count,
+      ).toBe(2);
+    });
+  });
+
   it("does not let a forged CF-Worker header bypass the direct source budget", async () => {
     const limited: Env = { ...env, EDGE_DCR_RATE_PER_MINUTE: "1" };
     const source = "192.0.2.93";

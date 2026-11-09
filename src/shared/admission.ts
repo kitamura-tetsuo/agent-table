@@ -412,25 +412,26 @@ export async function checkEdgeAdmission(
     EDGE_RATE_SETTINGS[category],
     EDGE_DEFAULTS[category],
   );
-  // Cloudflare adds CF-Worker to fetch() subrequests after WAF header evaluation.
-  // Its value is not an authorization identity: any present value charges the
-  // same durable bucket. This prevents source-IP rotation within same-zone
-  // Workers and does not let a forged header evade the normal IP quota.
-  if (request.headers.has("CF-Worker")) {
-    const workerRefusal = await consumeAdmission(
-      env,
-      "edge-v1:worker-subrequest",
-      category,
-      limit,
-    );
-    if (workerRefusal) return workerRefusal;
-  }
-  return consumeAdmission(
+  // Charge the source first: requests already refused by the per-source
+  // budget cannot drain the shared Worker bucket by forging CF-Worker.
+  const sourceRefusal = await consumeAdmission(
     env,
     `edge-v1:${edgeSource(request)}`,
     category,
     limit,
   );
+  if (sourceRefusal) return sourceRefusal;
+  // Cloudflare adds CF-Worker after WAF rule evaluation. Its value is not
+  // trusted as identity; every present value shares one durable Worker quota.
+  if (request.headers.has("CF-Worker")) {
+    return consumeAdmission(
+      env,
+      "edge-v1:worker-subrequest",
+      category,
+      limit,
+    );
+  }
+  return null;
 }
 
 /**
