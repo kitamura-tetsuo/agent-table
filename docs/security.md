@@ -156,8 +156,26 @@ As of 2026-11-09, Remote Preview tests with sanitized test IDs verified positive
 reachability through Cloudflare Tunnel, opaque query handling, redirect refusal,
 10-second deadline abort, 64 KiB response streaming cap, TLS certificate hostname
 mismatch rejection (correlating OpenSSL mismatch with HTTP 526), and active edge
-proxy refusal (HTTP 530) when an origin DNS record resolves to loopback (127.0.0.1)
-or RFC 1918 (10.0.0.1). However, in-flight TOCTOU DNS rebinding within a single
-attempt remains unproven on hosted Workers, and native `fetch` provides no API to
-inspect or assert the actual connected IP address. REQ-002 and REQ-006 remain
-BLOCKED; `ENABLE_OPENAI_EVENTS=false` and draft PR status are strictly preserved.
+proxy origin DNS refusal (HTTP 530 Error 1016) when an origin DNS record resolves
+to loopback (127.0.0.1), RFC 1918 (10.0.0.1), or NXDOMAIN. Non-delivery to the host's
+tunnel receiver during DNS-only private IP resolution demonstrates tunnel non-delivery,
+not absence of connection to the Cloudflare edge server's internal loopback.
+
+In-flight TOCTOU DNS rebinding within a single attempt remains unproven on hosted
+Workers (NOT RUN / BLOCKED due to lack of a programmable authoritative DNS fixture).
+Evidence is strictly classified across four tiers: directly OBSERVED on Hosted Workers,
+OFFICIAL GUARANTEE documented by Cloudflare, SOURCE-BASED INFERENCE from workerd,
+and NOT RUN / BLOCKED.
+
+The test infrastructure and candidate transport have been hardened:
+- P0: `scripts/egress_experiments.py` enforces DNS collision abort, full tunnel ingress
+  snapshot and transactional rollback, isolated process-group termination (zero `pkill`),
+  atomic 0600 `.dev.vars` preservation, and 7/7 automated fault-injection unit tests.
+- P1: `extractSafeCloudflareErrorCode()` enforces a 4 KiB read cap with immediate stream
+  cancellation, shares the overall 10-second deadline, validates authentic Cloudflare
+  edge headers (`server: cloudflare`, `cf-ray`, `cf-error-type`) against external origin
+  spoofing, and isolates diagnostic parsing exclusively to probe/test callers while
+  keeping the production sender free of 5xx body/header inspection.
+
+REQ-002 and REQ-006 remain BLOCKED; `ENABLE_OPENAI_EVENTS=false` and draft PR status
+are strictly preserved. No production deployment or public Events release is authorized.

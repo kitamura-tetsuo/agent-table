@@ -248,26 +248,73 @@ async function readBoundedResponse(
 
 /**
  * Safely inspect a 5xx upstream response for a Cloudflare 1xxx error code.
- * Reads at most 4 KiB and returns only the matched integer code without
- * logging or echoing headers, URLs, or response bodies.
+ *
+ * Distinguishes genuine Cloudflare edge error responses from external origin responses
+ * by verifying Cloudflare platform edge headers (server: cloudflare or cf-ray, plus
+ * official cf-error-type / cf-error-origin headers).
+ *
+ * Reads at most 4 KiB within the shared overall deadline and returns only the matched
+ * integer code without logging or echoing headers, URLs, or response bodies.
  */
-async function extractSafeCloudflareErrorCode(
+export async function extractSafeCloudflareErrorCode(
   response: Response,
+  deadline?: Promise<never>,
 ): Promise<number | undefined> {
+  // Only 5xx status codes represent origin/edge errors
+  if (response.status < 500 || response.status >= 600) {
+    return undefined;
+  }
+
+  // Verify Cloudflare edge response indicators to prevent origin spoofing
+  const serverHeader = response.headers.get("server")?.toLowerCase() ?? "";
+  const cfRay = response.headers.get("cf-ray");
+  const isCloudflareEdge =
+    serverHeader.includes("cloudflare") || cfRay !== null;
+  if (!isCloudflareEdge) {
+    // External origin response; untrusted / spoofed 1xxx code refused
+    return undefined;
+  }
+
+  // Official Cloudflare edge diagnostic headers
+  const cfErrorType = response.headers.get("cf-error-type");
+  if (cfErrorType && /^1\d{3}$/.test(cfErrorType)) {
+    return Number(cfErrorType);
+  }
+
   const headerCode = response.headers.get("cf-error-code");
   if (headerCode && /^1\d{3}$/.test(headerCode)) {
     return Number(headerCode);
   }
+
   if (response.statusText && /^1\d{3}$/.test(response.statusText)) {
     return Number(response.statusText);
   }
+
+  // Inspect HTML/text body only if content-type is compatible
+  const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
+  if (
+    contentType &&
+    !contentType.includes("text/html") &&
+    !contentType.includes("text/plain") &&
+    !contentType.includes("application/xhtml+xml")
+  ) {
+    return undefined;
+  }
+
   if (!response.body) return undefined;
+
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   try {
-    const reader = response.body.getReader();
-    const { value } = await reader.read();
-    reader.releaseLock();
-    if (value && value.byteLength > 0) {
-      const text = new TextDecoder().decode(value.subarray(0, 4096));
+    reader = response.body.getReader();
+    const readPromise = reader.read();
+    const next = deadline
+      ? await Promise.race([readPromise, deadline])
+      : await readPromise;
+
+    if (next.value && next.value.byteLength > 0) {
+      // Bounded decode: inspect at most 4096 bytes
+      const slice = next.value.subarray(0, 4096);
+      const text = new TextDecoder().decode(slice);
       const match =
         text.match(/class=["']cf-error-code["']>\s*(1\d{3})\s*</i) ??
         text.match(/data-translate=["']error_(1\d{3})["']/i) ??
@@ -282,14 +329,26 @@ async function extractSafeCloudflareErrorCode(
       }
     }
   } catch {
-    // Fail closed with undefined on read errors; do not block or throw
+    // Fail closed with undefined on read/timeout/abort errors; never throw or leak
+  } finally {
+    if (reader) {
+      void reader.cancel().catch(() => undefined);
+      reader.releaseLock();
+    }
   }
   return undefined;
 }
 
+export interface SendVerifiedHttpsOptions {
+  /**
+   * Include opt-in Cloudflare 1xxx diagnostic error code inspection for 5xx.
+   * Diagnostic / probe worker use only; defaults to false in production.
+   */
+  diagnostics?: boolean;
+}
+
 /**
  * Candidate production sender. Only an explicitly reviewed destination may
-
  * reach the global Workers fetch; no per-request proxy, resolveOverride,
  * socket fallback, automatic redirect or retry is permitted.
  *
@@ -301,6 +360,7 @@ export async function sendVerifiedHttps(
   raw: string,
   reviewed: readonly ReviewedCallbackTarget[],
   request: CallbackRequest,
+  options?: SendVerifiedHttpsOptions,
 ): Promise<CallbackTransportOutcome> {
   const destination = validateReviewedCallbackDestination(raw, reviewed);
   if (!destination.ok) return destination;
@@ -338,9 +398,21 @@ export async function sendVerifiedHttps(
     )
       return { ok: false, reason: "redirect-refused" };
     if (response.status < 200 || response.status >= 300) {
+      if (controller.signal.aborted) {
+        return { ok: false, reason: "deadline" };
+      }
       let cfErrorCode: number | undefined;
-      if (response.status >= 500 && response.status < 600) {
-        cfErrorCode = await extractSafeCloudflareErrorCode(response);
+      if (
+        options?.diagnostics &&
+        response.status >= 500 &&
+        response.status < 600
+      ) {
+        cfErrorCode = await extractSafeCloudflareErrorCode(response, deadline);
+        if (controller.signal.aborted) {
+          return { ok: false, reason: "deadline" };
+        }
+      } else if (response.body) {
+        void response.body.cancel().catch(() => undefined);
       }
       controller.abort();
       return {

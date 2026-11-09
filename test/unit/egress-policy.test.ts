@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   callbackTransportReadiness,
+  extractSafeCloudflareErrorCode,
   MAX_CALLBACK_REQUEST_BYTES,
   sendVerifiedHttps,
   validateReviewedCallbackDestination,
@@ -200,14 +201,20 @@ describe("callback egress preflight", () => {
     }
   });
 
-  it("safely extracts Cloudflare 1xxx error code on 5xx responses without leaking bodies", async () => {
+  it("safely extracts Cloudflare 1xxx error code on 5xx responses with diagnostics enabled", async () => {
     const spy = vi.spyOn(globalThis, "fetch");
     try {
-      // 1. Error 1000 in HTML body
+      // 1. Error 1000 in HTML body from Cloudflare edge
       spy.mockResolvedValueOnce(
         new Response(
           '<!DOCTYPE html><html><head><title>DNS points to prohibited IP | Error 1000</title></head><body><div class="cf-error-details"><h1>Error 1000</h1><p>DNS points to prohibited IP</p></div></body></html>',
-          { status: 530 },
+          {
+            status: 530,
+            headers: {
+              server: "cloudflare",
+              "cf-ray": "mock-ray-1000",
+            },
+          },
         ),
       );
       expect(
@@ -215,6 +222,7 @@ describe("callback egress preflight", () => {
           "https://events.provider.example.org/callback",
           reviewed,
           { method: "POST", body: new Uint8Array([1]) },
+          { diagnostics: true },
         ),
       ).toEqual({
         ok: false,
@@ -227,7 +235,61 @@ describe("callback egress preflight", () => {
       spy.mockResolvedValueOnce(
         new Response("origin dns error", {
           status: 530,
-          headers: { "cf-error-code": "1016" },
+          headers: {
+            server: "cloudflare",
+            "cf-ray": "mock-ray-1016",
+            "cf-error-code": "1016",
+          },
+        }),
+      );
+      expect(
+        await sendVerifiedHttps(
+          "https://events.provider.example.org/callback",
+          reviewed,
+          { method: "POST", body: new Uint8Array([1]) },
+          { diagnostics: true },
+        ),
+      ).toEqual({
+        ok: false,
+        reason: "upstream-non-2xx",
+        status: 530,
+        cfErrorCode: 1016,
+      });
+
+      // 3. Error 1016 with official cf-error-type header
+      spy.mockResolvedValueOnce(
+        new Response("origin dns error", {
+          status: 530,
+          headers: {
+            server: "cloudflare",
+            "cf-ray": "mock-ray-type-1016",
+            "cf-error-type": "1016",
+          },
+        }),
+      );
+      expect(
+        await sendVerifiedHttps(
+          "https://events.provider.example.org/callback",
+          reviewed,
+          { method: "POST", body: new Uint8Array([1]) },
+          { diagnostics: true },
+        ),
+      ).toEqual({
+        ok: false,
+        reason: "upstream-non-2xx",
+        status: 530,
+        cfErrorCode: 1016,
+      });
+
+      // 4. Production mode: diagnostics disabled by default ignores cf-error-code
+      spy.mockResolvedValueOnce(
+        new Response("origin dns error", {
+          status: 530,
+          headers: {
+            server: "cloudflare",
+            "cf-ray": "mock-ray-prod",
+            "cf-error-code": "1016",
+          },
         }),
       );
       expect(
@@ -240,10 +302,9 @@ describe("callback egress preflight", () => {
         ok: false,
         reason: "upstream-non-2xx",
         status: 530,
-        cfErrorCode: 1016,
       });
 
-      // 3. Generic 5xx without 1xxx code
+      // 5. Generic 5xx without 1xxx code
       spy.mockResolvedValueOnce(
         new Response("internal server error", { status: 500 }),
       );
@@ -252,6 +313,7 @@ describe("callback egress preflight", () => {
           "https://events.provider.example.org/callback",
           reviewed,
           { method: "POST", body: new Uint8Array([1]) },
+          { diagnostics: true },
         ),
       ).toEqual({
         ok: false,
@@ -259,6 +321,139 @@ describe("callback egress preflight", () => {
         status: 500,
       });
     } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("distinguishes external origin spoofed error pages from authentic Cloudflare edge errors", async () => {
+    // External origin server returns status 530 with spoofed Error 1016 HTML but no Cloudflare headers
+    const spoofedResponse = new Response(
+      '<!DOCTYPE html><html><body><div class="cf-error-code">1016</div></body></html>',
+      {
+        status: 530,
+        headers: {
+          server: "Apache/2.4.41 (Ubuntu)",
+        },
+      },
+    );
+    expect(
+      await extractSafeCloudflareErrorCode(spoofedResponse),
+    ).toBeUndefined();
+
+    // Authenticated Cloudflare edge response returns 1016
+    const authenticResponse = new Response(
+      '<!DOCTYPE html><html><body><div class="cf-error-code">1016</div></body></html>',
+      {
+        status: 530,
+        headers: {
+          server: "cloudflare",
+          "cf-ray": "authentic-ray-1016",
+        },
+      },
+    );
+    expect(await extractSafeCloudflareErrorCode(authenticResponse)).toBe(1016);
+  });
+
+  it("bounds 5xx diagnostic reading against huge chunks, infinite streams, and stream aborts", async () => {
+    // 1. Huge single chunk (1 MiB): parsed only first 4 KiB, stream cancelled immediately
+    let streamCancelled = false;
+    const hugeChunk = new Uint8Array(1024 * 1024);
+    const prefix = new TextEncoder().encode(
+      '<!DOCTYPE html><html><body><div class="cf-error-code">1016</div>',
+    );
+    hugeChunk.set(prefix, 0);
+
+    const hugeStream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(hugeChunk);
+      },
+      cancel() {
+        streamCancelled = true;
+      },
+    });
+
+    const hugeResponse = new Response(hugeStream, {
+      status: 530,
+      headers: {
+        server: "cloudflare",
+        "cf-ray": "ray-huge",
+      },
+    });
+    expect(await extractSafeCloudflareErrorCode(hugeResponse)).toBe(1016);
+    expect(streamCancelled).toBe(true);
+
+    // 2. Non-ending / slow stream respects shared deadline
+    let hangingCancelled = false;
+    const hangingStream = new ReadableStream<Uint8Array>({
+      pull() {
+        return new Promise(() => {}); // never resolves
+      },
+      cancel() {
+        hangingCancelled = true;
+      },
+    });
+    const hangingResponse = new Response(hangingStream, {
+      status: 530,
+      headers: {
+        server: "cloudflare",
+        "cf-ray": "ray-hanging",
+      },
+    });
+    const immediateTimeout = Promise.reject(new Error("deadline"));
+    expect(
+      await extractSafeCloudflareErrorCode(hangingResponse, immediateTimeout),
+    ).toBeUndefined();
+    expect(hangingCancelled).toBe(true);
+
+    // 3. Aborted / errored stream handles cleanly without unhandled rejection
+    const erroredStream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.error(new Error("network stream aborted"));
+      },
+    });
+    const erroredResponse = new Response(erroredStream, {
+      status: 530,
+      headers: {
+        server: "cloudflare",
+        "cf-ray": "ray-aborted",
+      },
+    });
+    expect(
+      await extractSafeCloudflareErrorCode(erroredResponse),
+    ).toBeUndefined();
+  });
+
+  it("applies overall 10s deadline when 5xx response body hangs during diagnostic extraction", async () => {
+    const spy = vi.spyOn(globalThis, "fetch");
+    try {
+      vi.useFakeTimers();
+      const hangingStream = new ReadableStream<Uint8Array>({
+        pull() {
+          return new Promise(() => {}); // never resolves
+        },
+      });
+      spy.mockResolvedValueOnce(
+        new Response(hangingStream, {
+          status: 530,
+          headers: {
+            server: "cloudflare",
+            "cf-ray": "ray-timeout",
+          },
+        }),
+      );
+
+      const promise = sendVerifiedHttps(
+        "https://events.provider.example.org/callback",
+        reviewed,
+        { method: "POST", body: new Uint8Array([1]) },
+        { diagnostics: true },
+      );
+
+      await vi.advanceTimersByTimeAsync(10_000);
+      const outcome = await promise;
+      expect(outcome).toEqual({ ok: false, reason: "deadline" });
+    } finally {
+      vi.useRealTimers();
       spy.mockRestore();
     }
   });

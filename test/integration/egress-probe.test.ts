@@ -90,7 +90,13 @@ describe("isolated diagnostic fetch probe (not connection-boundary proof)", () =
       spy.mockResolvedValueOnce(
         new Response(
           "<!DOCTYPE html><html><body><h1>Error 1000</h1><p>DNS points to prohibited IP</p></body></html>",
-          { status: 530 },
+          {
+            status: 530,
+            headers: {
+              server: "cloudflare",
+              "cf-ray": "mock-ray-1000",
+            },
+          },
         ),
       );
       const probe530 = await probe.fetch(

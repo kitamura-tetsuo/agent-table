@@ -397,11 +397,25 @@ On temporary subdomain `egress-switch-issue19.outliner-online.com`, the full mul
    - Cloudflare edge proxy actively refused the request with HTTP 530 Error 1016.
 5. **Step 5: Confirm Zero Connection / Data to Private IP & RFC 1918 Switch:**
    - Receiver logs confirmed zero HTTP requests arrived at `127.0.0.1:8790` during the private IP test.
+   - **Crucial Boundary Clarification:** The fact that zero requests arrived at the Ubuntu host's `127.0.0.1:8790` listener demonstrates non-delivery through Cloudflare Tunnel. However, because the DNS record was grey-clouded (`proxied: false`), traffic was not routed to the Tunnel. This observation does **not** directly prove non-connection to the Cloudflare edge server's own loopback or internal interface.
    - In an isolated session verifying RFC 1918 `10.0.0.1`, `sendVerifiedHttps()` similarly returned HTTP 502 with `upstreamStatus: 530` and `cfErrorCode: 1016` (`test-10-isolated`).
 6. **Step 6: Restore DNS & Tunnel Configuration:**
    - Temporary DNS record deleted; re-query confirmed `[]`.
    - Tunnel ingress configuration restored to `probe.outliner-online.com` and `http_status:404`.
    - Baseline `probe.outliner-online.com` tested and confirmed healthy (HTTP 204).
+
+### Task B.2: DNS-only Public IP Positive Control Assessment
+
+In the Step 1 → Step 2 switch above, the target transitioned from `proxied: true` (Tunnel CNAME) to `proxied: false` (private A record). This altered Cloudflare's proxy mode in addition to the DNS target address.
+
+A feasibility audit was conducted to evaluate performing a positive control against a customer-controlled **DNS-only (`proxied: false`) public HTTPS destination** without altering the proxy mode:
+1. **Infrastructure Audit:**
+   - The local Ubuntu test host is situated behind NAT and relies on Cloudflare Tunnel (`cloudflared`); it does not own a static public IPv4 address or listen on public HTTPS port 443 with valid Web PKI certificates.
+   - Operator and project guidelines strictly prohibit procuring a new public IPv4 VPS or external server.
+   - The operating anchor `probe.outliner-online.com` is protected and cannot be changed from `proxied: true`.
+2. **Determination:**
+   - Because no authorized customer-controlled DNS-only public HTTPS fixture is available with accessible receiver logging to correlate Worker `testId` / Ray ID, this specific control is classified as **NOT RUN / BLOCKED**.
+   - Public third-party endpoints (e.g. `badssl.com`) confirm public DNS-only TLS reachability at the transport level (HTTP 405), but lack server-side receiver receipts under operator custody.
 
 ### Task C: In-flight DNS Rebinding Investigation
 
@@ -425,13 +439,37 @@ A rigorous feasibility assessment for in-flight (same-request) DNS rebinding was
 
 ### Task D: Cloudflare Connection Boundary Evidence Matrix
 
-| Check / Requirement | Code Evidence (`workerd` source) | Empirical Observation (Hosted Remote Preview) | Inference / Technical Limitation |
-| --- | --- | --- | --- |
-| **DNS resolution validated at connect time** | `src/rust/cxx/kj-hyper/client.rs` & `src/workerd/server/server/services/network.rs`: `connect_allowed(addr)` explicitly rejects loopback, RFC 1918, link-local, multicast before connection. | Remote Preview actively refused connections to `127.0.0.1` and `10.0.0.1` with HTTP 530 Error 1016. | **Inference:** Hosted edge proxy applies origin DNS policy blocking private IPs. **Limitation:** JavaScript `fetch()` API does not expose connected IP or socket metadata. |
-| **Inspected IP matches TCP destination (no TOCTOU)** | Hyper client dials the validated `SocketAddr` directly. There is no second hostname lookup between inspection and TCP connect. In userland (`src/notifications/egress.ts`), there is no user-space DNS preflight. | Switching DNS to private IP prevented all traffic from reaching origin receiver. | **Inference:** Single resolution-to-connect pipeline in workerd prevents TOCTOU. **Limitation:** In-flight rebinding on hosted edge cannot be proven without authoritative per-query alternating DNS. |
-| **In-flight DNS Rebinding defense** | `workerd` connects directly to resolved `SocketAddr`. No second DNS resolution in single request. | Not directly tested on hosted edge due to lack of alternating DNS fixture. | **BLOCKED:** Lacks live hosted empirical evidence of alternating-query rebinding defense. |
-| **TLS certificate validated against original hostname** | Web PKI validation in BoringSSL / hyper enforces SAN / CN matching SNI hostname. | Remote Preview against `wrong.host.badssl.com` resulted in immediate TLS handshake abort and HTTP 526 (Invalid SSL Certificate). | **Limitation:** Application Worker code only receives HTTP 526; it cannot inspect presented certificate chain or SAN attributes. |
-| **Cloudflare-fronted HTTPS callback support** | Direct TCP sockets (`cloudflare:sockets`) are blocked to Cloudflare IPs. Workers `fetch` with `global_fetch_strictly_public` is the documented platform transport. | Remote Preview to `https://probe.outliner-online.com/egress-check/positive` via Cloudflare Tunnel succeeded with HTTP 200 (`reachable`, upstream HTTP 204). | **PASS:** Supported for Cloudflare-fronted provider endpoints via native `fetch`. |
+Strict classification taxonomy:
+- `OBSERVED`: Empirically verified on Hosted Workers (Remote Preview).
+- `OFFICIAL GUARANTEE`: Explicitly guaranteed in Cloudflare's official product documentation.
+- `SOURCE-BASED INFERENCE`: Inferred from open-source `workerd` code or architecture.
+- `NOT RUN / BLOCKED`: Unverified due to lack of environment/platform fixtures.
+
+| Check / Requirement | Code Evidence (`workerd` source) | Hosted Observation (Remote Preview) | Cloudflare Platform Guarantee | Strict Classification |
+| --- | --- | --- | --- | --- |
+| **DNS resolution validated at connect time** | `src/rust/cxx/kj-hyper/client.rs` & `src/workerd/server/server/services/network.rs`: `connect_allowed(addr)` explicitly rejects loopback, RFC 1918, link-local, multicast before connection. | Remote Preview actively refused connections to `127.0.0.1` and `10.0.0.1` with HTTP 530 Error 1016. | Documented that outbound Workers traffic routes to public Internet or zone origin; Error 1016 indicates Origin DNS error. | **OBSERVED** (edge proxy HTTP 530 refusal) / **SOURCE-BASED INFERENCE** (workerd `connect_allowed`). Notice: Error 1016 is an origin DNS error and does not prove connection-time socket pinning. |
+| **Inspected IP matches TCP destination (no TOCTOU)** | Hyper client dials the validated `SocketAddr` directly. No second hostname lookup occurs between inspection and TCP connect. In userland (`src/notifications/egress.ts`), there is no user-space DNS preflight. | Switching DNS from Tunnel to private IP prevented traffic from reaching origin receiver. (Receiver non-delivery to `127.0.0.1:8790` proves Tunnel non-delivery, not Cloudflare host loopback non-connection). | None documented for dynamic callback IP pinning. | **SOURCE-BASED INFERENCE** (workerd single resolution-to-connect pipeline). |
+| **In-flight DNS Rebinding defense** | `workerd` connects directly to resolved `SocketAddr`. No second DNS resolution within a single request. | Not directly tested on hosted edge due to lack of alternating authoritative DNS fixture. | Cloudflare does not document an explicit SLA or API guarantee against in-flight rebinding. | **NOT RUN / BLOCKED**. |
+| **TLS certificate validated against original hostname** | Web PKI validation in BoringSSL / hyper enforces SAN / CN matching SNI hostname. | Remote Preview against `wrong.host.badssl.com` resulted in immediate TLS handshake abort and HTTP 526 (Invalid SSL Certificate). | Web PKI certificate validation is enforced for native `fetch()`. | **OBSERVED** (HTTP 526 on hostname mismatch) / **OFFICIAL GUARANTEE** (fetch Web PKI). Limitation: Runtime cannot inspect certificate chain or SANs. |
+| **Cloudflare-fronted HTTPS callback support** | Direct TCP sockets (`cloudflare:sockets`) are blocked to Cloudflare IPs. Workers `fetch` with `global_fetch_strictly_public` is the documented platform transport. | Remote Preview to `https://probe.outliner-online.com/egress-check/positive` via Cloudflare Tunnel succeeded with HTTP 200 (`reachable`, upstream HTTP 204). | Documented platform architecture for reaching Cloudflare-fronted targets via `fetch`. | **OBSERVED** & **OFFICIAL GUARANTEE**. |
+
+---
+
+### Hardened Infrastructure & Diagnostic Updates (2026-11-09)
+
+1. **P0: Experiment Script Safety (`scripts/egress_experiments.py`):**
+   - **Collision-Safe DNS:** `create_dns_record()` inspects `list_dns_records()` and raises `DnsCollisionError` if records already exist. Pre-existing records are never deleted; only records created in the active session (`created_dns_records`) are deleted on cleanup.
+   - **Tunnel Ingress Snapshot & Restore:** `snapshot_tunnel_ingress()` fetches the full active configuration via `cf tunnels config get`, checks for collision (`TunnelCollisionError`), inserts temporary rules before the catch-all rule, and restores the exact original ingress list on exit.
+   - **Process Group Termination:** Completely eliminated `pkill -f "wrangler dev --remote"`. Wrangler is spawned with `start_new_session=True` and stopped via process-group signals (`os.killpg(pgid, signal.SIGTERM)` / `SIGKILL`), isolating teardown exclusively to the spawned PID tree.
+   - **Secure .dev.vars Lifecycle:** Pre-existing `.dev.vars` is backed up in memory. Temporary secret files are created with `0o600` permissions via `os.open`, and restored or securely unlinked on exit.
+   - **Transactional Rollback:** All operations are protected by `SafeExperimentSession` with `try/finally` and signal handlers (`SIGINT`, `SIGTERM`).
+   - **Fault-Injection Test Suite:** 7 automated unit tests in `test/unit/test_egress_experiments.py` verify collision abort, tunnel update failure rollback, process group kill, and cleanup error resilience under fault injection.
+
+2. **P1: Safe 5xx Diagnostic Parsing (`src/notifications/egress.ts`):**
+   - **Bounded Stream Reading:** Reads at most 4 KiB and immediately cancels the underlying stream reader in `finally`, protecting against unbounded buffering and memory exhaustion on huge single chunks (tested up to 1 MiB).
+   - **Shared Deadline Enforcement:** Diagnostic body extraction races against the common 10-second request deadline. Hanging or slow streams abort promptly, returning `{ ok: false, reason: "deadline" }`.
+   - **Origin Spoofing Protection:** Validates authentic Cloudflare edge indicators (`server: cloudflare` or `cf-ray`, plus official `cf-error-type` / `cf-error-origin` headers). Unauthenticated 5xx error responses from external origin servers mimicking Error 1016 are rejected as untrusted (`undefined`).
+   - **Production Isolation:** Diagnostic parsing is separated as an explicit opt-in mode (`{ diagnostics: true }`) for probe and testing. The production `sendVerifiedHttps()` sender does not parse 5xx response bodies or headers, eliminating runtime parsing overhead and untrusted body inspection in production.
 
 ---
 

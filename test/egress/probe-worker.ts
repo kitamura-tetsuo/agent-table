@@ -76,6 +76,7 @@ export default {
         },
       ],
       { method: "POST", body: SYNTHETIC_BODY },
+      { diagnostics: true },
     );
     if (outcome.ok) return result(200, "reachable", undefined, testId);
     const status =
