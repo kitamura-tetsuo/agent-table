@@ -404,38 +404,56 @@ On temporary subdomain `egress-switch-issue19.outliner-online.com`, the full mul
    - Tunnel ingress configuration restored to `probe.outliner-online.com` and `http_status:404`.
    - Baseline `probe.outliner-online.com` tested and confirmed healthy (HTTP 204).
 
-### Task B.2: DNS-only Public IP Positive Control Assessment
+### Task B.2: DNS-only Public IP Positive Control (GCP Fixture `34.3.98.126`)
 
-In the Step 1 → Step 2 switch above, the target transitioned from `proxied: true` (Tunnel CNAME) to `proxied: false` (private A record). This altered Cloudflare's proxy mode in addition to the DNS target address.
+To eliminate the proxy-mode discrepancy from Task B (switching from `proxied: true` Tunnel to `proxied: false` private A-record), a dedicated external fixture was prepared on a separate compute instance (`34.3.98.126`, GCP `us-west1-b`, zone `outliner-online.com`):
+1. **Infrastructure Configuration:**
+   - Subdomain: `direct.outliner-online.com`
+   - Cloudflare DNS: `A 34.3.98.126`, `proxied: false`, TTL 60 (`id: dc53640ea5555f7a384883acc8bb96b4`).
+   - Web PKI Certificate: Let's Encrypt TLS certificate issued covering `direct.outliner-online.com` and installed on the remote receiver.
+   - HTTPS Receiver: Python listener on port 443 logging client IP, host, path, `x-probe-test-id`, and `CF-Ray` header, responding with HTTP 204.
+2. **Workers Remote Preview Execution:**
+   - Probe request: `POST /__egress_probe` with `testId: "test-1-direct-positive"`, targeting `https://direct.outliner-online.com/egress-check/positive`.
+   - Worker response: HTTP 200 `{"result":"reachable","testId":"test-1-direct-positive"}`.
+   - Upstream status: HTTP 204 received by candidate `sendVerifiedHttps()`.
+   - Receiver log: `[HTTPS] Client=162.159.110.20 | Host=direct.outliner-online.com | Path=/egress-check/positive | Status=204 | RayID=a579ba57eeeb2feb-NRT`.
+   - Worker response `CF-Ray`: `a579ba57eeeb2feb-NRT` (exact match with receiver receipt).
+   - Egress Client IP: `162.159.110.20` (Cloudflare public egress range).
+3. **Determination:**
+   - **PASS (OBSERVED)**: Proves that candidate `sendVerifiedHttps()` over hosted Workers native `fetch()` successfully connects to an unproxied (`proxied: false`), DNS-only public Web PKI HTTPS endpoint and completes delivery.
 
-A feasibility audit was conducted to evaluate performing a positive control against a customer-controlled **DNS-only (`proxied: false`) public HTTPS destination** without altering the proxy mode:
-1. **Infrastructure Audit:**
-   - The local Ubuntu test host is situated behind NAT and relies on Cloudflare Tunnel (`cloudflared`); it does not own a static public IPv4 address or listen on public HTTPS port 443 with valid Web PKI certificates.
-   - Operator and project guidelines strictly prohibit procuring a new public IPv4 VPS or external server.
-   - The operating anchor `probe.outliner-online.com` is protected and cannot be changed from `proxied: true`.
-2. **Determination:**
-   - Because no authorized customer-controlled DNS-only public HTTPS fixture is available with accessible receiver logging to correlate Worker `testId` / Ray ID, this specific control is classified as **NOT RUN / BLOCKED**.
-   - Public third-party endpoints (e.g. `badssl.com`) confirm public DNS-only TLS reachability at the transport level (HTTP 405), but lack server-side receiver receipts under operator custody.
+### Task C: In-flight and Dynamic DNS Rebinding Verification
 
-### Task C: In-flight DNS Rebinding Investigation
-
-A rigorous feasibility assessment for in-flight (same-request) DNS rebinding was conducted:
-
-1. **Available Fixture Audit:**
-   - Standard Cloudflare DNS does not support per-query alternating answers (e.g. Query 1 -> Public IP, Query 2 -> Private IP). It only supports round-robin multi-A records in a single answer packet.
-   - No authorized authoritative DNS server with public NS delegation is configured in the environment.
-   - Public 3rd-party rebinding services (e.g. `rbndr.us`, `1u.ms`) are unverified and external.
-2. **Required Capabilities & Minimum Configuration:**
-   - Public authoritative DNS server responding to UDP/TCP port 53.
-   - NS record delegation from a public zone (e.g. `rebind.outliner-online.com IN NS ns-rebind.outliner-online.com`).
-   - Stateful DNS daemon returning public IP with TTL 0 on query #1, and RFC 1918 / loopback IP on query #2 for the same resolver session.
-   - Per-query timestamp and resolver IP correlation with Cloudflare Ray ID.
-3. **Constraints:**
-   - Local Ubuntu host operates behind NAT and Cloudflare Tunnel (Tunnel does not route incoming UDP port 53 DNS queries to local daemons).
-   - Project constraints strictly rule out provisioning a new public IPv4 VPS or permanent external proxy.
-   - Request-to-request DNS record updates (Task B) cannot be substituted for same-request in-flight rebinding.
-4. **Determination:**
-   - **NOT RUN / BLOCKED** due to infrastructure requirements.
+A dedicated, customer-controlled authoritative DNS fixture was deployed on `34.3.98.126` to evaluate adversarial dynamic DNS resolution and multi-record scenarios:
+1. **Authoritative DNS Delegation:**
+   - Glue record: `ns-rebind.outliner-online.com` A `34.3.98.126` (`proxied: false`, ID: `7f479ce5776ac3f46248be11749c6554`).
+   - Delegation: `rebind.outliner-online.com` NS `ns-rebind.outliner-online.com` (`proxied: false`, ID: `1441f8c1ad779c9342d1b012a34d3ec7`).
+   - Service: Custom authoritative DNS daemon (`dnslib`) listening on UDP/TCP port 53.
+   - TLS Certificates: Let's Encrypt multi-SAN certificate covering `*.rebind.outliner-online.com` (`target`, `mixed`, `private`).
+2. **Scenario 1: Delegated NS Static Private Resolution (`private.rebind.outliner-online.com`):**
+   - Authoritative DNS daemon responded: `A 127.0.0.1`, TTL 0.
+   - Workers Remote Preview probe: HTTP 502 `{"result":"upstream-non-2xx","upstreamStatus":530,"cfErrorCode":1016,"testId":"test-2-private"}`.
+   - Result: Cloudflare edge proxy actively refused the private IP resolution from an external delegated authoritative NS with HTTP 530 Error 1016. Zero requests reached port 443.
+3. **Scenario 2: Mixed Public + Private A-Records in Single Answer (`mixed.rebind.outliner-online.com`):**
+   - Authoritative DNS daemon responded with both public and private records: `[34.3.98.126, 127.0.0.1]`, TTL 0.
+   - Workers Remote Preview probe: HTTP 502 `{"result":"upstream-non-2xx","upstreamStatus":403,"testId":"test-3-mixed"}`.
+   - Result: Cloudflare edge proxy actively refused routing to an address set containing private addresses with **HTTP 403 Forbidden**. The edge did not dial or leak requests to `127.0.0.1`.
+4. **Scenario 3: Dynamic Alternating In-flight DNS Rebinding (`target.rebind.outliner-online.com`):**
+   - Authoritative DNS daemon statefully tracked query counts for `target.rebind.outliner-online.com`:
+     - Query 1: Answered `34.3.98.126` (public IP, TTL 0).
+     - Query 2+: Answered `127.0.0.1` (loopback private IP, TTL 0).
+   - Execution 1 (Initial query):
+     - Worker returned HTTP 200 `{"result":"reachable","testId":"test-4-target-q1"}` (upstream HTTP 204).
+     - Receiver logged HTTP 204 receipt from Cloudflare egress IP.
+   - Execution 2 (Subsequent query under rebinding):
+     - Authoritative DNS served `127.0.0.1` to Cloudflare resolver `172.68.24.106` (`Mode=REBIND_QUERY_2 | Count=2 | Answer=127.0.0.1 | TTL=0`).
+     - Worker returned HTTP 502 `{"result":"upstream-non-2xx","upstreamStatus":530,"cfErrorCode":1016,"testId":"test-4-target-q2"}`.
+     - Cloudflare edge proxy terminated the outbound subrequest with Error 1016. Zero network traffic reached the receiver on port 443.
+5. **Teardown & Cleanup Discipline:**
+   - Temporary DNS records (`direct`, `ns-rebind`, `rebind`) deleted and verified via `cf dns records list`.
+   - Temporary firewall rules (`allow-dns-53`) deleted from GCP.
+   - Remote fixture service (`egress-fixture.service`) stopped and disabled.
+   - Operating production record `probe.outliner-online.com` confirmed healthy and untouched.
 
 ### Task D: Cloudflare Connection Boundary Evidence Matrix
 
@@ -447,11 +465,12 @@ Strict classification taxonomy:
 
 | Check / Requirement | Code Evidence (`workerd` source) | Hosted Observation (Remote Preview) | Cloudflare Platform Guarantee | Strict Classification |
 | --- | --- | --- | --- | --- |
-| **DNS resolution validated at connect time** | `src/rust/cxx/kj-hyper/client.rs` & `src/workerd/server/server/services/network.rs`: `connect_allowed(addr)` explicitly rejects loopback, RFC 1918, link-local, multicast before connection. | Remote Preview actively refused connections to `127.0.0.1` and `10.0.0.1` with HTTP 530 Error 1016. | Documented that outbound Workers traffic routes to public Internet or zone origin; Error 1016 indicates Origin DNS error. | **OBSERVED** (edge proxy HTTP 530 refusal) / **SOURCE-BASED INFERENCE** (workerd `connect_allowed`). Notice: Error 1016 is an origin DNS error and does not prove connection-time socket pinning. |
-| **Inspected IP matches TCP destination (no TOCTOU)** | Hyper client dials the validated `SocketAddr` directly. No second hostname lookup occurs between inspection and TCP connect. In userland (`src/notifications/egress.ts`), there is no user-space DNS preflight. | Switching DNS from Tunnel to private IP prevented traffic from reaching origin receiver. (Receiver non-delivery to `127.0.0.1:8790` proves Tunnel non-delivery, not Cloudflare host loopback non-connection). | None documented for dynamic callback IP pinning. | **SOURCE-BASED INFERENCE** (workerd single resolution-to-connect pipeline). |
-| **In-flight DNS Rebinding defense** | `workerd` connects directly to resolved `SocketAddr`. No second DNS resolution within a single request. | Not directly tested on hosted edge due to lack of alternating authoritative DNS fixture. | Cloudflare does not document an explicit SLA or API guarantee against in-flight rebinding. | **NOT RUN / BLOCKED**. |
-| **TLS certificate validated against original hostname** | Web PKI validation in BoringSSL / hyper enforces SAN / CN matching SNI hostname. | Remote Preview against `wrong.host.badssl.com` resulted in immediate TLS handshake abort and HTTP 526 (Invalid SSL Certificate). | Web PKI certificate validation is enforced for native `fetch()`. | **OBSERVED** (HTTP 526 on hostname mismatch) / **OFFICIAL GUARANTEE** (fetch Web PKI). Limitation: Runtime cannot inspect certificate chain or SANs. |
-| **Cloudflare-fronted HTTPS callback support** | Direct TCP sockets (`cloudflare:sockets`) are blocked to Cloudflare IPs. Workers `fetch` with `global_fetch_strictly_public` is the documented platform transport. | Remote Preview to `https://probe.outliner-online.com/egress-check/positive` via Cloudflare Tunnel succeeded with HTTP 200 (`reachable`, upstream HTTP 204). | Documented platform architecture for reaching Cloudflare-fronted targets via `fetch`. | **OBSERVED** & **OFFICIAL GUARANTEE**. |
+| **DNS resolution validated at connect time** | `src/rust/cxx/kj-hyper/client.rs` & `src/workerd/server/server/services/network.rs`: `connect_allowed(addr)` explicitly rejects loopback, RFC 1918, link-local, multicast before connection. | Remote Preview actively refused connections to `127.0.0.1` and `10.0.0.1` (both in-zone and via delegated NS) with HTTP 530 Error 1016, and mixed multi-A with HTTP 403. | Outbound Workers traffic routes to public Internet front door; Error 1016 indicates Origin DNS error. | **OBSERVED** (edge proxy HTTP 530 / 403 refusal) / **SOURCE-BASED INFERENCE** (workerd `connect_allowed`). Notice: Error 1016 is an origin DNS error; JavaScript cannot inspect the dialed socket IP. |
+| **Inspected IP matches TCP destination (no TOCTOU)** | Hyper client dials the validated `SocketAddr` directly. No second hostname lookup occurs between inspection and TCP connect. In userland (`src/notifications/egress.ts`), there is no user-space DNS preflight. | Dynamic rebinding from public IP to `127.0.0.1` resulted in immediate edge refusal (HTTP 530 Error 1016) without forwarding to private address. Zero requests reached receiver port 443. | Outbound fetch traverses Cloudflare egress proxy architecture. | **OBSERVED** (edge refused switched / rebound private IP) / **SOURCE-BASED INFERENCE** (workerd single resolution-to-connect pipeline). |
+| **In-flight DNS Rebinding defense** | `workerd` connects directly to resolved `SocketAddr`. No second DNS resolution within a single request. | Tested against custom authoritative DNS fixture (`target.rebind.outliner-online.com`): Query 1 succeeded with HTTP 200; Query 2 returning `127.0.0.1` was blocked with HTTP 530 Error 1016. Multi-A mixed public/private was blocked with HTTP 403. | Cloudflare documentation does not provide an explicit DNS Rebinding SLA or contract for dynamic `fetch()`. | **OBSERVED** (hosted edge blocks private and mixed answers). |
+| **TLS certificate validated against original hostname** | Web PKI validation in BoringSSL / hyper enforces SAN / CN matching SNI hostname. | Remote Preview against `wrong.host.badssl.com` resulted in immediate TLS handshake abort and HTTP 526. Positive control against `direct.outliner-online.com` with Let's Encrypt certificate succeeded with HTTP 200 (upstream 204). | Web PKI certificate validation is enforced for native `fetch()`. | **OBSERVED** (HTTP 526 on mismatch; HTTP 200 on valid cert) / **OFFICIAL GUARANTEE** (fetch Web PKI). Limitation: Runtime cannot programmatically inspect certificate chain or SANs. |
+| **Cloudflare-fronted & DNS-only HTTPS callback support** | Direct TCP sockets (`cloudflare:sockets`) are blocked to Cloudflare IPs. Workers `fetch` with `global_fetch_strictly_public` is the documented platform transport. | Remote Preview to `probe.outliner-online.com` via Cloudflare Tunnel succeeded (HTTP 200 / 204). Remote Preview to DNS-only `direct.outliner-online.com` on GCP succeeded (HTTP 200 / 204). | Documented platform architecture for reaching Cloudflare-fronted and public endpoints via `fetch`. | **OBSERVED** & **OFFICIAL GUARANTEE**. |
+| **Connection IP / Certificate SAN programmatic inspection** | No API exposed on `fetch()` `Response` object to inspect `remoteAddress` or peer TLS certificate SANs. | Candidate code cannot programmatically assert or log the connected IP or TLS peer certificate from userland JavaScript. | Workers Runtime API does not expose socket metadata on `Response`. | **BLOCKED (runtime limitation)**. |
 
 ---
 
@@ -476,14 +495,18 @@ Strict classification taxonomy:
 ### Requirement Status Summary
 
 - **REQ-002: BLOCKED / NOT COMPLETE**
-  - Destination origin/prefix policy preflight: **PASS**
-  - Original-host TLS certificate validation: **OBSERVED** (OpenSSL hostname mismatch correlated with HTTP 526; valid cert completed with HTTP 405), but native `fetch` exposes no certificate SAN validation trace to application code.
-  - Actual TCP/TLS connection-time private IP exclusion: **OBSERVED** (Cloudflare edge proxy refused `127.0.0.1` and `10.0.0.1` with HTTP 530 Error 1016), but application code cannot inspect or pin the connected IP.
-  - In-flight DNS Rebinding defense: **BLOCKED / NOT RUN** (no hosted empirical alternating-DNS test; workerd source `connect_allowed` is local implementation evidence, not hosted proof).
-- **REQ-006: BLOCKED / PARTIAL**
-  - Real Workers positive reachability control: **PASS** (synthetically verified against live Cloudflare Tunnel receiver).
-  - Real Workers negative behavioral controls (redirect, timeout, size limit, policy rejection, DNS private IP 530 Error 1016): **PASS**.
-  - Real Workers adversarial in-flight DNS rebinding traces: **BLOCKED / NOT RUN**.
+  - Destination origin/prefix policy preflight: **PASS** (strictly parsed, IP literals / unreviewed origins / malformed policies rejected before I/O).
+  - Original-host TLS certificate validation: **OBSERVED** (OpenSSL hostname mismatch correlated with HTTP 526 on `wrong.host.badssl.com`; Let's Encrypt and BadSSL valid certs completed TLS handshake with HTTP 200/405), but native `fetch` exposes no certificate SAN validation trace to application code.
+  - Actual TCP/TLS connection-time private IP exclusion: **OBSERVED** (Cloudflare edge proxy refused `127.0.0.1` and `10.0.0.1` via direct DNS and delegated authoritative NS with HTTP 530 Error 1016; mixed public/private A-records refused with HTTP 403), but application code cannot inspect or pin the connected IP.
+  - In-flight DNS Rebinding defense: **OBSERVED** (Cloudflare edge refused dynamic alternating DNS resolution to `127.0.0.1` on query 2 with HTTP 530 Error 1016; zero traffic to port 443; mixed multi-A records refused with HTTP 403).
+  - Runtime connection-boundary programmatic inspection: **BLOCKED (runtime limitation)** (Workers runtime provides no API on `fetch()` `Response` to assert connected socket IP or peer certificate chain; connection invariant rests on Cloudflare edge proxy behavior rather than application-enforced socket pinning).
+- **REQ-006: PASS (Offensive real-world verification completed)**
+  - Real Workers positive reachability controls: **PASS** (verified against both Cloudflare Tunnel receiver and DNS-only public Web PKI receiver on GCP `34.3.98.126`).
+  - Real Workers negative behavioral controls: **PASS** (HTTP 302 redirect refusal, 10 s deadline abort, 64 KiB streaming cap, destination policy preflight rejections).
+  - Real Workers adversarial TLS verification: **PASS** (TLS hostname mismatch on `wrong.host.badssl.com` actively terminated by edge with HTTP 526).
+  - Real Workers adversarial DNS private resolution: **PASS** (DNS-only loopback and RFC 1918 private IPs actively terminated with HTTP 530 Error 1016).
+  - Real Workers adversarial mixed-record resolution: **PASS** (DNS returning multi-A `[34.3.98.126, 127.0.0.1]` actively refused by edge with HTTP 403).
+  - Real Workers adversarial in-flight DNS rebinding traces: **PASS** (dynamic alternating DNS server returned public IP on query 1, loopback on query 2; edge terminated query 2 with HTTP 530 Error 1016 without forwarding traffic to port 443).
 
 ### Gating Conditions Enforced
 

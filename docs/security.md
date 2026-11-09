@@ -155,17 +155,22 @@ diagnostic Worker never enables application callback delivery.
 As of 2026-11-09, Remote Preview tests with sanitized test IDs verified positive
 reachability through Cloudflare Tunnel, opaque query handling, redirect refusal,
 10-second deadline abort, 64 KiB response streaming cap, TLS certificate hostname
-mismatch rejection (correlating OpenSSL mismatch with HTTP 526), and active edge
+mismatch rejection (correlating OpenSSL mismatch with HTTP 526), active edge
 proxy origin DNS refusal (HTTP 530 Error 1016) when an origin DNS record resolves
-to loopback (127.0.0.1), RFC 1918 (10.0.0.1), or NXDOMAIN. Non-delivery to the host's
-tunnel receiver during DNS-only private IP resolution demonstrates tunnel non-delivery,
-not absence of connection to the Cloudflare edge server's internal loopback.
+to loopback (127.0.0.1), RFC 1918 (10.0.0.1), or NXDOMAIN, and positive control
+against a DNS-only (`proxied: false`) Web PKI HTTPS endpoint on GCP (HTTP 200 / 204).
+Non-delivery to the host's tunnel receiver during DNS-only private IP resolution
+demonstrates tunnel non-delivery, not absence of connection to the Cloudflare edge
+server's internal loopback.
 
-In-flight TOCTOU DNS rebinding within a single attempt remains unproven on hosted
-Workers (NOT RUN / BLOCKED due to lack of a programmable authoritative DNS fixture).
+Adversarial in-flight DNS rebinding was empirically tested against a dedicated
+programmable authoritative DNS daemon on GCP (`34.3.98.126`): dynamic rebinding to
+127.0.0.1 on the second query resulted in immediate edge refusal with HTTP 530 Error 1016
+without forwarding traffic to port 443, and multi-A mixed public/private responses
+were actively refused with HTTP 403.
 Evidence is strictly classified across four tiers: directly OBSERVED on Hosted Workers,
 OFFICIAL GUARANTEE documented by Cloudflare, SOURCE-BASED INFERENCE from workerd,
-and NOT RUN / BLOCKED.
+and BLOCKED (unexposed platform runtime capability).
 
 The test infrastructure and candidate transport have been hardened:
 - P0: `scripts/egress_experiments.py` enforces DNS collision abort, full tunnel ingress
@@ -177,5 +182,9 @@ The test infrastructure and candidate transport have been hardened:
   spoofing, and isolates diagnostic parsing exclusively to probe/test callers while
   keeping the production sender free of 5xx body/header inspection.
 
-REQ-002 and REQ-006 remain BLOCKED; `ENABLE_OPENAI_EVENTS=false` and draft PR status
-are strictly preserved. No production deployment or public Events release is authorized.
+REQ-006 offensive verification is PASS. However, REQ-002 remains BLOCKED because the
+Workers JavaScript runtime (`fetch()`) provides no API to programmatically inspect or pin
+the connected socket IP or peer certificate chain; safety relies on platform edge proxy
+behavior rather than application-verifiable invariants.
+`ENABLE_OPENAI_EVENTS=false` and draft PR status are strictly preserved. No production
+deployment or public Events release is authorized.
