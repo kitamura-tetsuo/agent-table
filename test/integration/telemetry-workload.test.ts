@@ -36,7 +36,12 @@ async function syntheticTable() {
   });
   if (!created.ok) throw new Error("Synthetic table unavailable");
   const table = env.TABLES.get(env.TABLES.idFromName(created.value.tableId));
-  return { actor, readActor: readDecision.actor, table, tableId: created.value.tableId };
+  return {
+    actor,
+    readActor: readDecision.actor,
+    table,
+    tableId: created.value.tableId,
+  };
 }
 
 async function storedCounts(

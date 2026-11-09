@@ -91,8 +91,7 @@ const handleRequest: ExportedHandler<Env>["fetch"] = async (
   if (url.pathname === "/guest/connections/revoke") {
     return handleConnectionRevoke(request, env);
   }
-  if (url.pathname === "/guest/delete")
-    return handleDeletionPage(request, env);
+  if (url.pathname === "/guest/delete") return handleDeletionPage(request, env);
   if (
     url.pathname === "/join" &&
     (request.method === "GET" || request.method === "HEAD")
