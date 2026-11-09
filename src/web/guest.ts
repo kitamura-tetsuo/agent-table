@@ -21,6 +21,7 @@ export function guestPage(
   session: GuestSessionPrincipal | null,
   csrf: string,
   admissionEnabled: boolean,
+  challengeSiteKey?: string,
 ): string {
   const existing = session
     ? `<p>Your browser holds a valid session for guest <code>${escapeHtml(session.guestId)}</code>.</p>
@@ -31,6 +32,11 @@ export function guestPage(
          <button type="submit">Use this guest</button>
        </form>`
     : `<p>No valid guest browser session is available. Creating one requires your explicit choice.</p>`;
+
+  const challengeMarkup = challengeSiteKey
+    ? `<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
+      <div class="cf-turnstile" data-sitekey="${escapeHtml(challengeSiteKey)}" data-action="create_guest"></div>`
+    : "";
 
   return `<!doctype html>
 <html lang="en">
@@ -47,6 +53,7 @@ export function guestPage(
       <form method="post" action="/guest/session">
         <input type="hidden" name="csrf" value="${csrf}">
         <input type="hidden" name="choice" value="new">
+        ${challengeMarkup}
         <button type="submit" ${admissionEnabled ? "" : "disabled"}>Create a new guest</button>
       </form>
       ${admissionEnabled ? "" : "<p>New guest admission is currently disabled.</p>"}

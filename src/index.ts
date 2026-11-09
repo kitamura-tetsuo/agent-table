@@ -11,14 +11,56 @@ import {
   handleAuthorize,
   oauthTokenStub,
 } from "./auth/provider";
+import {
+  checkEdgeAdmission,
+  type EdgeAdmissionCategory,
+  rejectOversizedIngress,
+} from "./shared/admission";
 import { handleDeletionPage } from "./web/deletion";
 
 export { OAuthTokenDO } from "./auth/token-do";
+export { AdmissionDO } from "./objects/admission";
 export { GuestDO } from "./objects/guest";
 export { TableDO } from "./objects/table";
 
+/** Bound admission separately from authenticated ownership and table quotas. */
+function edgeCategory(request: Request): EdgeAdmissionCategory | null {
+  const path = new URL(request.url).pathname;
+  if (path === "/guest/session" && request.method === "POST") return "guest";
+  if (path === "/oauth/register" && request.method === "POST") return "dcr";
+  if (path === "/mcp") return "application";
+  if (path === "/join") return "invitation";
+  if (
+    path === "/authorize" ||
+    path === "/oauth/token" ||
+    path === "/oauth/revoke" ||
+    path.startsWith("/.well-known/oauth-") ||
+    path === "/.well-known/oauth-protected-resource/mcp"
+  ) {
+    return "protocol";
+  }
+  if (
+    path === "/" ||
+    path === "/guest" ||
+    path === "/guest/me" ||
+    path === "/guest/connections" ||
+    path === "/guest/delete" ||
+    path === "/guest/connections/revoke"
+  ) {
+    return "application";
+  }
+  return null;
+}
+
 export default {
   async fetch(request, env, ctx) {
+    const ingressRejected = await rejectOversizedIngress(request);
+    if (ingressRejected) return ingressRejected;
+    const category = edgeCategory(request);
+    if (category) {
+      const rateRejected = await checkEdgeAdmission(request, env, category);
+      if (rateRejected) return rateRejected;
+    }
     const url = new URL(request.url);
     if (
       url.pathname === "/mcp" ||

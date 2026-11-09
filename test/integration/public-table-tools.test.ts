@@ -136,6 +136,8 @@ async function tokenForGuest(scope: string) {
     guestId,
     guest,
     token: String(tokens.access_token),
+    refreshToken: String(tokens.refresh_token),
+    clientId,
     connectionId: liveGrants?.[0].connectionId ?? "",
     browserCookie: rotatedCookie?.split(";")[0] ?? "",
   };
@@ -2067,6 +2069,370 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
     } finally {
       await client.close();
       await withoutDeletion.close();
+    }
+  });
+});
+
+describe("paused ingress preserves authenticated MCP terminal operations", () => {
+  it("denies new SDK tables but permits close, delete initiation and browser approval", async () => {
+    const owner = await tokenForGuest("tables:read tables:write tables:delete");
+    let requestEnv: Env = env;
+    const client = await sdk(owner.token, (request) =>
+      fetchThroughWorker(requestEnv)(request),
+    );
+    try {
+      const created = await client.callTool({
+        name: "create_table",
+        arguments: {
+          ...input,
+          request_id: "sdk_pause_initial_create_0001",
+        },
+      });
+      expect(created.isError).not.toBe(true);
+      const tableId = String(output(created).tableId);
+      const table = env.TABLES.get(env.TABLES.idFromName(tableId));
+      const saved = await client.callTool({
+        name: "post_message",
+        arguments: {
+          table_id: tableId,
+          request_id: "sdk_pause_initial_post_0001",
+          body: "Synthetic private content before admission pause",
+        },
+      });
+      expect(saved.isError).not.toBe(true);
+
+      const paused: Env = {
+        ...env,
+        ALLOW_NEW_GUESTS: "false",
+        ALLOW_NEW_TABLES: "false",
+        ALLOW_OUTBOUND_NOTIFICATIONS: "false",
+      };
+      requestEnv = paused;
+
+      const blocked = await client.callTool({
+        name: "create_table",
+        arguments: {
+          ...input,
+          request_id: "sdk_pause_blocked_create_0001",
+        },
+      });
+      expect(blocked.isError).toBe(true);
+      expect(output(blocked)).toMatchObject({
+        error: { code: "ADMISSION_DISABLED" },
+      });
+      await runInDurableObject(owner.guest, async (_instance, state) => {
+        expect(
+          state.storage.sql
+            .exec("SELECT COUNT(*) AS n FROM guest_creation_reservations")
+            .one(),
+        ).toEqual({ n: 1 });
+      });
+
+      const closed = await client.callTool({
+        name: "close_table",
+        arguments: {
+          table_id: tableId,
+          request_id: "sdk_pause_close_existing_0001",
+        },
+      });
+      expect(closed.isError).not.toBe(true);
+      expect(output(closed)).toMatchObject({
+        table_id: tableId,
+        state: "closed",
+      });
+      const afterClose = await client.callTool({
+        name: "get_table",
+        arguments: { table_id: tableId },
+      });
+      expect(output(afterClose)).toMatchObject({
+        tableId,
+        state: "closed",
+      });
+
+      const operation = {
+        table_id: tableId,
+        request_id: "sdk_pause_delete_existing_0001",
+      };
+      const pending = await client.callTool({
+        name: "delete_table",
+        arguments: operation,
+      });
+      expect(pending.isError).not.toBe(true);
+      const receipt = output(pending);
+      expect(receipt).toMatchObject({ confirmation_required: true });
+      const preview = await worker.fetch(
+        new Request(String(receipt.confirmation_url), {
+          headers: { Cookie: owner.browserCookie },
+        }) as Parameters<typeof worker.fetch>[0],
+        paused,
+        createExecutionContext(),
+      );
+      expect(preview.status).toBe(200);
+      const html = await preview.text();
+      const csrf = html.match(/name="csrf" value="([A-Za-z0-9_-]{43})"/)?.[1];
+      const csrfCookie = preview.headers
+        .getSetCookie()
+        .find((item) => item.startsWith("__Host-agent_table_csrf="))
+        ?.split(";")[0];
+      if (!csrf || !csrfCookie) {
+        throw new Error("Paused browser confirmation did not issue CSRF");
+      }
+
+      const approved = await worker.fetch(
+        new Request(`${ORIGIN}/guest/delete`, {
+          method: "POST",
+          headers: {
+            Origin: ORIGIN,
+            "Sec-Fetch-Site": "same-origin",
+            "Content-Type": "application/x-www-form-urlencoded",
+            Cookie: [owner.browserCookie, csrfCookie].join("; "),
+          },
+          body: new URLSearchParams({
+            ...operation,
+            csrf,
+            decision: "approve",
+          }),
+        }) as Parameters<typeof worker.fetch>[0],
+        paused,
+        createExecutionContext(),
+      );
+      expect(approved.status).toBe(200);
+      expect(await approved.text()).toContain("Deletion committed");
+      await evictDurableObject(table);
+      const deletionReceipt = await client.callTool({
+        name: "delete_table",
+        arguments: operation,
+      });
+      expect(deletionReceipt.isError).not.toBe(true);
+      expect(output(deletionReceipt)).toMatchObject({
+        confirmation_required: false,
+        state: "deleted",
+      });
+      await runInDurableObject(table, async (_instance, state) => {
+        expect(
+          state.storage.sql
+            .exec("SELECT COUNT(*) AS n FROM table_metadata")
+            .one(),
+        ).toEqual({ n: 0 });
+        expect(
+          state.storage.sql
+            .exec(
+              "SELECT guest_id, request_id FROM table_tombstone_delete_receipts",
+            )
+            .one(),
+        ).toEqual({
+          guest_id: owner.guestId,
+          request_id: operation.request_id,
+        });
+      });
+    } finally {
+      await client.close();
+    }
+  });
+});
+
+describe("authenticated public SDK admission quota", () => {
+  it("charges real OAuth-authenticated SDK MCP traffic in the principal's SQLite window", async () => {
+    const principal = await tokenForGuest("tables:read tables:write");
+    const limited: Env = {
+      ...env,
+      PRINCIPAL_RATE_PER_MINUTE: "4",
+    };
+    const observed: Array<{ status: number; retryAfter: string | null }> = [];
+    const client = await sdk(principal.token, async (request) => {
+      const response = await fetchThroughWorker(limited)(request);
+      if (new URL(request.url).pathname === "/mcp") {
+        observed.push({
+          status: response.status,
+          retryAfter: response.headers.get("Retry-After"),
+        });
+      }
+      return response;
+    });
+    try {
+      for (let index = 0; index < 8; index++) {
+        try {
+          await client.listTools();
+        } catch {
+          // HTTP 429 is an expected transport-level refusal after the budget.
+        }
+      }
+      const denied = observed.filter((item) => item.status === 429);
+      expect(denied.length).toBeGreaterThan(0);
+      expect(denied[0].retryAfter).toMatch(/^[1-9][0-9]*$/);
+      expect(observed.filter((item) => item.status !== 429)).toHaveLength(4);
+      expect(observed.every((item) => item.status !== 503)).toBe(true);
+
+      const key = `principal-v1:${principal.guestId}`;
+      const bytes = await crypto.subtle.digest(
+        "SHA-256",
+        new TextEncoder().encode(key),
+      );
+      const hash = Array.from(new Uint8Array(bytes), (value) =>
+        value.toString(16).padStart(2, "0"),
+      ).join("");
+      const admission = env.ADMISSION.get(env.ADMISSION.idFromName(hash));
+      await runInDurableObject(admission, async (_instance, state) => {
+        const rows = state.storage.sql
+          .exec<{ count: number }>(
+            "SELECT COUNT(*) AS count FROM admission_hits WHERE category = 'application'",
+          )
+          .one();
+        expect(rows.count).toBe(4);
+      });
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("shares the default 60/minute budget across original and refreshed OAuth tokens and SDK connections", async () => {
+    const principal = await tokenForGuest("tables:read tables:write");
+    const refreshed = await exports.default.fetch(`${ORIGIN}/oauth/token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        client_id: principal.clientId,
+        grant_type: "refresh_token",
+        refresh_token: principal.refreshToken,
+        resource: RESOURCE,
+      }),
+    });
+    expect(refreshed.status).toBe(200);
+    const refreshedToken = String((await json(refreshed)).access_token);
+    expect(refreshedToken).not.toBe("undefined");
+
+    // Use the default principal limit, not a test override. Initial SDK
+    // handshakes count too; both tokens must share one durable counter.
+    const observed: Array<{ status: number; retryAfter: string | null }> = [];
+    const transportFetch = async (request: Request) => {
+      const response = await fetchThroughWorker(env)(request);
+      if (new URL(request.url).pathname === "/mcp") {
+        observed.push({
+          status: response.status,
+          retryAfter: response.headers.get("Retry-After"),
+        });
+      }
+      return response;
+    };
+    const first = await sdk(principal.token, transportFetch);
+    const second = await sdk(refreshedToken, transportFetch);
+    try {
+      const created = await first.callTool({
+        name: "create_table",
+        arguments: {
+          ...input,
+          request_id: "sdk_refresh_quota_table_001",
+        },
+      });
+      expect(created.isError).not.toBe(true);
+      const tableId = String(output(created).tableId);
+      const message = {
+        table_id: tableId,
+        request_id: "sdk_refresh_quota_post_001",
+        body: "Accepted once across refreshed OAuth transports",
+      };
+      const firstPost = await first.callTool({
+        name: "post_message",
+        arguments: message,
+      });
+      expect(firstPost.isError).not.toBe(true);
+      expect(output(firstPost)).toMatchObject({ seq: 1, persisted: true });
+      const samePost = await second.callTool({
+        name: "post_message",
+        arguments: message,
+      });
+      expect(output(samePost)).toEqual(output(firstPost));
+      const table = env.TABLES.get(env.TABLES.idFromName(tableId));
+      await runInDurableObject(table, async (_instance, state) => {
+        expect(
+          state.storage.sql.exec("SELECT * FROM table_messages").toArray(),
+        ).toHaveLength(1);
+        expect(
+          state.storage.sql.exec("SELECT * FROM table_post_receipts").toArray(),
+        ).toHaveLength(1);
+      });
+
+      for (let index = 0; index < 66; index++) {
+        const client = index % 2 === 0 ? first : second;
+        try {
+          await client.listTools();
+        } catch {
+          // Once the shared quota is full, the SDK surfaces HTTP 429.
+        }
+      }
+      const accepted = observed.filter((item) => item.status !== 429);
+      const denied = observed.filter((item) => item.status === 429);
+      expect(accepted).toHaveLength(60);
+      expect(denied.length).toBeGreaterThan(0);
+      expect(
+        denied.every((item) => /^[1-9][0-9]*$/.test(item.retryAfter ?? "")),
+      ).toBe(true);
+      expect(accepted.every((item) => item.status < 400)).toBe(true);
+
+      const deniedPost = await fetchThroughWorker(env)(
+        new Request(RESOURCE, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${principal.token}`,
+            Accept: "application/json, text/event-stream",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: 210,
+            method: "tools/call",
+            params: { name: "post_message", arguments: message },
+          }),
+        }),
+      );
+      expect(deniedPost.status).toBe(429);
+      expect(deniedPost.headers.get("Retry-After")).toMatch(/^[1-9][0-9]*$/);
+      expect(await deniedPost.text()).toBe("RATE_LIMITED");
+      await runInDurableObject(table, async (_instance, state) => {
+        expect(
+          state.storage.sql.exec("SELECT * FROM table_messages").toArray(),
+        ).toHaveLength(1);
+        expect(
+          state.storage.sql.exec("SELECT * FROM table_post_receipts").toArray(),
+        ).toHaveLength(1);
+      });
+
+      const bytes = await crypto.subtle.digest(
+        "SHA-256",
+        new TextEncoder().encode(`principal-v1:${principal.guestId}`),
+      );
+      const hash = Array.from(new Uint8Array(bytes), (value) =>
+        value.toString(16).padStart(2, "0"),
+      ).join("");
+      const admission = env.ADMISSION.get(env.ADMISSION.idFromName(hash));
+      await runInDurableObject(admission, async (_instance, state) => {
+        expect(
+          state.storage.sql
+            .exec<{ count: number }>(
+              "SELECT COUNT(*) AS count FROM admission_hits WHERE category = 'application'",
+            )
+            .one().count,
+        ).toBe(60);
+      });
+      await evictDurableObject(admission);
+      try {
+        await second.listTools();
+      } catch {
+        // A restart must not restore the right to make an extra request.
+      }
+      expect(observed.at(-1)?.status).toBe(429);
+      await runInDurableObject(admission, async (_instance, state) => {
+        expect(
+          state.storage.sql
+            .exec<{ count: number }>(
+              "SELECT COUNT(*) AS count FROM admission_hits WHERE category = 'application'",
+            )
+            .one().count,
+        ).toBe(60);
+      });
+    } finally {
+      await first.close();
+      await second.close();
     }
   });
 });

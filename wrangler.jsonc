@@ -4,7 +4,8 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-11-07",
   "compatibility_flags": [
-    "nodejs_compat"
+    "nodejs_compat",
+    "global_fetch_strictly_public"
   ],
   "durable_objects": {
     "bindings": [
@@ -19,6 +20,10 @@
       {
         "name": "OAUTH_SERIALIZER",
         "class_name": "OAuthTokenDO"
+      },
+      {
+        "name": "ADMISSION",
+        "class_name": "AdmissionDO"
       }
     ]
   },
@@ -32,8 +37,14 @@
     },
     {
       "tag": "v2",
-      "new_classes": [
+      "new_sqlite_classes": [
         "OAuthTokenDO"
+      ]
+    },
+    {
+      "tag": "v3",
+      "new_sqlite_classes": [
+        "AdmissionDO"
       ]
     }
   ],
@@ -41,7 +52,9 @@
     "PUBLIC_ORIGIN": "http://localhost:8787",
     "ENABLE_MCP_SUBSCRIPTIONS": "false",
     "ENABLE_OPENAI_EVENTS": "false",
-    "ALLOW_NEW_GUESTS": "false"
+    "ALLOW_NEW_GUESTS": "false",
+    "ALLOW_NEW_TABLES": "true",
+    "ALLOW_OUTBOUND_NOTIFICATIONS": "false"
   },
   "kv_namespaces": [
     {
