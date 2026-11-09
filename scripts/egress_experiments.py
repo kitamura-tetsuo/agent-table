@@ -531,7 +531,8 @@ def run_probe(test_id: str, probe_token: str) -> dict:
             continue
         if res.returncode != 0:
             continue
-        parts = res.stdout.split("\r\n\r\n", 1)
+        # text=True normalizes subprocess CRLF output to LF; also accept test fakes with CRLF.
+        parts = res.stdout.replace("\r\n", "\n").split("\n\n", 1)
         if len(parts) != 2:
             continue
         try:
