@@ -245,7 +245,9 @@ describe("cross-isolate admission policy", () => {
     };
 
     expect((await dispatch(limited, "/guest", { headers })).status).toBe(200);
-    expect((await dispatch(limited, "/guest/me", { headers })).status).toBe(401);
+    expect((await dispatch(limited, "/guest/me", { headers })).status).toBe(
+      401,
+    );
     expect(
       (await dispatch(limited, "/guest/connections", { headers })).status,
     ).toBe(401);
