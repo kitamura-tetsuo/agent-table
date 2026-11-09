@@ -19,6 +19,7 @@ declare global {
       ALLOW_NEW_TABLES: string;
       ALLOW_OUTBOUND_NOTIFICATIONS: string;
       GUEST_CHALLENGE_MODE?: string;
+      OAUTH_AUDIT_MODE?: string;
       TURNSTILE_SITE_KEY?: string;
       TURNSTILE_SECRET?: string;
       EDGE_GUEST_RATE_PER_MINUTE?: string;

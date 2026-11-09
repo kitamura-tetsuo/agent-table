@@ -7,6 +7,7 @@ import {
 } from "./auth/guest";
 import {
   authorizationServer,
+  classifyOAuthGrant,
   handleAuthenticatedMcp,
   handleAuthorize,
   oauthTokenStub,
@@ -68,7 +69,22 @@ export default {
     )
       return handleAuthenticatedMcp(request, env, ctx);
     if (url.pathname === "/authorize") return handleAuthorize(request, env);
-    if (url.pathname === "/oauth/token" || url.pathname === "/oauth/revoke")
+    if (url.pathname === "/oauth/token") {
+      if (env.OAUTH_AUDIT_MODE !== "metadata")
+        return oauthTokenStub(env).fetch(request);
+      const grantType = await classifyOAuthGrant(request);
+      const response = await oauthTokenStub(env).fetch(request);
+      // Staging-only and allowlisted: never log request bodies or credentials.
+      console.info(
+        JSON.stringify({
+          event: "agent_table.oauth_token_exchange",
+          grant_type: grantType,
+          http_status: response.status,
+        }),
+      );
+      return response;
+    }
+    if (url.pathname === "/oauth/revoke")
       return oauthTokenStub(env).fetch(request);
     if (
       url.pathname === "/.well-known/oauth-authorization-server" ||

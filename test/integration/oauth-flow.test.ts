@@ -1,7 +1,10 @@
 import { evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { env, exports } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
-import { canonicalMcpResource } from "../../src/auth/provider";
+import {
+  canonicalMcpResource,
+  classifyOAuthGrant,
+} from "../../src/auth/provider";
 
 const ORIGIN = "http://localhost:8787";
 const RESOURCE = `${ORIGIN}/mcp`;
@@ -55,6 +58,38 @@ async function start(clientId: string, extra: Record<string, string> = {}) {
 }
 
 describe("OAuth library and consent boundary", () => {
+  it("classifies token audit grants without exposing arbitrary form values", async () => {
+    const classify = (fields: [string, string][], contentType?: string) =>
+      classifyOAuthGrant(
+        new Request(`${ORIGIN}/oauth/token`, {
+          method: "POST",
+          headers: {
+            "Content-Type": contentType ?? "application/x-www-form-urlencoded",
+          },
+          body: new URLSearchParams(fields),
+        }),
+      );
+
+    expect(await classify([["grant_type", "authorization_code"]])).toBe(
+      "authorization_code",
+    );
+    expect(await classify([["grant_type", "refresh_token"]])).toBe(
+      "refresh_token",
+    );
+    expect(
+      await classify([["grant_type", "unexpected-sensitive-form-value"]]),
+    ).toBe("other");
+    expect(
+      await classify([
+        ["grant_type", "refresh_token"],
+        ["grant_type", "authorization_code"],
+      ]),
+    ).toBe("unknown");
+    expect(
+      await classify([["grant_type", "refresh_token"]], "text/plain"),
+    ).toBe("unknown");
+  });
+
   it("advertises DCR, PKCE and exact canonical resource without OIDC scope", async () => {
     expect(canonicalMcpResource(env)).toBe(RESOURCE);
     const metadata = await exports.default.fetch(
