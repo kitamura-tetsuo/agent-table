@@ -141,3 +141,73 @@ and already transmitted bytes cannot be recalled.
 This browser approval path is separate from outbound Events/callback egress.
 It provides no security evidence toward Issue #19 or REQ-002 safe HTTPS
 destinations, and it never enables public Events.
+
+## Callback egress feasibility gate (Issue #19)
+
+A destination allowlist cannot enforce public-address policy at connection time. The preflight parser is implemented but outbound callback sending intentionally fails closed until measured Workers address/TLS enforcement exists. See [egress feasibility](egress-feasibility.md); this is not a completed webhook transport.
+
+Provider-owned callback URLs can use opaque per-subscription paths and
+Cloudflare-fronted HTTPS hostnames. The operator reviews the exact provider
+origin and a path-prefix policy; no public IPv4 server or production webhook
+receiver operated by Agent Table is required. The isolated native-`fetch`
+diagnostic Worker never enables application callback delivery.
+
+As of 2026-11-09, Remote Preview tests with sanitized test IDs verified positive
+reachability through Cloudflare Tunnel, opaque query handling, redirect refusal,
+10-second deadline abort, 64 KiB response streaming cap, TLS certificate hostname
+mismatch rejection (correlating OpenSSL mismatch with HTTP 526), active edge
+proxy origin DNS refusal (HTTP 530 Error 1016) when an origin DNS record resolves
+to loopback (127.0.0.1), RFC 1918 (10.0.0.1), or NXDOMAIN, and positive control
+against a DNS-only (`proxied: false`) Web PKI HTTPS endpoint on GCP (HTTP 200 / 204).
+Non-delivery to the host's tunnel receiver during DNS-only private IP resolution
+demonstrates tunnel non-delivery, not absence of connection to the Cloudflare edge
+server's internal loopback.
+
+Request-to-request DNS changes were tested with a dedicated programmable
+authoritative DNS daemon on GCP: a later fetch whose DNS answer changed to
+127.0.0.1 returned HTTP 530 / diagnostic 1016 without a corresponding request
+at the controlled public receiver, and mixed public/private A records
+returned HTTP 403. Neither result instruments the private socket dial nor
+tests a DNS change between address validation and dial in the same connection.
+Evidence is strictly classified across four tiers: directly OBSERVED on Hosted Workers,
+OFFICIAL GUARANTEE documented by Cloudflare, SOURCE-BASED INFERENCE from workerd,
+and BLOCKED (unexposed platform runtime capability).
+
+The test infrastructure and candidate transport have been hardened:
+- P0: `scripts/egress_experiments.py` now retains and restores the **entire**
+  mutable Cloudflare Tunnel config, including top-level `originRequest`, and checks for
+  concurrent edits before update and rollback. The replace-only API exposes no
+  atomic compare-and-swap through this CLI: a simultaneous remote write can
+  still race the final update. Use only an authorized isolated fixture, with
+  explicit `AGENT_TABLE_ALLOW_LIVE_EGRESS_EXPERIMENT=yes` opt-in, never a
+  shared production tunnel. DNS cleanup affects session-created record IDs only.
+- P0: `.dev.vars` probe secrets are installed with a same-directory atomic
+  replacement and 0600 permissions. Symlinks and non-regular originals are
+  rejected, prior bytes are preserved for restoration, and concurrent inode or
+  content changes prevent destructive rollback. An interrupted atomic replace
+  leaves prior bytes intact; an uncatchable process kill can leave a private
+  temporary token file requiring operator inspection. Python safety tests
+  cover full-config round-trip, 0644 originals, symlinks and injected faults.
+- P1: `extractSafeCloudflareErrorCode()` enforces a 4 KiB cap across streamed
+  response chunks and the shared 10-second deadline, with prompt cancellation.
+  Forged Cloudflare-looking headers or 1xxx markup are only **untrusted
+  diagnostic hints**, not authenticated evidence of edge enforcement.
+  Production sending does not parse diagnostic error bodies.
+
+**Limited-beta decision (2026-11-09):** The owner expressly accepts Hosted
+Workers native `fetch()`/`global_fetch_strictly_public` and platform TLS/Web PKI
+as trusted but not independently inspected enforcement boundaries for a
+controlled opt-in beta. Hosted sender observations remain relevant, including
+public DNS-only and Cloudflare-fronted HTTPS, private/mixed DNS refusal,
+wrong-host TLS, no redirects, deadlines and size caps. A private answer on
+a second fetch is **not** proof that rebinding during a single dial is safe,
+and a formal guarantee is not required for this limited beta.
+
+**Merge is not activation.** PR #33 still needs exact-head successful CI,
+security review and safety-thread resolutions. Until then it remains draft.
+At merge, `ENABLE_OPENAI_EVENTS=false` and
+`callbackTransportReadiness().enabled=false` must remain. Activating any
+provider delivery requires a separately authorized signed, synthetic-only
+opt-in rollout with reviewed providers, secret controls, quotas, monitoring
+and immediate rollback. No production deployment or Events activation is
+part of this work.
