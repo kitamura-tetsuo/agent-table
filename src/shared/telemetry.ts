@@ -161,11 +161,17 @@ export function emitOperationalEvent(event: OperationalEvent): void {
   }
   if (event.kind === "invitation") {
     if (
-      (event.operation !== "create_invite" && event.operation !== "join_table") ||
+      (event.operation !== "create_invite" &&
+        event.operation !== "join_table") ||
       !["accepted", "rejected", "unknown"].includes(event.outcome) ||
-      !["none", "invalid", "expired", "denied", "unavailable", "other"].includes(
-        event.failureCategory,
-      ) ||
+      ![
+        "none",
+        "invalid",
+        "expired",
+        "denied",
+        "unavailable",
+        "other",
+      ].includes(event.failureCategory) ||
       (event.outcome === "accepted") !== (event.failureCategory === "none")
     )
       return;

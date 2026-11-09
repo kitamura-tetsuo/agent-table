@@ -164,10 +164,9 @@ export async function createInvite(
 ) {
   const started = Date.now();
   try {
-    const result = await env.TABLES.get(env.TABLES.idFromName(tableId)).issueInvite(
-      actor,
-      requestId,
-    );
+    const result = await env.TABLES.get(
+      env.TABLES.idFromName(tableId),
+    ).issueInvite(actor, requestId);
     return observeInvitation("create_invite", result, started);
   } catch {
     return observeInvitation(

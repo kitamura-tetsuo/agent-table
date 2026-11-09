@@ -129,9 +129,9 @@ describe("synthetic local telemetry workloads", () => {
     expect(measured).toHaveLength(counts.messages);
     expect(measured).toHaveLength(counts.receipts);
     expect(measured.every((event) => event.outcome === "committed")).toBe(true);
-    expect(measured.every((event) => typeof event.durationMs === "number")).toBe(
-      true,
-    );
+    expect(
+      measured.every((event) => typeof event.durationMs === "number"),
+    ).toBe(true);
     expect(JSON.stringify(emitted)).not.toContain(first.body);
     expect(JSON.stringify(emitted)).not.toContain(second.body);
     console.log(

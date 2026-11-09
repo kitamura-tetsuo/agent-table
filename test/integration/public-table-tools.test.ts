@@ -2440,9 +2440,9 @@ describe("authenticated public SDK admission quota", () => {
     const peer = await tokenForGuest("tables:read tables:write");
     const creator = await sdk(owner.token);
     const joiner = await sdk(peer.token);
-    const privateTitle = "private-title-" + crypto.randomUUID();
-    const privateBody = "private-message-" + crypto.randomUUID();
-    const invalidInvitation = "invalid-invitation-" + crypto.randomUUID();
+    const privateTitle = `private-title-${crypto.randomUUID()}`;
+    const privateBody = `private-message-${crypto.randomUUID()}`;
+    const invalidInvitation = `invalid-invitation-${crypto.randomUUID()}`;
     const captured: string[] = [];
     const recorder = vi.spyOn(console, "log").mockImplementation((value) => {
       if (value && typeof value === "object" && "schema" in value) {
@@ -2490,7 +2490,9 @@ describe("authenticated public SDK admission quota", () => {
       expect(joined.isError).not.toBe(true);
       const eventRows = () =>
         captured.map((line) => JSON.parse(line) as Record<string, unknown>);
-      const inviteEvents = eventRows().filter((event) => event.kind === "invitation");
+      const inviteEvents = eventRows().filter(
+        (event) => event.kind === "invitation",
+      );
       expect(inviteEvents).toEqual([
         expect.objectContaining({
           operation: "join_table",
@@ -2517,7 +2519,7 @@ describe("authenticated public SDK admission quota", () => {
       const second = {
         table_id: tableId,
         request_id: "telemetry_mcp_second_post_0001",
-        body: "another-private-body-" + crypto.randomUUID(),
+        body: `another-private-body-${crypto.randomUUID()}`,
       };
       const firstResult = await creator.callTool({
         name: "post_message",
@@ -2546,7 +2548,7 @@ describe("authenticated public SDK admission quota", () => {
       const lost = {
         table_id: tableId,
         request_id: "telemetry_mcp_lost_post_0001",
-        body: "lost-response-private-" + crypto.randomUUID(),
+        body: `lost-response-private-${crypto.randomUUID()}`,
       };
       let dropped = false;
       const flaky = await sdk(owner.token, async (request) => {
@@ -2588,21 +2590,31 @@ describe("authenticated public SDK admission quota", () => {
       expect(output(recovered)).toMatchObject({ seq: 3, persisted: true });
 
       const table = env.TABLES.get(env.TABLES.idFromName(tableId));
-      const authoritative = await runInDurableObject(table, async (_instance, state) => ({
-        messages: state.storage.sql
-          .exec<{ total: number }>("SELECT COUNT(*) AS total FROM table_messages")
-          .one().total,
-        receipts: state.storage.sql
-          .exec<{ total: number }>("SELECT COUNT(*) AS total FROM table_post_receipts")
-          .one().total,
-      }));
+      const authoritative = await runInDurableObject(
+        table,
+        async (_instance, state) => ({
+          messages: state.storage.sql
+            .exec<{ total: number }>(
+              "SELECT COUNT(*) AS total FROM table_messages",
+            )
+            .one().total,
+          receipts: state.storage.sql
+            .exec<{ total: number }>(
+              "SELECT COUNT(*) AS total FROM table_post_receipts",
+            )
+            .one().total,
+        }),
+      );
       const commits = eventRows().filter(
-        (event) => event.kind === "commit" && event.operation === "post_message",
+        (event) =>
+          event.kind === "commit" && event.operation === "post_message",
       );
       expect(authoritative).toEqual({ messages: 3, receipts: 3 });
       expect(commits).toHaveLength(authoritative.messages);
       expect(commits).toHaveLength(authoritative.receipts);
-      expect(commits.every((event) => event.outcome === "committed")).toBe(true);
+      expect(commits.every((event) => event.outcome === "committed")).toBe(
+        true,
+      );
       expect(
         commits.every(
           (event) =>
