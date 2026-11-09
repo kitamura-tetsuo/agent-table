@@ -5,6 +5,7 @@ import {
   type VerifiedConnectionActor,
 } from "../shared/auth";
 import {
+  type CreationActor,
   creationRequestDigest,
   InvalidCreationRequestError,
   parseCreationRequest,
@@ -391,7 +392,7 @@ export class TableDO extends DurableObject<Env> {
    * No application table state is written until the local SQLite transaction.
    */
   async initializeTable(
-    actor: VerifiedConnectionActor,
+    actor: CreationActor,
     input: unknown,
     reservation: CreationReservation,
   ): Promise<TableResult<SafeTableMetadata>> {
@@ -404,9 +405,14 @@ export class TableDO extends DurableObject<Env> {
       }
       throw error;
     }
+    const actorAuthorized =
+      actor &&
+      typeof actor.guestId === "string" &&
+      ("kind" in actor
+        ? actor.kind === "verified-connection" && actor.scope === "tables:write"
+        : await this.verifyBrowserSession(actor));
     if (
-      actor?.kind !== "verified-connection" ||
-      actor.scope !== "tables:write" ||
+      !actorAuthorized ||
       !reservation ||
       typeof reservation.tableId !== "string" ||
       typeof actor.guestId !== "string" ||

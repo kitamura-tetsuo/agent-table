@@ -17,6 +17,7 @@ import {
   rejectOversizedIngress,
 } from "./shared/admission";
 import { correlationId, emitOperationalEvent } from "./shared/telemetry";
+import { handleBrowserTableCreate } from "./web/create";
 import { handleDeletionPage } from "./web/deletion";
 import { handleJoinPage, handleJoinScript } from "./web/join";
 import { handleBrowserTableManage } from "./web/manage";
@@ -51,6 +52,7 @@ function edgeCategory(request: Request): EdgeAdmissionCategory | null {
     path === "/guest/delete" ||
     path === "/guest/table" ||
     path === "/guest/manage" ||
+    path === "/guest/create" ||
     path === "/guest/connections/revoke" ||
     path === "/join.js"
   ) {
@@ -102,6 +104,8 @@ const handleRequest: ExportedHandler<Env>["fetch"] = async (
     return handleBrowserTableView(request, env);
   if (url.pathname === "/guest/manage")
     return handleBrowserTableManage(request, env);
+  if (url.pathname === "/guest/create")
+    return handleBrowserTableCreate(request, env);
   if (url.pathname === "/join") return handleJoinPage(request, env);
   if (url.pathname === "/join.js") return handleJoinScript(request);
   if (url.pathname === "/guest/me") {
