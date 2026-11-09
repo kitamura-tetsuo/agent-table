@@ -43,6 +43,10 @@ test("browser OAuth approval preserves same-origin CSRF enforcement", async ({
   );
   const consent = await page.goto(authorize.toString());
   expect(consent?.status()).toBe(200);
+  expect(consent?.headers()["referrer-policy"]).toBe("same-origin");
+  expect(consent?.headers()["content-security-policy"]).toContain(
+    "form-action 'self' https://client.example",
+  );
   await expect(page.getByRole("button", { name: "Allow" })).toBeVisible();
 
   const submission = page.waitForRequest(
@@ -70,6 +74,10 @@ test("browser OAuth approval preserves same-origin CSRF enforcement", async ({
   expect(redirected.origin).toBe("https://client.example");
   expect(redirected.searchParams.get("state")).toBe("synthetic-browser-state");
   expect(redirected.searchParams.get("code")).toBeTruthy();
-  expect(consent?.headers()["referrer-policy"]).toBe("same-origin");
+  await page.waitForURL(
+    (url) =>
+      url.origin === "https://client.example" && url.pathname === "/callback",
+    { waitUntil: "commit", timeout: 10_000 },
+  );
   await expect(page.getByText("Synthetic callback received")).toBeVisible();
 });

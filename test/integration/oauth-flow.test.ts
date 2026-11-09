@@ -158,6 +158,10 @@ async function approvedConsent(
     headers: { Cookie: browser.cookie },
   });
   expect(response.status).toBe(200);
+  expect(response.headers.get("Referrer-Policy")).toBe("same-origin");
+  expect(response.headers.get("Content-Security-Policy")).toContain(
+    "form-action 'self' https://client.example",
+  );
   const html = await response.text();
   expect(html).toContain("Synthetic OAuth client");
   expect(html).toContain(browser.guestId);
