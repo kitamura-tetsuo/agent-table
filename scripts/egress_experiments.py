@@ -1,4 +1,5 @@
 import copy
+import hashlib
 import json
 import os
 import re
@@ -74,6 +75,7 @@ class SafeExperimentSession:
         self.saved_dev_vars_content: bytes | None = None
         self.saved_dev_vars_mode: int | None = None
         self.written_dev_vars_identity: tuple[int, int] | None = None
+        self.written_dev_vars_digest: bytes | None = None
         self.dev_vars_modified: bool = False
         self._installed_signals = False
 
@@ -243,6 +245,7 @@ class SafeExperimentSession:
         parent_stat = parent.lstat()
         if not stat.S_ISDIR(parent_stat.st_mode) or parent.is_symlink():
             raise RuntimeError("Refusing an unsafe .dev.vars directory")
+        # An original permissive file is deliberately restored as private (at most 0600).
         fd, temporary_name = tempfile.mkstemp(prefix=".egress-vars-", dir=parent)
         try:
             os.fchmod(fd, mode & 0o600)
@@ -262,6 +265,8 @@ class SafeExperimentSession:
             fd = os.open(self.dev_vars_path, os.O_RDONLY | os.O_NOFOLLOW)
         except FileNotFoundError:
             return None
+        except OSError as e:
+            raise RuntimeError("Refusing unsafe .dev.vars path") from e
         try:
             info = os.fstat(fd)
             if not stat.S_ISREG(info.st_mode):
@@ -277,8 +282,8 @@ class SafeExperimentSession:
             os.close(fd)
 
     def _assert_written_dev_vars_unchanged(self) -> None:
-        if self.written_dev_vars_identity is None:
-            raise RuntimeError("No managed .dev.vars inode to restore")
+        if self.written_dev_vars_identity is None or self.written_dev_vars_digest is None:
+            raise RuntimeError("No managed .dev.vars contents to restore")
         try:
             current = self.dev_vars_path.lstat()
         except FileNotFoundError as e:
@@ -288,6 +293,10 @@ class SafeExperimentSession:
             or (current.st_dev, current.st_ino) != self.written_dev_vars_identity
         ):
             raise RuntimeError(".dev.vars changed concurrently; refusing destructive rollback")
+        # In-place edits can preserve inode identity, so check content too.
+        snapshot = self._read_regular_dev_vars()
+        if snapshot is None or hashlib.sha256(snapshot[0]).digest() != self.written_dev_vars_digest:
+            raise RuntimeError(".dev.vars content changed concurrently; refusing rollback")
 
     def prepare_dev_vars(
         self, token: str, callback_url: str, origin: str, path_prefix: str
@@ -311,6 +320,7 @@ class SafeExperimentSession:
         self._atomic_replace_dev_vars(vars_content.encode("utf-8"), 0o600)
         current = self.dev_vars_path.lstat()
         self.written_dev_vars_identity = (current.st_dev, current.st_ino)
+        self.written_dev_vars_digest = hashlib.sha256(vars_content.encode("utf-8")).digest()
         self.dev_vars_modified = True
         logger.info("Atomically installed temporary .dev.vars with mode 0600")
 
@@ -335,6 +345,7 @@ class SafeExperimentSession:
         self.saved_dev_vars_content = None
         self.saved_dev_vars_mode = None
         self.written_dev_vars_identity = None
+        self.written_dev_vars_digest = None
         self.dev_vars_modified = False
 
     # --- Process management (no pkill) ---
