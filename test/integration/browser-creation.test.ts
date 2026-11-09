@@ -1,7 +1,10 @@
-import { env } from "cloudflare:workers";
+import { env, exports } from "cloudflare:workers";
+import {
+  Client,
+  StreamableHTTPClientTransport,
+} from "@modelcontextprotocol/client";
 import { describe, expect, it } from "vitest";
 import worker from "../../src/index";
-import { authorizeGuestConnection } from "../../src/shared/auth";
 
 const ORIGIN = "http://localhost:8787";
 const CSRF_NAME = "__Host-agent_table_csrf";
@@ -71,6 +74,128 @@ function createPost(
       ...extra,
     }),
   });
+}
+
+/** Obtain a real OAuth consented read token and use the pinned official SDK. */
+async function readWithOfficialSdk(cookie: string, tableId: string) {
+  const redirect = "https://client.example/callback";
+  const resource = ORIGIN + "/mcp";
+  const registration = await exports.default.fetch(ORIGIN + "/oauth/register", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      client_name: "Browser-created table readback",
+      redirect_uris: [redirect],
+      token_endpoint_auth_method: "none",
+    }),
+  });
+  expect(registration.status).toBe(201);
+  const clientId = String(
+    ((await registration.json()) as { client_id: string }).client_id,
+  );
+  const verifier = crypto.randomUUID().replaceAll("-", "").repeat(2);
+  const hash = new Uint8Array(
+    await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier)),
+  );
+  const challenge = btoa(String.fromCharCode(...hash))
+    .replaceAll("+", "-")
+    .replaceAll("/", "_")
+    .replaceAll("=", "");
+  const authorization = new URL(ORIGIN + "/authorize");
+  for (const [name, value] of Object.entries({
+    response_type: "code",
+    client_id: clientId,
+    redirect_uri: redirect,
+    scope: "tables:read",
+    state: "browser_creation_readback",
+    code_challenge: challenge,
+    code_challenge_method: "S256",
+    resource,
+  }))
+    authorization.searchParams.set(name, value);
+  const consent = await exports.default.fetch(authorization.toString(), {
+    headers: { Cookie: cookie },
+  });
+  expect(consent.status).toBe(200);
+  const consentHtml = await consent.text();
+  const hidden = (name: string) =>
+    new RegExp('name="' + name + '" type="hidden" value="([^"]+)"').exec(
+      consentHtml,
+    )?.[1];
+  const handle = hidden("handle");
+  const csrf = hidden("csrf");
+  const binding = hidden("binding");
+  const guestId = hidden("guest_id");
+  if (!handle || !csrf || !binding || !guestId)
+    throw new Error("OAuth consent fields unavailable");
+  const consentCookies = consent.headers
+    .getSetCookie()
+    .map((line) => line.split(";")[0]);
+  const approved = await exports.default.fetch(ORIGIN + "/authorize", {
+    method: "POST",
+    redirect: "manual",
+    headers: {
+      Origin: ORIGIN,
+      "Sec-Fetch-Site": "same-origin",
+      "Content-Type": "application/x-www-form-urlencoded",
+      Cookie: [cookie, ...consentCookies].join("; "),
+    },
+    body: new URLSearchParams([
+      ["handle", handle],
+      ["csrf", csrf],
+      ["guest_id", guestId],
+      ["binding", binding],
+      ["decision", "approve"],
+      ["scope", "tables:read"],
+    ]),
+  });
+  expect(approved.status).toBe(302);
+  const code = new URL(
+    approved.headers.get("Location") ?? redirect,
+  ).searchParams.get("code");
+  if (!code) throw new Error("OAuth code missing");
+  const exchanged = await exports.default.fetch(ORIGIN + "/oauth/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      client_id: clientId,
+      grant_type: "authorization_code",
+      redirect_uri: redirect,
+      code,
+      code_verifier: verifier,
+      resource,
+    }),
+  });
+  expect(exchanged.status).toBe(200);
+  const token = String(
+    ((await exchanged.json()) as { access_token: string }).access_token,
+  );
+  const sdk = new Client(
+    { name: "browser-created-table-test", version: "1.0.0" },
+    { versionNegotiation: { mode: "auto" } },
+  );
+  await sdk.connect(
+    new StreamableHTTPClientTransport(new URL(resource), {
+      authProvider: { token: async () => token },
+      fetch: (url, init) => {
+        const request = new Request(url, init);
+        request.headers.set("Host", new URL(request.url).host);
+        return exports.default.fetch(request);
+      },
+    }),
+  );
+  try {
+    const read = await sdk.callTool({
+      name: "get_table",
+      arguments: { table_id: tableId },
+    });
+    expect(read.isError).not.toBe(true);
+    const block = read.content.find((part) => part.type === "text");
+    if (block?.type !== "text") throw new Error("SDK readback missing text");
+    return JSON.parse(block.text) as Record<string, unknown>;
+  } finally {
+    await sdk.close();
+  }
 }
 
 describe("browser table creation via shared GuestDO/TableDO authority", () => {
@@ -160,32 +285,13 @@ describe("browser table creation via shared GuestDO/TableDO authority", () => {
     expect(mismatch.status).toBe(409);
     expect(await mismatch.text()).toContain("IDEMPOTENCY_CONFLICT");
 
-    // An independently authorized connection observes the same committed table.
-    const grant = await owner.stub.createConnection(
-      owner.session.sessionId,
-      owner.session.secret,
-      ["tables:read"],
-      Date.now() + 60_000,
-    );
-    if (!grant) throw new Error("Failed to issue independent read grant");
-    const decision = await authorizeGuestConnection(
-      env,
-      owner.id,
-      grant.connectionId,
-      "tables:read",
-    );
-    if (!decision.allowed) throw new Error("Grant was not verified");
-    expect(await table.getMetadata(decision.actor)).toMatchObject({
-      ok: true,
-      value: { tableId: id, state: "waiting" },
+    // The official SDK independently reads durable state after real OAuth consent.
+    expect(await readWithOfficialSdk(owner.cookie, id)).toMatchObject({
+      tableId: id,
+      state: "waiting",
+      title: "Private <script>alert(1)</script>",
     });
-
-    expect(
-      await owner.stub.invalidateSession(
-        owner.session.sessionId,
-        owner.session.secret,
-      ),
-    ).toBe(true);
+    // OAuth consent rotates the guest browser session, invalidating its old cookie.
     expect((await createPost(form.cookies, form.csrf, form.key)).status).toBe(
       401,
     );
@@ -227,6 +333,44 @@ describe("browser table creation via shared GuestDO/TableDO authority", () => {
       ok: true,
       value: { title, purpose },
     });
+  });
+
+  it("preserves admission pause before any browser reservation", async () => {
+    const owner = await browserGuest();
+    const form = await createForm(owner.cookie);
+    const paused = { ...env, ALLOW_NEW_TABLES: "false" } as Env;
+    const response = await dispatch(
+      "/guest/create",
+      {
+        method: "POST",
+        headers: {
+          Cookie: form.cookies,
+          Origin: ORIGIN,
+          "Sec-Fetch-Site": "same-origin",
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+        body: new URLSearchParams({
+          csrf: form.csrf,
+          request_id: form.key,
+          title: "Not created",
+          purpose: "",
+          ttl_seconds: "86400",
+        }),
+      },
+      paused,
+    );
+    expect(response.status).toBe(409);
+    expect(await response.text()).toContain("ADMISSION_DISABLED");
+    expect(
+      await owner.stub.getCreationReservation(
+        {
+          guestId: owner.id,
+          sessionId: owner.session.sessionId,
+          secret: owner.session.secret,
+        },
+        form.key,
+      ),
+    ).toEqual({ ok: false, code: "NOT_FOUND" });
   });
 
   it("does not spend a creation reservation for a forged browser credential", async () => {
