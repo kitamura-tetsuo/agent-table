@@ -39,7 +39,14 @@ function edgeCategory(request: Request): EdgeAdmissionCategory | null {
   ) {
     return "protocol";
   }
-  if (path === "/guest/delete" || path === "/guest/connections/revoke") {
+  if (
+    path === "/" ||
+    path === "/guest" ||
+    path === "/guest/me" ||
+    path === "/guest/connections" ||
+    path === "/guest/delete" ||
+    path === "/guest/connections/revoke"
+  ) {
     return "application";
   }
   return null;
