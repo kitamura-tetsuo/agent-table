@@ -230,6 +230,59 @@ describe("cross-isolate admission policy", () => {
     });
   });
 
+  it("meters guest and connection browser reads using a shared edge budget", async () => {
+    const source = "192.0.2.84";
+    const limited: Env = {
+      ...env,
+      EDGE_APPLICATION_RATE_PER_MINUTE: "3",
+      EDGE_GUEST_RATE_PER_MINUTE: "1",
+    };
+    const cookie = `__Host-agent_table_session=v1.${crypto.randomUUID()}.${crypto.randomUUID()}.${"A".repeat(43)}`;
+    const headers = {
+      "CF-Connecting-IP": source,
+      "X-Forwarded-For": "198.51.100.40",
+      Cookie: cookie,
+    };
+
+    expect((await dispatch(limited, "/guest", { headers })).status).toBe(200);
+    expect((await dispatch(limited, "/guest/me", { headers })).status).toBe(401);
+    expect(
+      (await dispatch(limited, "/guest/connections", { headers })).status,
+    ).toBe(401);
+
+    // A fourth browser read must be refused before more guest-state work.
+    const denied = await dispatch(limited, "/", { headers });
+    expect(denied.status).toBe(429);
+    expect(await denied.text()).toBe("RATE_LIMITED");
+    expect(denied.headers.get("Retry-After")).toMatch(/^[1-9][0-9]*$/);
+    expect(denied.headers.get("Cache-Control")).toBe("no-store");
+
+    // Guest creation still has its separate admission category.
+    const firstGuest = await dispatch(limited, "/guest/session", {
+      method: "POST",
+      headers,
+    });
+    expect(firstGuest.status).toBe(403);
+    const secondGuest = await dispatch(limited, "/guest/session", {
+      method: "POST",
+      headers,
+    });
+    expect(secondGuest.status).toBe(429);
+
+    const stub = await admissionStub(limited, `edge-v1:${source}`);
+    await runInDurableObject(stub, async (_instance, state) => {
+      const rows = state.storage.sql
+        .exec<{ category: string; count: number }>(
+          "SELECT category, COUNT(*) AS count FROM admission_hits GROUP BY category ORDER BY category",
+        )
+        .toArray();
+      expect(rows).toEqual([
+        { category: "application", count: 3 },
+        { category: "guest", count: 1 },
+      ]);
+    });
+  });
+
   it("shares an edge budget across equivalent IPv6 source spellings", async () => {
     const limited: Env = { ...env, EDGE_DCR_RATE_PER_MINUTE: "1" };
     const register = (source: string, forwardedFor: string) =>
