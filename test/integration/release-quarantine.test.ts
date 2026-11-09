@@ -12,6 +12,7 @@ import { allowOutboundNotifications } from "../../src/shared/admission";
 import { authorizeGuestConnection } from "../../src/shared/auth";
 import {
   isRestoreQuarantined,
+  RESTORE_QUARANTINE_RECHECK_MS,
   rejectRestoredAccess,
 } from "../../src/shared/release-quarantine";
 
@@ -298,7 +299,6 @@ describe("restore quarantine isolation of Durable Object alarm paths", () => {
         Date.now() - 2 * 24 * 60 * 60_000,
         Date.now() - 24 * 60 * 60_000,
       );
-      const alarm = await state.storage.getAlarm();
       await quarantinedAlarmReceiver(instance).alarm();
       expect(
         state.storage.sql
@@ -315,7 +315,14 @@ describe("restore quarantine isolation of Durable Object alarm paths", () => {
           .exec("SELECT COUNT(*) AS n FROM table_tombstones")
           .one(),
       ).toEqual({ n: 0 });
-      expect(await state.storage.getAlarm()).toBe(alarm);
+      const wakeup = await state.storage.getAlarm();
+      expect(wakeup).not.toBeNull();
+      expect(wakeup).toBeGreaterThan(
+        Date.now() + RESTORE_QUARANTINE_RECHECK_MS - 5_000,
+      );
+      expect(wakeup).toBeLessThanOrEqual(
+        Date.now() + RESTORE_QUARANTINE_RECHECK_MS,
+      );
     });
   });
 
@@ -330,14 +337,20 @@ describe("restore quarantine isolation of Durable Object alarm paths", () => {
         Date.now() - 24 * 60 * 60_000,
         session.sessionId,
       );
-      const alarm = await state.storage.getAlarm();
       await quarantinedAlarmReceiver(instance).alarm();
       expect(
         state.storage.sql
           .exec("SELECT COUNT(*) AS n FROM guest_sessions")
           .one(),
       ).toEqual({ n: 1 });
-      expect(await state.storage.getAlarm()).toBe(alarm);
+      const wakeup = await state.storage.getAlarm();
+      expect(wakeup).not.toBeNull();
+      expect(wakeup).toBeGreaterThan(
+        Date.now() + RESTORE_QUARANTINE_RECHECK_MS - 5_000,
+      );
+      expect(wakeup).toBeLessThanOrEqual(
+        Date.now() + RESTORE_QUARANTINE_RECHECK_MS,
+      );
     });
   });
 });

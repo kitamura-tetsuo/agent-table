@@ -26,3 +26,17 @@ export function rejectRestoredAccess(
     },
   });
 }
+
+// Park an already-fired DO alarm without touching restored private SQL rows.
+// Without rearming, an inactive DO might never reconstruct after release and
+// expired data would lack its scheduled cleanup wakeup.
+export const RESTORE_QUARANTINE_RECHECK_MS = 6 * 60 * 60_000;
+
+export async function deferQuarantinedAlarm(
+  env: Pick<Env, "RELEASE_ENVIRONMENT" | "RESTORE_QUARANTINE">,
+  storage: DurableObjectStorage,
+): Promise<boolean> {
+  if (!isRestoreQuarantined(env)) return false;
+  await storage.setAlarm(Date.now() + RESTORE_QUARANTINE_RECHECK_MS);
+  return true;
+}
