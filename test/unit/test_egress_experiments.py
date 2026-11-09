@@ -11,6 +11,7 @@ import pytest
 from scripts.egress_experiments import (
     DnsCollisionError,
     SafeExperimentSession,
+    run_probe,
     TunnelCollisionError,
     TunnelUpdateError,
 )
@@ -280,3 +281,24 @@ def test_rollback_continues_tunnel_restore_after_dns_failure(mock_cf_cmd):
     session.created_dns_records.add("broken-rec")
     session.rollback()
     assert sum("update" in call.args[0] for call in mock_cf_cmd.call_args_list) == 1
+
+
+def test_probe_credentials_use_stdin_and_untrusted_output_is_not_returned():
+    """No bearer token in argv, stderr, logged data, or raw diagnostic fallback."""
+    mock_response = MagicMock()
+    mock_response.returncode = 0
+    mock_response.stdout = 'HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\r\n{"result":"success","upstreamStatus":204}'
+    token = "synthetic-secret-that-must-not-reach-argv"
+    with patch("scripts.egress_experiments.subprocess.run", return_value=mock_response) as run:
+        assert run_probe("synthetic", token) == {"result": "success", "upstreamStatus": 204}
+    args, kwargs = run.call_args
+    assert token not in repr(args)
+    assert token in kwargs["input"]
+    assert "--max-time" in args[0]
+    assert kwargs["timeout"] == 20
+
+    mock_response.stdout = "HTTP/1.1 500 Error\r\n\r\nPRIVATE_SOURCE_ERROR_TEXT"
+    with patch("scripts.egress_experiments.subprocess.run", return_value=mock_response):
+        with patch("scripts.egress_experiments.time.sleep"):
+            result = run_probe("synthetic", token)
+    assert result == {"result": "failure", "category": "invalid-probe-response"}
