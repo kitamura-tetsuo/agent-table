@@ -561,6 +561,9 @@ def run_probe(test_id: str, probe_token: str) -> dict:
             continue
         if not set(parsed).issubset({"result", "testId", "upstreamStatus", "cfErrorCode"}):
             continue
+        category = parsed.get("result")
+        if not isinstance(category, str):
+            continue
         expected_status = {
             "reachable": 200,
             "disabled": 503,
@@ -573,7 +576,7 @@ def run_probe(test_id: str, probe_token: str) -> dict:
             "transport-error": 502,
             "upstream-non-2xx": 502,
             "connection-boundary-unverified": 502,
-        }.get(parsed.get("result"))
+        }.get(category)
         if expected_status is None or int(status_match.group(1)) != expected_status:
             continue
         upstream_status = parsed.get("upstreamStatus")

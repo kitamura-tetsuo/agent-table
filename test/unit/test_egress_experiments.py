@@ -416,6 +416,7 @@ def test_probe_rejects_stale_or_unrelated_test_id():
         (502, '{"result":"reachable","testId":"current-run"}'),
         (200, '{"result":"reachable","testId":"current-run","secret":"must-not-return"}'),
         (200, '{"result":"reachable","testId":"current-run","cfErrorCode":true}'),
+        (200, '{"result":[],"testId":"current-run"}'),
     ],
 )
 def test_probe_rejects_inconsistent_or_untrusted_result_envelopes(status, body):
