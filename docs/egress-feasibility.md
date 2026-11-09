@@ -478,11 +478,11 @@ Strict classification taxonomy:
 
 1. **P0: Experiment Script Safety (`scripts/egress_experiments.py`):**
    - **Collision-Safe DNS:** `create_dns_record()` inspects `list_dns_records()` and raises `DnsCollisionError` if records already exist. Pre-existing records are never deleted; only records created in the active session (`created_dns_records`) are deleted on cleanup.
-   - **Tunnel Ingress Snapshot & Restore:** `snapshot_tunnel_ingress()` fetches the full active configuration via `cf tunnels config get`, checks for collision (`TunnelCollisionError`), inserts temporary rules before the catch-all rule, and restores the exact original ingress list on exit.
+   - **Tunnel Configuration Snapshot & Restore:** `snapshot_tunnel_ingress()` deep-copies the complete mutable `config`, including top-level `originRequest` and unrelated routing settings. Update/restore sends the full config, not just ingress; independent before-write and before-restore reads refuse observed concurrent changes. The Cloudflare CLI does not expose atomic compare-and-swap here, so concurrent remote mutation in the read/write gap remains a residual risk; do not run this experiment against a shared live tunnel.
    - **Process Group Termination:** Completely eliminated `pkill -f "wrangler dev --remote"`. Wrangler is spawned with `start_new_session=True` and stopped via process-group signals (`os.killpg(pgid, signal.SIGTERM)` / `SIGKILL`), isolating teardown exclusively to the spawned PID tree.
-   - **Secure .dev.vars Lifecycle:** Pre-existing `.dev.vars` is backed up in memory. Temporary secret files are created with `0o600` permissions via `os.open`, and restored or securely unlinked on exit.
+   - **Secure `.dev.vars` Lifecycle:** Pre-existing regular-file bytes and mode are retained in memory; symlinks/non-regular files are refused. New bearer tokens are written to same-directory 0600 temporary files and installed atomically with `os.replace`, never by in-place `O_TRUNC`. Restoration uses the same atomic path, refuses unexpected inode/content changes and narrows formerly permissive file modes to 0600. A failed replace leaves the original bytes intact. A forced crash can still leave an isolated 0600 probe file; follow the documented local cleanup procedure.
    - **Transactional Rollback:** All operations are protected by `SafeExperimentSession` with `try/finally` and signal handlers (`SIGINT`, `SIGTERM`).
-   - **Fault-Injection Test Suite:** 7 automated unit tests in `test/unit/test_egress_experiments.py` verify collision abort, tunnel update failure rollback, process group kill, and cleanup error resilience under fault injection.
+   - **Safety Regression Suite:** 13 Python tests in `test/unit/test_egress_experiments.py` cover full-config round-trip with nonempty `originRequest`, observed concurrent-update refusal, DNS collision, 0644 source protection, symlink refusal, atomic-write fault cleanup, in-place user edits, session rollback and cleanup-error isolation. CI invokes `python -m pytest -q test/unit/test_egress_experiments.py`. Live DNS/Tunnel mutation now also requires `AGENT_TABLE_ALLOW_LIVE_EGRESS_EXPERIMENT=yes` and separate authorization.
 
 2. **P1: Safe 5xx Diagnostic Parsing (`src/notifications/egress.ts`):**
    - **Bounded Stream Reading:** Reads at most 4 KiB and immediately cancels the underlying stream reader in `finally`, protecting against unbounded buffering and memory exhaustion on huge single chunks (tested up to 1 MiB).
@@ -494,13 +494,13 @@ Strict classification taxonomy:
 
 ### Requirement Status Summary
 
-- **REQ-002: BLOCKED / NOT COMPLETE**
+- **REQ-002: ACCEPTED PLATFORM ASSUMPTION FOR CONTROLLED LIMITED BETA ONLY; NOT FORMALLY PROVEN FOR GA**
   - Destination origin/prefix policy preflight: **PASS** (strictly parsed, IP literals / unreviewed origins / malformed policies rejected before I/O).
   - Original-host TLS certificate validation: **OBSERVED** (OpenSSL hostname mismatch correlated with HTTP 526 on `wrong.host.badssl.com`; Let's Encrypt and BadSSL valid certs completed TLS handshake with HTTP 200/405), but native `fetch` exposes no certificate SAN validation trace to application code.
   - Actual TCP/TLS connection-time private IP exclusion: **OBSERVED** (Cloudflare edge proxy refused `127.0.0.1` and `10.0.0.1` via direct DNS and delegated authoritative NS with HTTP 530 Error 1016; mixed public/private A-records refused with HTTP 403), but application code cannot inspect or pin the connected IP.
   - Request-to-request DNS changes: **OBSERVED** (the second fetch received a private DNS answer and returned HTTP 530/1016; mixed multi-A records returned HTTP 403). **Single-connection DNS rebinding between inspection and dial remains NOT RUN / UNVERIFIED** on hosted Workers.
   - Runtime connection-boundary programmatic inspection: **BLOCKED (runtime limitation)** (Workers runtime provides no API on `fetch()` `Response` to assert connected socket IP or peer certificate chain; connection invariant rests on Cloudflare edge proxy behavior rather than application-enforced socket pinning).
-- **REQ-006: PARTIAL / NOT ACCEPTED** (real-runtime controls and DNS-change observations exist, but connection-time rebinding and independently attributable TLS/IP enforcement evidence remain incomplete)
+- **REQ-006: HOSTED BEHAVIORAL EVIDENCE RECORDED; EXPLICIT LIMITED-BETA RESIDUAL RISK** (the owner decision of 2026-11-09 no longer requires a socket-level trace or formal Cloudflare guarantee for limited beta; observed sender behavior and inability to prove same-attempt DNS TOCTOU must remain distinct)
   - Real Workers positive reachability controls: **PASS** (verified against both Cloudflare Tunnel receiver and DNS-only public Web PKI receiver on GCP `34.3.98.126`).
   - Real Workers negative behavioral controls: **PASS** (HTTP 302 redirect refusal, 10 s deadline abort, 64 KiB streaming cap, destination policy preflight rejections).
   - Real Workers adversarial TLS verification: **PASS** (TLS hostname mismatch on `wrong.host.badssl.com` actively terminated by edge with HTTP 526).
@@ -513,6 +513,6 @@ Strict classification taxonomy:
 - `ENABLE_OPENAI_EVENTS=false` remains enforced in `wrangler.jsonc`.
 - `callbackTransportReadiness()` returns `{ enabled: false, reason: "connection-boundary-unverified" }`.
 - PR #33 remains in **DRAFT** status.
-- P1 review thread on unmet runtime security proof remains **OPEN**.
-- Issue #19 remains **OPEN**.
-- No production deployment, public Events release, or PR merge is authorized.
+- The original strict same-connection proof thread was **resolved as superseded by the limited-beta owner decision**, not as experimentally proven. The separate P1 tunnel full-config safety, `.dev.vars` safety, and CI review threads require review of this hardening and successful exact-head CI before they can be resolved.
+- Issue #19 remains **OPEN** pending security review, current-head CI and the required documentation/verification assessment.
+- The code may merge with Events disabled only after these gates; **no production deployment or Events activation is authorized**. A separately approved synthetic-only, signed, monitored opt-in rollout is mandatory.
