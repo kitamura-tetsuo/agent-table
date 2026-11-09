@@ -436,17 +436,20 @@ def test_probe_rejects_inconsistent_or_untrusted_result_envelopes(status, body):
 
 
 
-def test_local_provenance_records_pinned_checkout_and_cli(monkeypatch):
+@pytest.mark.parametrize("cli_output", ["4.158.0\n", "wrangler 4.158.0\n"])
+def test_local_provenance_records_pinned_checkout_and_cli(cli_output):
     """Evidence must identify a clean revision and the actual local probe inputs."""
     full_sha = "a" * 40
 
     def fake_run(command, **kwargs):
         assert kwargs["timeout"] == 10
+        assert kwargs["capture_output"] is True
+        assert kwargs["text"] is True
         response = {
             ("git", "rev-parse", "--show-toplevel"): os.getcwd(),
             ("git", "rev-parse", "--verify", "HEAD"): full_sha,
             ("git", "status", "--porcelain", "--untracked-files=normal"): "",
-            ("npx", "--no-install", "wrangler", "--version"): "wrangler 4.46.0\n",
+            ("npx", "--no-install", "wrangler", "--version"): cli_output,
         }
         return MagicMock(returncode=0, stdout=response[tuple(command)])
 
@@ -455,9 +458,59 @@ def test_local_provenance_records_pinned_checkout_and_cli(monkeypatch):
 
     assert result["localGitHeadSha"] == full_sha
     assert result["checkoutClean"] is True
-    assert result["wranglerCliVersion"] == "4.46.0"
+    assert result["wranglerCliVersion"] == "4.158.0"
     for name in ("senderSha256", "probeSha256", "probeConfigSha256"):
         assert len(result[name]) == 64
+
+
+def test_local_provenance_accepts_installed_non_tty_wrangler_cli():
+    """Exercise the actual pinned Wrangler process through the captured-stdout boundary."""
+    actual_run = subprocess.run
+
+    def fake_run(command, **kwargs):
+        if command[0] == "npx":
+            return actual_run(command, **kwargs)
+        output = {
+            ("git", "rev-parse", "--show-toplevel"): os.getcwd(),
+            ("git", "rev-parse", "--verify", "HEAD"): "a" * 40,
+            ("git", "status", "--porcelain", "--untracked-files=normal"): "",
+        }
+        return MagicMock(returncode=0, stdout=output[tuple(command)])
+
+    with patch("scripts.egress_experiments.subprocess.run", side_effect=fake_run):
+        provenance = capture_local_provenance()
+
+    assert provenance["wranglerCliVersion"] == "4.158.0"
+
+
+@pytest.mark.parametrize(
+    "cli_output,cli_returncode,expected_error",
+    [
+        ("", 0, "version cannot be verified"),
+        ("version: unknown", 0, "version cannot be verified"),
+        ("4.158.0\nunexpected", 0, "version cannot be verified"),
+        ("4.158.1", 0, "does not match the pinned dependency"),
+        ("4.158.0", 1, "Could not establish local experiment provenance"),
+    ],
+)
+def test_local_provenance_rejects_invalid_cli_identity(
+    cli_output, cli_returncode, expected_error
+):
+    def fake_run(command, **kwargs):
+        output = {
+            ("git", "rev-parse", "--show-toplevel"): os.getcwd(),
+            ("git", "rev-parse", "--verify", "HEAD"): "a" * 40,
+            ("git", "status", "--porcelain", "--untracked-files=normal"): "",
+            ("npx", "--no-install", "wrangler", "--version"): cli_output,
+        }
+        return MagicMock(
+            returncode=cli_returncode if command[0] == "npx" else 0,
+            stdout=output[tuple(command)],
+        )
+
+    with patch("scripts.egress_experiments.subprocess.run", side_effect=fake_run):
+        with pytest.raises(RuntimeError, match=expected_error):
+            capture_local_provenance()
 
 
 def test_local_provenance_rejects_dirty_checkout_before_live_work():

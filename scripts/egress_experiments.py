@@ -619,9 +619,16 @@ def capture_local_provenance() -> dict:
         raise RuntimeError("Experiment checkout has uncommitted or untracked files")
 
     cli = checked_command(["npx", "--no-install", "wrangler", "--version"])
-    match = re.search(r"\bwrangler\s+(\d+\.\d+\.\d+)\b", cli, re.IGNORECASE)
+    # Wrangler prints only the version when stdout is not a TTY.
+    match = re.fullmatch(r"(?:wrangler\s+)?(\d+\.\d+\.\d+)", cli, re.IGNORECASE)
     if match is None:
         raise RuntimeError("Wrangler CLI version cannot be verified")
+    pinned_version = json.loads(Path("package.json").read_text())["devDependencies"]["wrangler"]
+    locked_version = json.loads(Path("package-lock.json").read_text())["packages"][
+        "node_modules/wrangler"
+    ]["version"]
+    if match.group(1) != pinned_version or match.group(1) != locked_version:
+        raise RuntimeError("Wrangler CLI does not match the pinned dependency")
 
     sender_path = Path("src/notifications/egress.ts")
     probe_path = Path("test/egress/probe-worker.ts")
