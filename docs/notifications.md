@@ -238,3 +238,14 @@ PASS**; `npm test` **27 files / 157 tests PASS**; `npm run test:e2e`
 socket-startup failure is separately recorded above and must not overwrite
 these subsequent host results. No staging or real agent-host execution was
 performed; no cross-isolate subscription stream exists yet.
+
+### Strict filter parser (still disabled)
+
+The #18 implementation branch includes `parseCanonicalInboxFilter`, an
+independently tested parser for exactly one lowercase canonical private inbox
+URI and no mixed/list-change filter. It rejects aliasing and multiple entries
+before the future stream-authority stage. **Syntax validation does not prove
+ownership or connection authorization.** Production continues with the SDK
+`maxSubscriptions: 0` refusal. Fresh `events:subscribe` grant checks,
+TableDO membership/lifecycle verification, cross-isolate peer delivery and
+bounded SDK HTTP streaming remain unimplemented; no listener is acknowledged.
