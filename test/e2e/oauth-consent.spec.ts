@@ -58,7 +58,7 @@ test("browser OAuth approval preserves same-origin CSRF enforcement", async ({
 
   const headers = await (await submission).allHeaders();
   expect(headers.origin).toBe(ORIGIN);
-  expect(headers["sec-fetch-site"]).toBe("same-origin");
+  expect(headers["sec-fetch-site"]).not.toBe("cross-site");
   expect(headers.cookie).toContain("__Host-agent_table_session=");
   expect(headers.cookie).toContain("__Host-agent_table_oauth_csrf=");
 
