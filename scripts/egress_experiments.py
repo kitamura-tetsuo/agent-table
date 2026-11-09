@@ -49,8 +49,8 @@ def run_cf_cmd(args: list[str]) -> dict | list | str:
     cmd = ["cf"] + args
     res = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if res.returncode != 0:
-        logger.error(f"cf command failed: {args[0] if args else ''}: {res.stderr.strip()[:200]}")
-        raise RuntimeError(f"cf command failed: {res.stderr.strip()[:200]}")
+        logger.error(f"Cloudflare CLI operation failed: {args[0] if args else 'unknown'} (exit {res.returncode})")
+        raise RuntimeError("Cloudflare CLI operation failed; inspect authenticated CLI logs locally")
     out = res.stdout.strip()
     match = re.search(r"(\[.*\]|\{.*\})", out, re.DOTALL)
     if match:
@@ -502,32 +502,39 @@ def record_dns_lookup(hostname: str) -> dict:
 
 
 def run_probe(test_id: str, probe_token: str) -> dict:
+    """Pass credentials over stdin, never in process arguments or retained output."""
     url = "http://127.0.0.1:8788/__egress_probe"
     cmd = [
         "curl",
-        "-s",
-        "-i",
-        "-X",
+        "--silent",
+        "--show-error",
+        "--include",
+        "--request",
         "POST",
-        "-H",
-        f"Authorization: Bearer {probe_token}",
-        "-H",
+        "--header",
         f"x-probe-test-id: {test_id}",
+        "--config",
+        "-",
         url,
     ]
-    out = ""
-    for attempt in range(3):
-        res = subprocess.run(cmd, capture_output=True, text=True, check=False)
-        out = res.stdout.strip()
-        if out:
-            parts = out.split("\r\n\r\n", 1)
-            body = parts[-1].strip() if len(parts) > 1 else out
-            try:
-                return json.loads(body)
-            except Exception:
-                pass
+    # Curl accepts one config directive per line. This token is not placed in
+    # argv, environment variables, or a temporary file.
+    config = f'header = "Authorization: Bearer {probe_token}"\n'
+    for _ in range(3):
+        res = subprocess.run(cmd, input=config, capture_output=True, text=True, check=False)
+        if res.returncode != 0:
+            continue
+        parts = res.stdout.split("\r\n\r\n", 1)
+        if len(parts) != 2:
+            continue
+        try:
+            parsed = json.loads(parts[1].strip())
+            if isinstance(parsed, dict):
+                return parsed
+        except (ValueError, TypeError):
+            pass
         time.sleep(2)
-    return {"raw": out}
+    return {"result": "failure", "category": "invalid-probe-response"}
 
 
 def run_task_a():
