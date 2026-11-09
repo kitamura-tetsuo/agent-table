@@ -11,6 +11,7 @@ import sys
 import time
 import tempfile
 from pathlib import Path
+from datetime import datetime, timezone
 from loguru import logger
 
 LOG_FILE = Path("test-results/egress-experiments.log")
@@ -593,6 +594,49 @@ def run_probe(test_id: str, probe_token: str) -> dict:
     return {"result": "failure", "category": "invalid-probe-response"}
 
 
+
+def capture_local_provenance() -> dict:
+    """Record checkout/CLI identity before mutating any remote experiment fixture."""
+
+    def checked_command(command: list[str]) -> str:
+        try:
+            result = subprocess.run(
+                command, capture_output=True, text=True, check=False, timeout=10
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise RuntimeError("Could not establish local experiment provenance") from exc
+        if result.returncode != 0 or len(result.stdout) > 4096:
+            raise RuntimeError("Could not establish local experiment provenance")
+        return result.stdout.strip()
+
+    root = checked_command(["git", "rev-parse", "--show-toplevel"])
+    if Path(root).resolve() != Path.cwd().resolve():
+        raise RuntimeError("Launch the experiment at the repository root")
+    head = checked_command(["git", "rev-parse", "--verify", "HEAD"])
+    if not re.fullmatch(r"[0-9a-f]{40}", head):
+        raise RuntimeError("Experiment source commit is not a full SHA")
+    if checked_command(["git", "status", "--porcelain", "--untracked-files=normal"]):
+        raise RuntimeError("Experiment checkout has uncommitted or untracked files")
+
+    cli = checked_command(["npx", "--no-install", "wrangler", "--version"])
+    match = re.search(r"\bwrangler\s+(\d+\.\d+\.\d+)\b", cli, re.IGNORECASE)
+    if match is None:
+        raise RuntimeError("Wrangler CLI version cannot be verified")
+
+    sender_path = Path("src/notifications/egress.ts")
+    probe_path = Path("test/egress/probe-worker.ts")
+    config_path = Path("test/egress/wrangler.jsonc")
+    return {
+        "localGitHeadSha": head,
+        "checkoutClean": True,
+        "wranglerCliVersion": match.group(1),
+        "senderSha256": hashlib.sha256(sender_path.read_bytes()).hexdigest(),
+        "probeSha256": hashlib.sha256(probe_path.read_bytes()).hexdigest(),
+        "probeConfigSha256": hashlib.sha256(config_path.read_bytes()).hexdigest(),
+        "capturedAtUtc": datetime.now(timezone.utc).isoformat(),
+    }
+
+
 def run_task_a():
     logger.info("==================================================")
     logger.info("TASK A: Identifying root cause of HTTP 530")
@@ -841,8 +885,19 @@ if __name__ == "__main__":
             "Refusing DNS/tunnel mutation: set AGENT_TABLE_ALLOW_LIVE_EGRESS_EXPERIMENT=yes "
             "only for an explicitly authorized isolated experiment"
         )
+    provenance = capture_local_provenance()
     task_a_res = run_task_a()
     task_b_res = run_task_b()
-    summary = {"task_a": task_a_res, "task_b": task_b_res}
+    final_provenance = capture_local_provenance()
+    for field in (
+        "localGitHeadSha",
+        "senderSha256",
+        "probeSha256",
+        "probeConfigSha256",
+        "wranglerCliVersion",
+    ):
+        if provenance[field] != final_provenance[field]:
+            raise RuntimeError("Experiment source or runtime changed during execution")
+    summary = {"localProvenance": provenance, "task_a": task_a_res, "task_b": task_b_res}
     Path("test-results/egress-results.json").write_text(json.dumps(summary, indent=2))
     logger.info("All tasks completed. Results written to test-results/egress-results.json")

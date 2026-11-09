@@ -11,6 +11,7 @@ import pytest
 
 from scripts.egress_experiments import (
     DnsCollisionError,
+    capture_local_provenance,
     SafeExperimentSession,
     TunnelCollisionError,
     TunnelUpdateError,
@@ -432,3 +433,44 @@ def test_probe_rejects_inconsistent_or_untrusted_result_envelopes(status, body):
             "result": "failure",
             "category": "invalid-probe-response",
         }
+
+
+
+def test_local_provenance_records_pinned_checkout_and_cli(monkeypatch):
+    """Evidence must identify a clean revision and the actual local probe inputs."""
+    full_sha = "a" * 40
+
+    def fake_run(command, **kwargs):
+        assert kwargs["timeout"] == 10
+        response = {
+            ("git", "rev-parse", "--show-toplevel"): os.getcwd(),
+            ("git", "rev-parse", "--verify", "HEAD"): full_sha,
+            ("git", "status", "--porcelain", "--untracked-files=normal"): "",
+            ("npx", "--no-install", "wrangler", "--version"): "wrangler 4.46.0\n",
+        }
+        return MagicMock(returncode=0, stdout=response[tuple(command)])
+
+    with patch("scripts.egress_experiments.subprocess.run", side_effect=fake_run):
+        result = capture_local_provenance()
+
+    assert result["localGitHeadSha"] == full_sha
+    assert result["checkoutClean"] is True
+    assert result["wranglerCliVersion"] == "4.46.0"
+    for name in ("senderSha256", "probeSha256", "probeConfigSha256"):
+        assert len(result[name]) == 64
+
+
+def test_local_provenance_rejects_dirty_checkout_before_live_work():
+    def fake_run(command, **kwargs):
+        response = {
+            ("git", "rev-parse", "--show-toplevel"): os.getcwd(),
+            ("git", "rev-parse", "--verify", "HEAD"): "a" * 40,
+            ("git", "status", "--porcelain", "--untracked-files=normal"):
+                " M src/notifications/egress.ts\n",
+        }
+        return MagicMock(returncode=0, stdout=response[tuple(command)])
+
+    with patch("scripts.egress_experiments.subprocess.run", side_effect=fake_run) as called:
+        with pytest.raises(RuntimeError, match="uncommitted or untracked"):
+            capture_local_provenance()
+    assert not any(call.args[0][0] == "npx" for call in called.call_args_list)

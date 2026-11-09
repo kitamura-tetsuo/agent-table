@@ -550,3 +550,19 @@ extra fields and malformed diagnostic values. These checks prevent obvious stale
 local responses from being mislabeled as real-Worker evidence; they do not authenticate
 Cloudflare's outbound connection, pin remote DNS/IP, establish a receiver receipt or
 retroactively supply the missing full SHA for historical runs. No live probe was run.
+
+
+### 2026-11-09: mandatory provenance for subsequent authorized hosted experiments
+
+The opt-in live experiment runner now aborts before DNS/Tunnel mutation unless invoked
+at a clean repository root with a complete Git commit SHA and an installed, identifiable
+Wrangler CLI. It records the local checkout SHA, exact sender/probe/config SHA-256
+digests, CLI version and UTC capture time in `test-results/egress-results.json`.
+A second check refuses to publish an apparently complete result if the local code or CLI
+identity changed during the run. Synthetic Python tests exercise clean and dirty states.
+
+This is **local source/CLI provenance**, not an attestation of the Hosted Workers edge
+runtime or of the code actually deployed in a Remote Preview session. Independent
+hosted request/receiver correlation and approved fixtures are still needed, and no
+historical unpinned run can be reclassified as pinned evidence. No external operation
+or production Events activation was performed for this change.
