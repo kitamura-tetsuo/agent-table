@@ -2,6 +2,12 @@
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "agent-table-dev",
   "main": "src/index.ts",
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "invocation_logs": false
+    }
+  },
   "compatibility_date": "2026-11-07",
   "compatibility_flags": [
     "nodejs_compat",
