@@ -192,6 +192,44 @@ describe("cross-isolate admission policy", () => {
     });
   });
 
+  it("charges protected-resource discovery to the protocol budget", async () => {
+    const source = "192.0.2.83";
+    const limited: Env = {
+      ...env,
+      EDGE_PROTOCOL_RATE_PER_MINUTE: "1",
+      EDGE_APPLICATION_RATE_PER_MINUTE: "1",
+    };
+    const headers = { "CF-Connecting-IP": source };
+    const discovery = () =>
+      dispatch(limited, "/.well-known/oauth-protected-resource/mcp", {
+        headers,
+      });
+    const first = await discovery();
+    expect(first.status).not.toBe(429);
+    const denied = await discovery();
+    expect(denied.status).toBe(429);
+    expect(denied.headers.get("Retry-After")).toMatch(/^[1-9][0-9]*$/);
+    expect(await denied.text()).toBe("RATE_LIMITED");
+
+    // Discovery and application requests must consume separate quotas.
+    const application = () => dispatch(limited, "/mcp", { headers });
+    expect((await application()).status).not.toBe(429);
+    expect((await application()).status).toBe(429);
+
+    const stub = await admissionStub(limited, `edge-v1:${source}`);
+    await runInDurableObject(stub, async (_instance, state) => {
+      const rows = state.storage.sql
+        .exec<{ category: string; count: number }>(
+          "SELECT category, COUNT(*) AS count FROM admission_hits GROUP BY category ORDER BY category",
+        )
+        .toArray();
+      expect(rows).toEqual([
+        { category: "application", count: 1 },
+        { category: "protocol", count: 1 },
+      ]);
+    });
+  });
+
   it("shares an edge budget across equivalent IPv6 source spellings", async () => {
     const limited: Env = { ...env, EDGE_DCR_RATE_PER_MINUTE: "1" };
     const register = (source: string, forwardedFor: string) =>
