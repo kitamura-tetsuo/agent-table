@@ -39,7 +39,7 @@ Long-lived HTTP/SSE streams can keep objects active. WebSocket hibernation must 
 
 OpenAI documents an Events integration for Work chats and dots, with webhook delivery and callback verification. Its documented profile does not support the draft's streaming/polling modes or `gap`/`terminated` control deliveries. Treat it as an optional provider adapter, not core-MCP compatibility. [OPENAI-EVENTS]
 
-Implement `events/list`, `events/subscribe`, and `events/unsubscribe` using a pinned provider-compatible wire schema. Do not assume that installing the MCP SDK automatically provides these extension methods. Advertise the profile only when its methods, storage, and secure egress are operational.
+Implement `events/list`, `events/subscribe`, and `events/unsubscribe` using a pinned provider-compatible wire schema. The Issue #20 work is tracked in [events-provider-wire.md](events-provider-wire.md); the wire helpers are not yet registered and do not authorize public Events. Do not assume that installing the MCP SDK automatically provides these extension methods. Advertise the profile only when its methods, storage, and secure egress are operational.
 
 The initial event is `table.message.created` with arguments `{ "table_id": "..." }`. The caller's recipient membership is derived from authentication. A subscription receives only committed messages from the other participant. Reads, retries, status changes, failed posts, and subscription maintenance never generate this event.
 

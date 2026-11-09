@@ -170,6 +170,7 @@ const ALLOWED_HEADER_NAMES = new Set([
   "webhook-timestamp",
   "webhook-signature",
   "x-mcp-signature",
+  "x-mcp-subscription-id",
 ]);
 const HEADER_VALUE = /^[\x20-\x7e]{1,2048}$/;
 

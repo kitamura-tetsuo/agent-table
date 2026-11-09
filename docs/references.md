@@ -20,7 +20,7 @@ Sources for the opted-in `subscriptions/listen` change-notification model. Notif
 
 ### MCP-EVENTS-DRAFT
 
-[MCP Events design sketch, Model Context Protocol repository](https://github.com/modelcontextprotocol/experimental-ext-triggers-events/blob/main/docs/design-sketch-proposal.md)
+[MCP Events design sketch, Model Context Protocol repository](https://github.com/modelcontextprotocol/experimental-ext-triggers-events/blob/d5316be214be2e76e51462069c1d67e00a5a7619/docs/design-sketch-proposal.md)
 
 Draft extension, not a blanket requirement of core MCP. Pin a reviewed revision and provider-compatible fixtures before implementation; do not silently track a changing `main` branch as a wire contract.
 
