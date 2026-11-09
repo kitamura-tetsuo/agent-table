@@ -551,6 +551,28 @@ export class TableDO extends DurableObject<Env> {
     ) {
       return { ok: false, code: "NOT_AUTHORIZED" };
     }
+    return this.issueInviteForGuest(actor.guestId, requestId);
+  }
+
+  /** Browser invitation authority is checked again inside TableDO. */
+  async issueBrowserInvite(
+    credential: BrowserDeletionCredential,
+    requestId: string,
+  ): Promise<InvitationResult> {
+    if (
+      !validInvitationOperationId(requestId) ||
+      !(await this.verifyBrowserSession(credential))
+    ) {
+      return { ok: false, code: "NOT_AUTHORIZED" };
+    }
+    return this.issueInviteForGuest(credential.guestId, requestId);
+  }
+
+  /** Both browser and MCP invitations use the identical durable receipt. */
+  private async issueInviteForGuest(
+    guestId: string,
+    requestId: string,
+  ): Promise<InvitationResult> {
     const inviteId = crypto.randomUUID();
     const secret = randomBase64Url(32);
     // The stable table ID comes from metadata, not an untrusted caller.
@@ -582,13 +604,13 @@ export class TableDO extends DurableObject<Env> {
     const snapshot = this.ctx.storage.transactionSync(() => {
       const now = Date.now();
       const current = this.metadataRow();
-      const creator = this.memberFor(actor.guestId);
+      const creator = this.memberFor(guestId);
       if (
         !current ||
         !creator ||
         creator.seat !== 1 ||
         creator.role !== "creator" ||
-        current.creator_guest_id !== actor.guestId
+        current.creator_guest_id !== guestId
       ) {
         return { kind: "error", code: "TABLE_NOT_FOUND" } as const;
       }
@@ -601,7 +623,7 @@ export class TableDO extends DurableObject<Env> {
       }
       const previous = this.inviteForRequest(requestId);
       if (previous) {
-        if (previous.issuer_guest_id !== actor.guestId) {
+        if (previous.issuer_guest_id !== guestId) {
           return { kind: "error", code: "IDEMPOTENCY_CONFLICT" } as const;
         }
         if (previous.expires_at <= now) {
@@ -626,7 +648,7 @@ export class TableDO extends DurableObject<Env> {
         "INSERT INTO table_invitations (invite_id, request_id, issuer_guest_id, secret_digest, response_envelope, issued_at, expires_at, state) VALUES (?, ?, ?, ?, ?, ?, ?, 'active')",
         inviteId,
         requestId,
-        actor.guestId,
+        guestId,
         digest,
         envelope,
         now,
@@ -1199,8 +1221,29 @@ export class TableDO extends DurableObject<Env> {
     if (!(await this.verifyActor(actor, "tables:write"))) {
       return { ok: false, code: "TABLE_NOT_FOUND" };
     }
+    return this.closeTableForGuest(actor.guestId, requestId);
+  }
+
+  /** Browser terminal actions use the real current guest session. */
+  async closeBrowserTable(
+    credential: BrowserDeletionCredential,
+    requestId: string,
+  ): Promise<TableResult<CloseTableReceipt>> {
+    if (!validInvitationOperationId(requestId))
+      return { ok: false, code: "INVALID_REQUEST" };
+    if (!(await this.verifyBrowserSession(credential)))
+      return { ok: false, code: "TABLE_NOT_FOUND" };
+    return this.closeTableForGuest(credential.guestId, requestId);
+  }
+
+  private async closeTableForGuest(
+    guestId: string,
+    _requestId: string,
+  ): Promise<
+    TableResult<CloseTableReceipt> & { terminalHint?: LifecycleInvalidation }
+  > {
     const existing = this.metadataRow();
-    if (!existing || !this.memberFor(actor.guestId))
+    if (!existing || !this.memberFor(guestId))
       return { ok: false, code: "TABLE_NOT_FOUND" };
     if (existing.expires_at <= Date.now())
       return { ok: false, code: "TABLE_EXPIRED" };
@@ -1210,7 +1253,7 @@ export class TableDO extends DurableObject<Env> {
         this.ctx.storage.transactionSync(() => {
           const now = Date.now();
           const table = this.metadataRow();
-          const member = this.memberFor(actor.guestId);
+          const member = this.memberFor(guestId);
           if (!table || !member)
             return { ok: false, code: "TABLE_NOT_FOUND" } as const;
           if (table.expires_at <= now || table.state === "expired") {

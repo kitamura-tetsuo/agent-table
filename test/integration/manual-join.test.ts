@@ -303,4 +303,128 @@ describe("fragment-only browser invitation join against real GuestDO and TableDO
     });
     expect(outsider.status).toBe(404);
   });
+  it("issues and closes a table through the real browser session with receipt reuse", async () => {
+    const f = await fixture();
+    const path = `/guest/manage?table_id=${f.id}`;
+    expect((await dispatch(path)).status).toBe(401);
+    expect(
+      (await dispatch(path, { headers: { Cookie: f.stranger.cookie } })).status,
+    ).toBe(404);
+    const view = await dispatch(path, { headers: { Cookie: f.owner.cookie } });
+    expect(view.status).toBe(200);
+    const html = await view.text();
+    expect(html).toContain("Issue single-use invitation");
+    expect(html).toContain("Close table for both participants");
+    const csrf = html.match(/name="csrf" value="([A-Za-z0-9_-]{43})"/)?.[1];
+    const csrfCookie = view.headers
+      .getSetCookie()
+      .find((value) => value.startsWith(`${CSRF_NAME}=`))
+      ?.split(";")[0];
+    if (!csrf || !csrfCookie)
+      throw new Error("Browser management CSRF unavailable");
+    const cookies = `${f.owner.cookie}; ${csrfCookie}`;
+    const inviteKey = "browser_invite_shared_0001";
+    const closeKey = "browser_close_shared_0001";
+    const post = (
+      action: string,
+      key: string,
+      cookie = cookies,
+      origin = ORIGIN,
+    ) =>
+      dispatch("/guest/manage", {
+        method: "POST",
+        headers: {
+          Cookie: cookie,
+          Origin: origin,
+          "Sec-Fetch-Site": "same-origin",
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+        body: new URLSearchParams({
+          table_id: f.id,
+          csrf,
+          action,
+          request_id: key,
+        }),
+      });
+    expect(
+      (await post("invite", inviteKey, cookies, "https://attacker.invalid"))
+        .status,
+    ).toBe(403);
+    expect((await post("invite", inviteKey, f.owner.cookie)).status).toBe(403);
+    expect(
+      (await post("invite", inviteKey, `${f.stranger.cookie}; ${csrfCookie}`))
+        .status,
+    ).toBe(404);
+    expect(
+      (await post("invite", inviteKey, `${f.joined.cookie}; ${csrfCookie}`))
+        .status,
+    ).toBe(404);
+    expect(
+      await f.table.issueBrowserInvite(
+        {
+          guestId: f.owner.id,
+          sessionId: f.owner.session.sessionId,
+          secret: "forged",
+        },
+        inviteKey,
+      ),
+    ).toEqual({ ok: false, code: "NOT_AUTHORIZED" });
+    expect(
+      (await f.table.getMetadata(await f.owner.actor("tables:read"))).ok,
+    ).toBe(true);
+
+    const invited = await post("invite", inviteKey);
+    expect(invited.status).toBe(200);
+    const invitationPage = await invited.text();
+    const issued = invitationPage.match(
+      /http:\/\/localhost:8787\/join#(at1\.[A-Za-z0-9._-]+)/,
+    )?.[1];
+    if (!issued) throw new Error("No browser invitation sharing link");
+    expect(invitationPage).not.toContain("<script");
+    expect(invited.headers.get("Cache-Control")).toBe("no-store");
+    expect(invited.headers.get("Content-Security-Policy")).toContain(
+      "default-src 'none'",
+    );
+    const retry = await post("invite", inviteKey);
+    expect(retry.status).toBe(200);
+    expect(await retry.text()).toContain(issued);
+    expect(
+      await f.table.redeemBrowserInvite(
+        {
+          guestId: f.joined.id,
+          sessionId: f.joined.session.sessionId,
+          secret: f.joined.session.secret,
+        },
+        f.issued.invitation,
+        "browser_revoked_invite_0001",
+      ),
+    ).toEqual({ ok: false, code: "INVITATION_INVALID" });
+    expect(
+      (await post("close", closeKey, `${f.stranger.cookie}; ${csrfCookie}`))
+        .status,
+    ).toBe(404);
+    const closed = await post("close", closeKey);
+    expect(closed.status).toBe(200);
+    expect(await closed.text()).toContain("Table closure committed");
+    const repeatClose = await post("close", closeKey);
+    expect(repeatClose.status).toBe(200);
+    expect(
+      await f.table.getMetadata(await f.owner.actor("tables:read")),
+    ).toMatchObject({ ok: true, value: { state: "closed" } });
+    expect(
+      await f.table.redeemBrowserInvite(
+        {
+          guestId: f.joined.id,
+          sessionId: f.joined.session.sessionId,
+          secret: f.joined.session.secret,
+        },
+        issued,
+        "browser_closed_join_0001",
+      ),
+    ).toEqual({ ok: false, code: "INVITATION_INVALID" });
+    const terminal = await dispatch(path, {
+      headers: { Cookie: f.owner.cookie },
+    });
+    expect(await terminal.text()).not.toContain("Issue single-use invitation");
+  });
 });

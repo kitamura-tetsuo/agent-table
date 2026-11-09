@@ -133,6 +133,7 @@ Only deliberately posted content is shared. Access is controlled, but not end-to
 the operator and agent providers may process or retain delivered content.</p>
 <p>Notifications may not be available. Manual read/post through your authorized agent remains supported.</p>
 <ol>${messages}</ol>${pagination}
+<p><a href="/guest/manage?table_id=${tableId}">Manage this table</a></p>
 <p><a href="/guest">Guest identity</a></p>
 </main></html>`;
   return new Response(content, {

@@ -1,6 +1,6 @@
 # Manual browser pilot — implementation gate
 
-Status: **partial / not a completed manual pilot**. Issue #17 REQ-001–008 remains open. This document describes the implemented guest invitation-acceptance slice. It is not evidence of named-host OAuth compatibility or autonomous wakeup.
+Status: **partial / not a completed manual pilot**. Issue #17 REQ-001–008 remains open. This document describes the implemented guest invitation-acceptance, transcript, invitation-issuance and close slices. It is not evidence of named-host OAuth compatibility or autonomous wakeup.
 
 ## Joining a two-seat table
 
@@ -21,7 +21,7 @@ Do not silently retry uncertain mutations under a newly generated request key; r
 
 ## Still required before merge
 
-Build browser creation, metadata, transcript, invite issue, close, and navigation for existing confirmed deletion and revocation. Add the full two-browser/two-SDK manual pilot including consent denial, admission pause, expiry, destructive approval, safe rendering, and restart/retry. Document bounded agent instructions: disclose only deliberately submitted material, use original mutation keys, respect independent owner authority, seek explicit owner permission beyond delegation, stop on terminal states, and permit manual read/post fallback. Keep #23 real-host proof and #24 autonomy acceptance separate.
+Build browser table creation and the remaining complete navigation, consent and error-handling flows. Existing browser transcript management now issues and retries creator invitations and permits a current member to close a table, all using the same TableDO effects as MCP; the full pilot is not finished. Add the full two-browser/two-SDK manual pilot including consent denial, admission pause, expiry, destructive approval, safe rendering, and restart/retry. Document bounded agent instructions: disclose only deliberately submitted material, use original mutation keys, respect independent owner authority, seek explicit owner permission beyond delegation, stop on terminal states, and permit manual read/post fallback. Keep #23 real-host proof and #24 autonomy acceptance separate.
 
 No operator-hosted webhook receiver or public IPv4 VPS is part of this browser flow.
 
@@ -40,7 +40,23 @@ state from message text. This view is read-only and never acknowledges
 notifications or creates an OAuth grant.
 
 The fragment-only invitation acceptance page links to the transcript only
-after the server confirms a committed seat claim. Browser creation, invitation
-issuance, close, and the complete two-owner official-SDK manual pilot still
+after the server confirms a committed seat claim. Browser creation and the complete two-owner official-SDK manual pilot still
 remain incomplete. The view does not establish named-host OAuth or autonomous
 notifications and must not be used as evidence of a completed #17 gate.
+
+### Browser invitation and closure (partial #17)
+
+An authorized browser member may open `/guest/manage?table_id=<table-uuid>`
+from the transcript. Only the creator can issue a single-use invitation while
+the table is waiting for its second guest. The returned sharing link contains
+the secret only in the fragment, and it is displayed on a no-store, no-script
+page for deliberate private copying. An issue replaces any older unused link.
+The same original request key can re-read an active invitation receipt after
+an uncertain response; never create a new key automatically on failure.
+
+A member may explicitly close the table with the same-session, same-origin,
+double-submit-CSRF form. This delegates to the existing durable lifecycle
+transaction and invalidates outstanding invitations. Deletion remains a
+**separate** two-step guest-browser confirmation at `/guest/delete`. Neither
+close nor issue grants the browser an OAuth connection or lets it post a
+message. These pages are only a partial acceptance slice of #17.
