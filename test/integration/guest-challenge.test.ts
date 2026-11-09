@@ -136,28 +136,24 @@ describe("server-verified guest admission challenge", () => {
     ).toBe(true);
   });
 
-  it(
-    "fails closed when Siteverify sends headers but never finishes its body",
-    async () => {
-      let cancelled = false;
-      const verifier: typeof fetch = async () =>
-        new Response(
-          new ReadableStream<Uint8Array>({
-            start(controller) {
-              controller.enqueue(new TextEncoder().encode("{"));
-              // The remote stream deliberately never ends.
-            },
-            cancel() {
-              cancelled = true;
-            },
-          }),
-          { headers: { "Content-Type": "application/json" } },
-        );
-      expect(await verifyGuestChallenge(required, TOKEN, verifier)).toBe(false);
-      expect(cancelled).toBe(true);
-    },
-    6_000,
-  );
+  it("fails closed when Siteverify sends headers but never finishes its body", async () => {
+    let cancelled = false;
+    const verifier: typeof fetch = async () =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode("{"));
+            // The remote stream deliberately never ends.
+          },
+          cancel() {
+            cancelled = true;
+          },
+        }),
+        { headers: { "Content-Type": "application/json" } },
+      );
+    expect(await verifyGuestChallenge(required, TOKEN, verifier)).toBe(false);
+    expect(cancelled).toBe(true);
+  }, 6_000);
 
   it("renders a challenge and refuses missing proof on real guest routes", async () => {
     const page = await worker.fetch(
