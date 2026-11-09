@@ -56,37 +56,48 @@ async function authorizeSdk(
   }))
     authorization.searchParams.set(name, value);
 
-  const consent = await context.request.get(authorization.toString());
-  expect(consent.status()).toBe(200);
-  const html = await consent.text();
-  const hidden = (name: string) =>
-    new RegExp(`name="${name}" type="hidden" value="([^"]+)"`).exec(html)?.[1];
-  const handle = hidden("handle");
-  const csrf = hidden("csrf");
-  const binding = hidden("binding");
-  const guestId = hidden("guest_id");
-  if (!handle || !csrf || !binding || !guestId)
-    throw new Error("Incomplete browser OAuth consent");
-  const approved = await context.request.post("/authorize", {
-    headers: {
-      Origin: ORIGIN,
-      "Sec-Fetch-Site": "same-origin",
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
-    data: new URLSearchParams([
-      ["handle", handle],
-      ["csrf", csrf],
-      ["binding", binding],
-      ["guest_id", guestId],
-      ["decision", "approve"],
-      ...scopes.map((scope): [string, string] => ["scope", scope]),
-    ]).toString(),
-    maxRedirects: 0,
-  });
-  expect(approved.status(), await approved.text()).toBe(302);
-  const code = new URL(
-    approved.headers().location ?? REDIRECT,
-  ).searchParams.get("code");
+  // Click the actual consent form in a browser. Intercept the synthetic callback
+  // rather than sending authorization codes to an external service.
+  const consentPage = await context.newPage();
+  let code: string | null = null;
+  try {
+    await consentPage.route(
+      "https://client.example/callback**",
+      async (route) => {
+        await route.fulfill({
+          status: 200,
+          contentType: "text/plain",
+          body: "Synthetic callback received",
+        });
+      },
+    );
+    await consentPage.goto(authorization.toString());
+    await expect(
+      consentPage.getByRole("heading", {
+        name: "Connect Manual two-guest pilot",
+      }),
+    ).toBeVisible();
+    await expect(
+      consentPage.locator('input[name="scope"]:checked'),
+    ).toHaveCount(scopes.length);
+    const posted = consentPage.waitForResponse(
+      (response) =>
+        response.url() === `${ORIGIN}/authorize` &&
+        response.request().method() === "POST",
+    );
+    await consentPage.getByRole("button", { name: "Allow" }).click();
+    const approved = await posted;
+    const requestHeaders = await approved.request().allHeaders();
+    expect(requestHeaders.origin).toBe(ORIGIN);
+    expect(requestHeaders.cookie).toContain("__Host-agent_table_oauth_csrf=");
+    expect(approved.status()).toBe(302);
+    const redirect = new URL(approved.headers().location ?? ORIGIN);
+    expect(redirect.origin).toBe("https://client.example");
+    expect(redirect.searchParams.get("state")).toBe("manual_pilot");
+    code = redirect.searchParams.get("code");
+  } finally {
+    await consentPage.close();
+  }
   if (!code) throw new Error("Missing authorization code");
   const exchanged = await context.request.post("/oauth/token", {
     form: {
