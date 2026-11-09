@@ -250,4 +250,46 @@ describe("cross-isolate admission policy", () => {
       ).toBe(1);
     });
   });
+  it("rejects oversized DELETE payloads before edge accounting and without reflecting input", async () => {
+    const source = "192.0.2.76";
+    const limited: Env = { ...env, EDGE_APPLICATION_RATE_PER_MINUTE: "1" };
+    const headers = {
+      "CF-Connecting-IP": source,
+      "Content-Type": "application/json",
+    };
+    const secretMarker = "synthetic-private-payload-do-not-reflect";
+    const oversized = await dispatch(limited, "/mcp", {
+      method: "DELETE",
+      headers,
+      body: secretMarker + "x".repeat(32 * 1_024),
+    });
+    expect(oversized.status).toBe(413);
+    expect(oversized.headers.get("Cache-Control")).toBe("no-store");
+    expect(await oversized.text()).toBe("Request too large");
+    expect(oversized.headers.has("Retry-After")).toBe(false);
+
+    const allowed = await dispatch(limited, "/mcp", {
+      method: "DELETE",
+      headers,
+    });
+    expect(allowed.status).not.toBe(429);
+    const denied = await dispatch(limited, "/mcp", {
+      method: "DELETE",
+      headers,
+    });
+    expect(denied.status).toBe(429);
+    expect(await denied.text()).toBe("RATE_LIMITED");
+    expect(denied.headers.get("Retry-After")).toMatch(/^[1-9][0-9]*$/);
+    const stub = await admissionStub(limited, `edge-v1:${source}`);
+    await runInDurableObject(stub, async (_instance, state) => {
+      expect(
+        state.storage.sql
+          .exec<{ count: number }>(
+            "SELECT COUNT(*) AS count FROM admission_hits WHERE category = 'application'",
+          )
+          .one().count,
+      ).toBe(1);
+    });
+  });
+
 });
