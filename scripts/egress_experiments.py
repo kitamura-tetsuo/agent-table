@@ -471,22 +471,30 @@ class SafeExperimentSession:
 
 def wait_for_dns(
     hostname: str, expected_content: str | None = None, max_wait: int = 30
-) -> bool:
-    logger.info(f"Waiting for DNS propagation on authoritative NS for {hostname}...")
-    start = time.time()
-    while time.time() - start < max_wait:
-        res = subprocess.run(
-            ["dig", "@jimmy.ns.cloudflare.com", "+short", hostname],
-            capture_output=True,
-            text=True,
-        )
-        out = res.stdout.strip()
-        if out:
-            if expected_content is None or expected_content in out:
-                logger.info(f"DNS authoritative reply: {out}")
-                return True
+) -> None:
+    """Abort the experiment if authoritative DNS has not reached the expected state."""
+    logger.info(f"Waiting for authoritative DNS propagation for {hostname}...")
+    start = time.monotonic()
+    while time.monotonic() - start < max_wait:
+        try:
+            res = subprocess.run(
+                ["dig", "@jimmy.ns.cloudflare.com", "+short", "A", hostname],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=5,
+            )
+        except subprocess.TimeoutExpired:
+            time.sleep(2)
+            continue
+        answers = {line.strip() for line in res.stdout.splitlines() if line.strip()}
+        if res.returncode == 0 and answers and (
+            expected_content is None or expected_content in answers
+        ):
+            logger.info("Authoritative DNS answer confirmed for experiment hostname")
+            return
         time.sleep(2)
-    return False
+    raise TimeoutError("Authoritative DNS state did not converge; aborting experiment")
 
 
 def record_dns_lookup(hostname: str) -> dict:
