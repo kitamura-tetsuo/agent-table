@@ -29,8 +29,11 @@ function validateSqliteMigrationHistory(config) {
           Object.keys(entry).sort().join(",") === "new_sqlite_classes,tag" &&
           entry.tag === expected.tag &&
           Array.isArray(entry.new_sqlite_classes) &&
-          entry.new_sqlite_classes.length === expected.new_sqlite_classes.length &&
-          entry.new_sqlite_classes.every((name, i) => name === expected.new_sqlite_classes[i])
+          entry.new_sqlite_classes.length ===
+            expected.new_sqlite_classes.length &&
+          entry.new_sqlite_classes.every(
+            (name, i) => name === expected.new_sqlite_classes[i],
+          )
         );
       }),
     "unsafe-sqlite-migration-history",

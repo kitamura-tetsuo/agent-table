@@ -229,7 +229,8 @@ test("fails closed on altered SQLite migration history in either environment", (
     (config) => (config.migrations[0].new_sqlite_classes = ["TableDO"]),
     (config) => (config.migrations[1].tag = "v2-replaced"),
     (config) => (config.migrations[2].deleted_classes = ["TableDO"]),
-    (config) => config.migrations.push({ tag: "v4", new_sqlite_classes: ["TableDO"] }),
+    (config) =>
+      config.migrations.push({ tag: "v4", new_sqlite_classes: ["TableDO"] }),
   ]) {
     const config = JSON.parse(args.configText);
     mutation(config);
