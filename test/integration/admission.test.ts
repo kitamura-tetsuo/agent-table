@@ -11,6 +11,7 @@ import {
 import {
   allowNewTables,
   allowOutboundNotifications,
+  rejectOversizedIngress,
 } from "../../src/shared/admission";
 import {
   authorizeGuestConnection,
@@ -69,6 +70,24 @@ describe("public ingress limits and independent emergency controls", () => {
     });
     expect(cookies.status).toBe(413);
   });
+
+  it("bounds the full streamed ingress read deadline before authentication", async () => {
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("partial"));
+        // Leave the request body open to simulate a stalled client.
+      },
+    });
+    const request = new Request(`${ORIGIN}/oauth/register`, {
+      method: "POST",
+      body,
+      duplex: "half",
+    } as RequestInit & { duplex: "half" });
+    const result = await rejectOversizedIngress(request, 30);
+    expect(result?.status).toBe(408);
+    expect(result?.headers.get("Cache-Control")).toBe("no-store");
+    expect(await result?.text()).toBe("Request timeout");
+  }, 2_000);
 
   it("keeps durable close and browser-approved purge available during a new-table pause", async () => {
     expect(allowNewTables(env)).toBe(true);

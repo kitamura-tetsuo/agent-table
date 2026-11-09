@@ -3,6 +3,7 @@
 const MAX_URL_BYTES = 2_048;
 const MAX_COOKIE_BYTES = 8_192;
 const MAX_AUTHORIZATION_BYTES = 8_192;
+const INGRESS_BODY_READ_DEADLINE_MS = 10_000;
 
 export type AdmissionCategory =
   | "guest"
@@ -40,7 +41,9 @@ function reject(status: number): Response {
       ? "Request too large"
       : status === 414
         ? "Request target too long"
-        : "Invalid request",
+        : status === 408
+          ? "Request timeout"
+          : "Invalid request",
     {
       status,
       headers: {
@@ -78,6 +81,7 @@ function bodyLimit(url: URL): number {
  */
 export async function rejectOversizedIngress(
   request: Request,
+  readDeadlineMs = INGRESS_BODY_READ_DEADLINE_MS,
 ): Promise<Response | null> {
   if (new TextEncoder().encode(request.url).byteLength > MAX_URL_BYTES) {
     return reject(414);
@@ -100,20 +104,32 @@ export async function rejectOversizedIngress(
   let consumed = 0;
   const reader = request.clone().body?.getReader();
   if (!reader) return null;
+  let timedOut = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  // A slow or stalled body must not hold pre-admission work indefinitely.
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      timedOut = true;
+      reject(new Error("ingress-body-deadline"));
+    }, readDeadlineMs);
+  });
   try {
     while (true) {
-      const next = await reader.read();
+      const next = await Promise.race([reader.read(), deadline]);
       if (next.done) return null;
       consumed += next.value.byteLength;
       if (consumed > limit) {
         void reader.cancel().catch(() => undefined);
+        void request.body?.cancel().catch(() => undefined);
         return reject(413);
       }
     }
   } catch {
     void reader.cancel().catch(() => undefined);
-    return reject(400);
+    void request.body?.cancel().catch(() => undefined);
+    return reject(timedOut ? 408 : 400);
   } finally {
+    if (timer !== undefined) clearTimeout(timer);
     reader.releaseLock();
   }
 }
