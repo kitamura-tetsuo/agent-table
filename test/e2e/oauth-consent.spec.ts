@@ -2,7 +2,8 @@ import { createHash, randomBytes } from "node:crypto";
 import { expect, test } from "@playwright/test";
 
 const ORIGIN = "http://localhost:8787";
-const CALLBACK = "https://client.example/callback";
+// A separate loopback origin exercises the browser redirect without external DNS.
+const CALLBACK = "http://127.0.0.1:8787/health";
 
 test("browser OAuth approval preserves same-origin CSRF enforcement", async ({
   page,
@@ -38,14 +39,11 @@ test("browser OAuth approval preserves same-origin CSRF enforcement", async ({
     authorize.searchParams.set(key, value);
   }
 
-  await page.route("https://client.example/callback**", (route) =>
-    route.fulfill({ status: 200, body: "Synthetic callback received" }),
-  );
   const consent = await page.goto(authorize.toString());
   expect(consent?.status()).toBe(200);
   expect(consent?.headers()["referrer-policy"]).toBe("same-origin");
   expect(consent?.headers()["content-security-policy"]).toContain(
-    "form-action 'self' https://client.example",
+    "form-action 'self' http://127.0.0.1:8787",
   );
   await expect(page.getByRole("button", { name: "Allow" })).toBeVisible();
 
@@ -66,13 +64,13 @@ test("browser OAuth approval preserves same-origin CSRF enforcement", async ({
   const approval = await postRequest.response();
   expect(approval?.status()).toBe(302);
   const redirected = new URL(approval?.headers().location ?? ORIGIN);
-  expect(redirected.origin).toBe("https://client.example");
+  expect(redirected.origin).toBe("http://127.0.0.1:8787");
   expect(redirected.searchParams.get("state")).toBe("synthetic-browser-state");
   expect(redirected.searchParams.get("code")).toBeTruthy();
   await page.waitForURL(
     (url) =>
-      url.origin === "https://client.example" && url.pathname === "/callback",
+      url.origin === "http://127.0.0.1:8787" && url.pathname === "/health",
     { waitUntil: "commit", timeout: 10_000 },
   );
-  await expect(page.getByText("Synthetic callback received")).toBeVisible();
+  expect(new URL(page.url()).searchParams.get("code")).toBeTruthy();
 });
