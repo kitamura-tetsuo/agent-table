@@ -14,9 +14,11 @@ describe("telemetry from real GuestDO cleanup alarms", () => {
     const stub = env.GUESTS.get(env.GUESTS.idFromName(guestId));
     const session = await stub.createSession(guestId);
     await runInDurableObject(stub, async (_instance, state) => {
+      const now = Date.now();
       state.storage.sql.exec(
-        "UPDATE guest_sessions SET expires_at = ? WHERE session_id = ?",
-        Date.now() - 1_000,
+        "UPDATE guest_sessions SET created_at = ?, expires_at = ? WHERE session_id = ?",
+        now - 2_000,
+        now - 1_000,
         session.sessionId,
       );
       await state.storage.setAlarm(Date.now());
