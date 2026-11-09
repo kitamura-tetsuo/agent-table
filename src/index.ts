@@ -16,6 +16,7 @@ import {
   type EdgeAdmissionCategory,
   rejectOversizedIngress,
 } from "./shared/admission";
+import { correlationId, emitOperationalEvent } from "./shared/telemetry";
 import { handleDeletionPage } from "./web/deletion";
 
 export { OAuthTokenDO } from "./auth/token-do";
@@ -52,8 +53,7 @@ function edgeCategory(request: Request): EdgeAdmissionCategory | null {
   return null;
 }
 
-export default {
-  async fetch(request, env, ctx) {
+const handleRequest: ExportedHandler<Env>["fetch"] = async (request, env, ctx) => {
     const ingressRejected = await rejectOversizedIngress(request);
     if (ingressRejected) return ingressRejected;
     const category = edgeCategory(request);
@@ -135,5 +135,34 @@ export default {
       );
     }
     return new Response("Not Found", { status: 404 });
+};
+
+export default {
+  async fetch(request, env, ctx) {
+    const started = Date.now();
+    const requestCorrelation = correlationId();
+    let outcome: "response" | "exception" = "exception";
+    let status = 500;
+    try {
+      const response = await handleRequest(request, env, ctx);
+      outcome = "response";
+      status = response.status;
+      return response;
+    } catch {
+      // Never serialize an exception that may contain user input or credentials.
+      return new Response("Internal Server Error", {
+        status: 500,
+        headers: { "Cache-Control": "no-store" },
+      });
+    } finally {
+      emitOperationalEvent({
+        kind: "http",
+        route: edgeCategory(request) ?? "other",
+        outcome,
+        status,
+        durationMs: Date.now() - started,
+        correlationId: requestCorrelation,
+      });
+    }
   },
 } satisfies ExportedHandler<Env>;
