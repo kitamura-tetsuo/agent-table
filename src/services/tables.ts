@@ -30,6 +30,42 @@ const unavailable = (): PublicTableResult => ({
 });
 
 /**
+ * Record only categorical invitation outcomes at the application authority.
+ * MCP tool errors are usually HTTP 200 and cannot be counted at the edge.
+ * Never attach invite tokens, table IDs, arguments, or returned values.
+ */
+function observeInvitation<T extends { ok: boolean }>(
+  operation: "create_invite" | "join_table",
+  result: T,
+  started: number,
+): T {
+  const code = "code" in result ? result.code : undefined;
+  const failureCategory = result.ok
+    ? "none"
+    : code === "TEMPORARILY_UNAVAILABLE"
+      ? "unavailable"
+      : code === "INVITATION_EXPIRED"
+        ? "expired"
+        : code === "INVITATION_INVALID" || code === "INVITATION_REVOKED"
+          ? "invalid"
+          : code === "TABLE_NOT_FOUND" || code === "NOT_AUTHORIZED"
+            ? "denied"
+            : "other";
+  emitOperationalEvent({
+    kind: "invitation",
+    operation,
+    outcome: result.ok
+      ? "accepted"
+      : code === "TEMPORARILY_UNAVAILABLE"
+        ? "unknown"
+        : "rejected",
+    failureCategory,
+    durationMs: Date.now() - started,
+  });
+  return result;
+}
+
+/**
  * Reservations and table initialization are separate durable transactions.
  * Never treat a reserved ID or an ambiguous RPC outcome as created.
  * A retry with the original request_id reconstructs the same operation.
@@ -126,13 +162,19 @@ export async function createInvite(
   tableId: string,
   requestId: string,
 ) {
+  const started = Date.now();
   try {
-    return await env.TABLES.get(env.TABLES.idFromName(tableId)).issueInvite(
+    const result = await env.TABLES.get(env.TABLES.idFromName(tableId)).issueInvite(
       actor,
       requestId,
     );
+    return observeInvitation("create_invite", result, started);
   } catch {
-    return { ok: false as const, code: "TEMPORARILY_UNAVAILABLE" };
+    return observeInvitation(
+      "create_invite",
+      { ok: false as const, code: "TEMPORARILY_UNAVAILABLE" },
+      started,
+    );
   }
 }
 
@@ -142,15 +184,27 @@ export async function joinTable(
   invitation: string,
   requestId: string,
 ): Promise<PublicTableResult> {
+  const started = Date.now();
   const { parseInvitation } = await import("../shared/invitations");
   const parsed = parseInvitation(invitation);
-  if (!parsed) return { ok: false, code: "INVITATION_INVALID" };
+  if (!parsed) {
+    return observeInvitation(
+      "join_table",
+      { ok: false as const, code: "INVITATION_INVALID" },
+      started,
+    );
+  }
   try {
-    return await env.TABLES.get(
+    const result = await env.TABLES.get(
       env.TABLES.idFromName(parsed.tableId),
     ).redeemInvite(actor, invitation, requestId);
+    return observeInvitation("join_table", result, started);
   } catch {
-    return { ok: false, code: "TEMPORARILY_UNAVAILABLE" };
+    return observeInvitation(
+      "join_table",
+      { ok: false as const, code: "TEMPORARILY_UNAVAILABLE" },
+      started,
+    );
   }
 }
 

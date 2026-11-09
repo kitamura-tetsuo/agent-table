@@ -8,7 +8,7 @@ import {
   Client,
   StreamableHTTPClientTransport,
 } from "@modelcontextprotocol/client";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import worker from "../../src/index";
 import type {
   CreationReservation,
@@ -2433,6 +2433,202 @@ describe("authenticated public SDK admission quota", () => {
     } finally {
       await first.close();
       await second.close();
+    }
+  });
+  it("records privacy-safe invitation failures and durable post commits through real OAuth/MCP calls", async () => {
+    const owner = await tokenForGuest("tables:read tables:write");
+    const peer = await tokenForGuest("tables:read tables:write");
+    const creator = await sdk(owner.token);
+    const joiner = await sdk(peer.token);
+    const privateTitle = "private-title-" + crypto.randomUUID();
+    const privateBody = "private-message-" + crypto.randomUUID();
+    const invalidInvitation = "invalid-invitation-" + crypto.randomUUID();
+    const captured: string[] = [];
+    const recorder = vi.spyOn(console, "log").mockImplementation((value) => {
+      if (value && typeof value === "object" && "schema" in value) {
+        captured.push(JSON.stringify(value));
+      }
+    });
+    try {
+      const created = await creator.callTool({
+        name: "create_table",
+        arguments: {
+          request_id: "telemetry_mcp_create_0001",
+          title: privateTitle,
+        },
+      });
+      expect(created.isError).not.toBe(true);
+      const tableId = String(output(created).tableId);
+      const invalid = await joiner.callTool({
+        name: "join_table",
+        arguments: {
+          invitation: invalidInvitation,
+          request_id: "telemetry_mcp_invalid_join_0001",
+        },
+      });
+      expect(invalid.isError).toBe(true);
+      expect(output(invalid)).toMatchObject({
+        error: { code: "INVITATION_INVALID" },
+      });
+
+      const issued = await creator.callTool({
+        name: "create_invite",
+        arguments: {
+          table_id: tableId,
+          request_id: "telemetry_mcp_issue_0001",
+        },
+      });
+      expect(issued.isError).not.toBe(true);
+      const invitationSecret = String(output(issued).invitation);
+      const joined = await joiner.callTool({
+        name: "join_table",
+        arguments: {
+          invitation: invitationSecret,
+          request_id: "telemetry_mcp_valid_join_0001",
+        },
+      });
+      expect(joined.isError).not.toBe(true);
+      const eventRows = () =>
+        captured.map((line) => JSON.parse(line) as Record<string, unknown>);
+      const inviteEvents = eventRows().filter((event) => event.kind === "invitation");
+      expect(inviteEvents).toEqual([
+        expect.objectContaining({
+          operation: "join_table",
+          outcome: "rejected",
+          failureCategory: "invalid",
+        }),
+        expect.objectContaining({
+          operation: "create_invite",
+          outcome: "accepted",
+          failureCategory: "none",
+        }),
+        expect.objectContaining({
+          operation: "join_table",
+          outcome: "accepted",
+          failureCategory: "none",
+        }),
+      ]);
+
+      const first = {
+        table_id: tableId,
+        request_id: "telemetry_mcp_first_post_0001",
+        body: privateBody,
+      };
+      const second = {
+        table_id: tableId,
+        request_id: "telemetry_mcp_second_post_0001",
+        body: "another-private-body-" + crypto.randomUUID(),
+      };
+      const firstResult = await creator.callTool({
+        name: "post_message",
+        arguments: first,
+      });
+      expect(firstResult.isError).not.toBe(true);
+      const sameResult = await creator.callTool({
+        name: "post_message",
+        arguments: first,
+      });
+      expect(output(sameResult)).toEqual(output(firstResult));
+      const refused = await creator.callTool({
+        name: "post_message",
+        arguments: { ...first, body: second.body },
+      });
+      expect(refused.isError).toBe(true);
+      expect(output(refused)).toMatchObject({
+        error: { code: "IDEMPOTENCY_CONFLICT" },
+      });
+      const secondResult = await creator.callTool({
+        name: "post_message",
+        arguments: second,
+      });
+      expect(secondResult.isError).not.toBe(true);
+
+      const lost = {
+        table_id: tableId,
+        request_id: "telemetry_mcp_lost_post_0001",
+        body: "lost-response-private-" + crypto.randomUUID(),
+      };
+      let dropped = false;
+      const flaky = await sdk(owner.token, async (request) => {
+        let isLostPost = false;
+        if (request.method === "POST") {
+          try {
+            const payload = (await request.clone().json()) as {
+              method?: string;
+              params?: { name?: string; arguments?: { request_id?: string } };
+            };
+            isLostPost =
+              payload.method === "tools/call" &&
+              payload.params?.name === "post_message" &&
+              payload.params.arguments?.request_id === lost.request_id;
+          } catch {
+            // Other MCP requests are forwarded unchanged.
+          }
+        }
+        const response = await exports.default.fetch(request);
+        if (isLostPost && !dropped) {
+          dropped = true;
+          throw new Error("Synthetic transport response loss");
+        }
+        return response;
+      });
+      try {
+        await expect(
+          flaky.callTool({ name: "post_message", arguments: lost }),
+        ).rejects.toThrow();
+        expect(dropped).toBe(true);
+      } finally {
+        await flaky.close();
+      }
+      const recovered = await creator.callTool({
+        name: "post_message",
+        arguments: lost,
+      });
+      expect(recovered.isError).not.toBe(true);
+      expect(output(recovered)).toMatchObject({ seq: 3, persisted: true });
+
+      const table = env.TABLES.get(env.TABLES.idFromName(tableId));
+      const authoritative = await runInDurableObject(table, async (_instance, state) => ({
+        messages: state.storage.sql
+          .exec<{ total: number }>("SELECT COUNT(*) AS total FROM table_messages")
+          .one().total,
+        receipts: state.storage.sql
+          .exec<{ total: number }>("SELECT COUNT(*) AS total FROM table_post_receipts")
+          .one().total,
+      }));
+      const commits = eventRows().filter(
+        (event) => event.kind === "commit" && event.operation === "post_message",
+      );
+      expect(authoritative).toEqual({ messages: 3, receipts: 3 });
+      expect(commits).toHaveLength(authoritative.messages);
+      expect(commits).toHaveLength(authoritative.receipts);
+      expect(commits.every((event) => event.outcome === "committed")).toBe(true);
+      expect(
+        commits.every(
+          (event) =>
+            Object.keys(event).sort().join(",") ===
+            "durationMs,kind,operation,outcome,schema",
+        ),
+      ).toBe(true);
+      const artifact = captured.join("\n");
+      for (const sentinel of [
+        privateTitle,
+        privateBody,
+        second.body,
+        lost.body,
+        invalidInvitation,
+        invitationSecret,
+        owner.token,
+        peer.token,
+      ]) {
+        expect(artifact).not.toContain(sentinel);
+      }
+      expect(artifact).not.toContain('"hostRun"');
+      expect(artifact).not.toContain('"receiver"');
+    } finally {
+      recorder.mockRestore();
+      await creator.close();
+      await joiner.close();
     }
   });
 });

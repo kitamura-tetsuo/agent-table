@@ -32,6 +32,19 @@ export type OperationalEvent =
       operation: "post_message" | "create_table" | "close_table";
       outcome: "committed" | "unknown";
       durationMs: number;
+    }
+  | {
+      kind: "invitation";
+      operation: "create_invite" | "join_table";
+      outcome: "accepted" | "rejected" | "unknown";
+      failureCategory:
+        | "none"
+        | "invalid"
+        | "expired"
+        | "denied"
+        | "unavailable"
+        | "other";
+      durationMs: number;
     };
 
 export type FutureMetric =
@@ -142,6 +155,25 @@ export function emitOperationalEvent(event: OperationalEvent): void {
       outcome: event.outcome,
       processed,
       backlogLagMs: lag,
+      durationMs: duration,
+    });
+    return;
+  }
+  if (event.kind === "invitation") {
+    if (
+      (event.operation !== "create_invite" && event.operation !== "join_table") ||
+      !["accepted", "rejected", "unknown"].includes(event.outcome) ||
+      !["none", "invalid", "expired", "denied", "unavailable", "other"].includes(
+        event.failureCategory,
+      ) ||
+      (event.outcome === "accepted") !== (event.failureCategory === "none")
+    )
+      return;
+    publish({
+      kind: "invitation",
+      operation: event.operation,
+      outcome: event.outcome,
+      failureCategory: event.failureCategory,
       durationMs: duration,
     });
     return;

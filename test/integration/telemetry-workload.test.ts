@@ -1,6 +1,6 @@
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createTable, getTable, postMessage } from "../../src/services/tables";
 import { authorizeGuestConnection } from "../../src/shared/auth";
 
@@ -84,6 +84,12 @@ describe("synthetic local telemetry workloads", () => {
 
   it("matches active-post observations to authoritative SQLite rows", async () => {
     const fixture = await syntheticTable();
+    const emitted: Record<string, unknown>[] = [];
+    const recorder = vi.spyOn(console, "log").mockImplementation((value) => {
+      if (value && typeof value === "object" && "schema" in value) {
+        emitted.push(value as Record<string, unknown>);
+      }
+    });
     const first = {
       request_id: "telemetry_synthetic_post_00001",
       body: "synthetic-only-private-body-one",
@@ -114,14 +120,26 @@ describe("synthetic local telemetry workloads", () => {
     expect(secondResult.ok).toBe(true);
     expect(repeated).toEqual(firstResult);
     const counts = await storedCounts(fixture.table);
+    recorder.mockRestore();
     expect(counts.messages).toBe(2);
     expect(counts.receipts).toBe(2);
+    const measured = emitted.filter(
+      (event) => event.kind === "commit" && event.operation === "post_message",
+    );
+    expect(measured).toHaveLength(counts.messages);
+    expect(measured).toHaveLength(counts.receipts);
+    expect(measured.every((event) => event.outcome === "committed")).toBe(true);
+    expect(measured.every((event) => typeof event.durationMs === "number")).toBe(
+      true,
+    );
+    expect(JSON.stringify(emitted)).not.toContain(first.body);
+    expect(JSON.stringify(emitted)).not.toContain(second.body);
     console.log(
       JSON.stringify({
         profile: "active",
         runtime: "local-workerd",
         observedPostAttempts: 3,
-        observedCommittedMessages: counts.messages,
+        observedCommittedMessages: measured.length,
         observedReceipts: counts.receipts,
         observedDatabaseBytes: counts.databaseBytes,
         unavailable: ["billed-cpu", "stream", "outbox", "host-run"],
