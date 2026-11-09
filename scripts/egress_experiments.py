@@ -138,13 +138,13 @@ class SafeExperimentSession:
             record_id = str(created["id"])
         elif isinstance(created, list) and len(created) > 0 and "id" in created[0]:
             record_id = str(created[0]["id"])
-        else:
-            recs = self.list_dns_records(name)
-            if recs:
-                record_id = str(recs[0]["id"])
-
+        # Never infer ownership from a later DNS lookup. Another actor may have
+        # created a record after the collision precheck; such an ID is not ours.
         if not record_id:
-            raise RuntimeError(f"Failed to obtain record ID for created DNS record {name}")
+            raise RuntimeError(
+                "Cloudflare did not return the created DNS record ID; "
+                "leave remote state untouched and investigate manually"
+            )
 
         self.created_dns_records.add(record_id)
         return record_id
