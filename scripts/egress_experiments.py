@@ -525,6 +525,8 @@ def run_probe(test_id: str, probe_token: str) -> dict:
         "-",
         "--max-time",
         "15",
+        "--max-filesize",
+        "8192",
         url,
     ]
     # Curl accepts one config directive per line. This token is not placed in
@@ -539,17 +541,52 @@ def run_probe(test_id: str, probe_token: str) -> dict:
             continue
         if res.returncode != 0:
             continue
-        # text=True normalizes subprocess CRLF output to LF; also accept test fakes with CRLF.
+        # The local response is diagnostic data, not trusted network-policy proof.
+        # Bind every result to the exact probe request; an unrelated local service
+        # or stale preview must not silently supply a successful observation.
+        if len(res.stdout) > 8192:
+            continue
         parts = res.stdout.replace("\r\n", "\n").split("\n\n", 1)
         if len(parts) != 2:
             continue
+        status_line = parts[0].split("\n", 1)[0]
+        status_match = re.match(r"^HTTP/(?:1\.[01]|2|3)\s+(\d{3})(?:\s|$)", status_line)
+        if status_match is None:
+            continue
         try:
             parsed = json.loads(parts[1].strip())
-            if isinstance(parsed, dict):
-                return parsed
         except (ValueError, TypeError):
-            pass
-        time.sleep(2)
+            continue
+        if not isinstance(parsed, dict) or parsed.get("testId") != test_id:
+            continue
+        if not set(parsed).issubset({"result", "testId", "upstreamStatus", "cfErrorCode"}):
+            continue
+        expected_status = {
+            "reachable": 200,
+            "disabled": 503,
+            "destination-rejected": 422,
+            "request-too-large": 502,
+            "invalid-headers": 502,
+            "redirect-refused": 502,
+            "response-too-large": 502,
+            "deadline": 504,
+            "transport-error": 502,
+            "upstream-non-2xx": 502,
+            "connection-boundary-unverified": 502,
+        }.get(parsed.get("result"))
+        if expected_status is None or int(status_match.group(1)) != expected_status:
+            continue
+        upstream_status = parsed.get("upstreamStatus")
+        if "upstreamStatus" in parsed and (
+            type(upstream_status) is not int or not 100 <= upstream_status <= 599
+        ):
+            continue
+        cf_error_code = parsed.get("cfErrorCode")
+        if "cfErrorCode" in parsed and (
+            type(cf_error_code) is not int or not 1000 <= cf_error_code <= 1999
+        ):
+            continue
+        return parsed
     return {"result": "failure", "category": "invalid-probe-response"}
 
 

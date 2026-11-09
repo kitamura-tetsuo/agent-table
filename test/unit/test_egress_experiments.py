@@ -337,7 +337,7 @@ def test_probe_parses_crlf_from_real_text_mode_subprocess():
     """Real subprocess text mode normalizes CRLF; a successful probe must survive it."""
     raw_response = (
         b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\r\n"
-        b'{"result":"success","upstreamStatus":204}'
+        b'{"result":"reachable","testId":"real-text-mode"}'
     )
     actual_run = subprocess.run
     inputs = []
@@ -365,7 +365,7 @@ def test_probe_parses_crlf_from_real_text_mode_subprocess():
     ):
         result = run_probe("real-text-mode", token)
 
-    assert result == {"result": "success", "upstreamStatus": 204}
+    assert result == {"result": "reachable", "testId": "real-text-mode"}
     assert len(inputs) == 1
     assert token in inputs[0]
 
@@ -375,10 +375,10 @@ def test_probe_credentials_use_stdin_and_untrusted_output_is_not_returned():
     """No bearer token in argv, stderr, logged data, or raw diagnostic fallback."""
     mock_response = MagicMock()
     mock_response.returncode = 0
-    mock_response.stdout = 'HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\r\n{"result":"success","upstreamStatus":204}'
+    mock_response.stdout = 'HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\r\n{"result":"reachable","testId":"synthetic"}'
     token = "synthetic-secret-that-must-not-reach-argv"
     with patch("scripts.egress_experiments.subprocess.run", return_value=mock_response) as run:
-        assert run_probe("synthetic", token) == {"result": "success", "upstreamStatus": 204}
+        assert run_probe("synthetic", token) == {"result": "reachable", "testId": "synthetic"}
     args, kwargs = run.call_args
     assert token not in repr(args)
     assert token in kwargs["input"]
@@ -390,3 +390,44 @@ def test_probe_credentials_use_stdin_and_untrusted_output_is_not_returned():
         with patch("scripts.egress_experiments.time.sleep"):
             result = run_probe("synthetic", token)
     assert result == {"result": "failure", "category": "invalid-probe-response"}
+
+
+def test_probe_rejects_stale_or_unrelated_test_id():
+    """A stale preview response must not be recorded as the requested observation."""
+    response = MagicMock(
+        returncode=0,
+        stdout='HTTP/1.1 200 OK\r\n\r\n{"result":"reachable","testId":"previous-run"}',
+    )
+    with (
+        patch("scripts.egress_experiments.subprocess.run", return_value=response) as run,
+        patch("scripts.egress_experiments.time.sleep"),
+    ):
+        assert run_probe("current-run", "synthetic-token") == {
+            "result": "failure",
+            "category": "invalid-probe-response",
+        }
+    assert run.call_count == 3
+    assert "--max-filesize" in run.call_args.args[0]
+
+
+@pytest.mark.parametrize(
+    "status,body",
+    [
+        (502, '{"result":"reachable","testId":"current-run"}'),
+        (200, '{"result":"reachable","testId":"current-run","secret":"must-not-return"}'),
+        (200, '{"result":"reachable","testId":"current-run","cfErrorCode":true}'),
+    ],
+)
+def test_probe_rejects_inconsistent_or_untrusted_result_envelopes(status, body):
+    response = MagicMock(
+        returncode=0,
+        stdout=f"HTTP/1.1 {status} Test\r\ncontent-type: application/json\r\n\r\n{body}",
+    )
+    with (
+        patch("scripts.egress_experiments.subprocess.run", return_value=response),
+        patch("scripts.egress_experiments.time.sleep"),
+    ):
+        assert run_probe("current-run", "synthetic-token") == {
+            "result": "failure",
+            "category": "invalid-probe-response",
+        }

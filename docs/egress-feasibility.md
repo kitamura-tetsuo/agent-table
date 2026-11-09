@@ -537,3 +537,16 @@ its precise source/runtime provenance is **inconclusive**, and green CI on a
 later head does not retrospectively establish that identity. Reproduction
 requires separately authorized isolated fixtures, exact build SHA capture,
 and receiver-side correlation; a public-IPv4 VPS is not a production requirement.
+
+### 2026-11-09: probe response attribution and bounded result envelope
+
+The isolated Python experiment runner now accepts a probe observation only when the local
+HTTP status matches the narrow result category, the returned `testId` exactly matches the
+outbound request, and optional numeric diagnostics are bounded and correctly typed. Extra
+response fields and unknown categories are rejected rather than copied into evidence.
+Curl has an 8 KiB transfer cap and the parsed diagnostic output is also bounded. New
+mocked-subprocess regressions cover stale IDs, conflicting HTTP status, secret-bearing
+extra fields and malformed diagnostic values. These checks prevent obvious stale/foreign
+local responses from being mislabeled as real-Worker evidence; they do not authenticate
+Cloudflare's outbound connection, pin remote DNS/IP, establish a receiver receipt or
+retroactively supply the missing full SHA for historical runs. No live probe was run.
