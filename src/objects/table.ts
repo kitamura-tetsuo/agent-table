@@ -43,6 +43,7 @@ import {
   type TableResult,
   type TableState,
 } from "../shared/table";
+import { emitOperationalEvent } from "../shared/telemetry";
 import {
   MAX_POSTS_PER_MINUTE,
   POST_WINDOW_MS,
@@ -868,6 +869,7 @@ export class TableDO extends DurableObject<Env> {
   ): Promise<
     TableResult<PostReceipt> & { peerUpdateHint?: TransientPeerUpdateHint }
   > {
+    const started = Date.now();
     if (!validPostInput(input)) return { ok: false, code: "INVALID_REQUEST" };
     if (!(await this.verifyActor(actor, "tables:write"))) {
       return { ok: false, code: "TABLE_NOT_FOUND" };
@@ -897,7 +899,8 @@ export class TableDO extends DurableObject<Env> {
         this.transcriptCommitBarrierReleaseForTest?.();
       }
     }
-    return this.ctx.storage.transactionSync(() => {
+    let newlyCommitted = false;
+    const result = this.ctx.storage.transactionSync(() => {
       const table = this.metadataRow();
       const member = this.memberFor(actor.guestId);
       const now = Date.now();
@@ -1007,6 +1010,7 @@ export class TableDO extends DurableObject<Env> {
         digest,
         seq,
       );
+      newlyCommitted = true;
       return {
         ok: true,
         value: this.postReceipt(table.table_id, {
@@ -1030,6 +1034,16 @@ export class TableDO extends DurableObject<Env> {
           : {}),
       } as const;
     });
+    if (result.ok && newlyCommitted) {
+      // Only persisted rows are counted; delivery and host execution are unknown.
+      emitOperationalEvent({
+        kind: "commit",
+        operation: "post_message",
+        outcome: "committed",
+        durationMs: Date.now() - started,
+      });
+    }
+    return result;
   }
 
   private postReceipt(tableId: string, row: MessageRow): PostReceipt {
@@ -1508,9 +1522,32 @@ export class TableDO extends DurableObject<Env> {
 
   /** Alarms are recoverable; no wakeup implies that content is readable. */
   async alarm(): Promise<void> {
-    await this.deadlines.drainDueWork(
-      () => this.earliestLifecycleDeadline(),
-      (now, budget) => this.cleanupDueLifecycle(now, budget),
-    );
+    const started = Date.now();
+    try {
+      const earliest = this.earliestLifecycleDeadline();
+      const drained = await this.deadlines.drainDueWork(
+        () => this.earliestLifecycleDeadline(),
+        (now, budget) => this.cleanupDueLifecycle(now, budget),
+      );
+      emitOperationalEvent({
+        kind: "alarm",
+        component: "table",
+        outcome: "committed",
+        processed: drained.processed,
+        backlogLagMs:
+          earliest === null ? null : Math.max(0, started - earliest),
+        durationMs: Date.now() - started,
+      });
+    } catch {
+      emitOperationalEvent({
+        kind: "alarm",
+        component: "table",
+        outcome: "unknown",
+        processed: null,
+        backlogLagMs: null,
+        durationMs: Date.now() - started,
+      });
+      throw new Error("Table cleanup unavailable");
+    }
   }
 }

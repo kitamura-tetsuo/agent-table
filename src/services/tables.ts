@@ -11,6 +11,7 @@ import type {
 } from "../shared/lifecycle";
 import { parseOwnInboxUri } from "../shared/resources";
 import type { SafeTableMetadata, TableResult } from "../shared/table";
+import { emitOperationalEvent } from "../shared/telemetry";
 import type {
   PostMessageInput,
   PostReceipt,
@@ -29,6 +30,42 @@ const unavailable = (): PublicTableResult => ({
 });
 
 /**
+ * Record only categorical invitation outcomes at the application authority.
+ * MCP tool errors are usually HTTP 200 and cannot be counted at the edge.
+ * Never attach invite tokens, table IDs, arguments, or returned values.
+ */
+function observeInvitation<T extends { ok: boolean }>(
+  operation: "create_invite" | "join_table",
+  result: T,
+  started: number,
+): T {
+  const code = "code" in result ? result.code : undefined;
+  const failureCategory = result.ok
+    ? "none"
+    : code === "TEMPORARILY_UNAVAILABLE"
+      ? "unavailable"
+      : code === "INVITATION_EXPIRED"
+        ? "expired"
+        : code === "INVITATION_INVALID" || code === "INVITATION_REVOKED"
+          ? "invalid"
+          : code === "TABLE_NOT_FOUND" || code === "NOT_AUTHORIZED"
+            ? "denied"
+            : "other";
+  emitOperationalEvent({
+    kind: "invitation",
+    operation,
+    outcome: result.ok
+      ? "accepted"
+      : code === "TEMPORARILY_UNAVAILABLE"
+        ? "unknown"
+        : "rejected",
+    failureCategory,
+    durationMs: Date.now() - started,
+  });
+  return result;
+}
+
+/**
  * Reservations and table initialization are separate durable transactions.
  * Never treat a reserved ID or an ambiguous RPC outcome as created.
  * A retry with the original request_id reconstructs the same operation.
@@ -38,6 +75,7 @@ export async function createTable(
   actor: VerifiedConnectionActor,
   input: unknown,
 ): Promise<PublicTableResult> {
+  const started = Date.now();
   if (!allowNewTables(env)) {
     return { ok: false, code: "ADMISSION_DISABLED" };
   }
@@ -89,6 +127,12 @@ export async function createTable(
       "initialized",
     );
     if (!recorded.ok) return unavailable();
+    emitOperationalEvent({
+      kind: "commit",
+      operation: "create_table",
+      outcome: "committed",
+      durationMs: Date.now() - started,
+    });
     return result;
   } catch {
     // A timed-out initializer might have committed. Preserve the reservation.
@@ -118,13 +162,18 @@ export async function createInvite(
   tableId: string,
   requestId: string,
 ) {
+  const started = Date.now();
   try {
-    return await env.TABLES.get(env.TABLES.idFromName(tableId)).issueInvite(
-      actor,
-      requestId,
-    );
+    const result = await env.TABLES.get(
+      env.TABLES.idFromName(tableId),
+    ).issueInvite(actor, requestId);
+    return observeInvitation("create_invite", result, started);
   } catch {
-    return { ok: false as const, code: "TEMPORARILY_UNAVAILABLE" };
+    return observeInvitation(
+      "create_invite",
+      { ok: false as const, code: "TEMPORARILY_UNAVAILABLE" },
+      started,
+    );
   }
 }
 
@@ -134,15 +183,27 @@ export async function joinTable(
   invitation: string,
   requestId: string,
 ): Promise<PublicTableResult> {
+  const started = Date.now();
   const { parseInvitation } = await import("../shared/invitations");
   const parsed = parseInvitation(invitation);
-  if (!parsed) return { ok: false, code: "INVITATION_INVALID" };
+  if (!parsed) {
+    return observeInvitation(
+      "join_table",
+      { ok: false as const, code: "INVITATION_INVALID" },
+      started,
+    );
+  }
   try {
-    return await env.TABLES.get(
+    const result = await env.TABLES.get(
       env.TABLES.idFromName(parsed.tableId),
     ).redeemInvite(actor, invitation, requestId);
+    return observeInvitation("join_table", result, started);
   } catch {
-    return { ok: false, code: "TEMPORARILY_UNAVAILABLE" };
+    return observeInvitation(
+      "join_table",
+      { ok: false as const, code: "TEMPORARILY_UNAVAILABLE" },
+      started,
+    );
   }
 }
 
@@ -201,11 +262,18 @@ export async function closeTable(
   requestId: string,
   onTerminal?: (hint: LifecycleInvalidation) => void,
 ): Promise<TableResult<CloseTableReceipt>> {
+  const started = Date.now();
   try {
     const committed = await env.TABLES.get(
       env.TABLES.idFromName(id),
     ).closeTable(actor, requestId);
     if (!committed.ok) return committed;
+    emitOperationalEvent({
+      kind: "commit",
+      operation: "close_table",
+      outcome: "committed",
+      durationMs: Date.now() - started,
+    });
     if (committed.terminalHint && onTerminal) {
       try {
         onTerminal(committed.terminalHint);

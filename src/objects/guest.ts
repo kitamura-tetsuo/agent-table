@@ -18,6 +18,7 @@ import {
   initializeApplicationSchema,
   readApplicationSchemaVersion,
 } from "../shared/schema";
+import { emitOperationalEvent } from "../shared/telemetry";
 
 const SESSION_LIFETIME_MS = 30 * 24 * 60 * 60 * 1_000;
 const MAX_CLEANUP_BATCH = 100;
@@ -841,9 +842,32 @@ export class GuestDO extends DurableObject<Env> {
 
   /** At-least-once alarm processing; remaining work is always rearmed. */
   async alarm(): Promise<void> {
-    await this.deadlines.drainDueWork(
-      () => this.earliestDeadline(),
-      (now, budget) => this.pruneDue(now, budget),
-    );
+    const started = Date.now();
+    try {
+      const earliest = this.earliestDeadline();
+      const drained = await this.deadlines.drainDueWork(
+        () => this.earliestDeadline(),
+        (now, budget) => this.pruneDue(now, budget),
+      );
+      emitOperationalEvent({
+        kind: "alarm",
+        component: "guest",
+        outcome: "committed",
+        processed: drained.processed,
+        backlogLagMs:
+          earliest === null ? null : Math.max(0, started - earliest),
+        durationMs: Date.now() - started,
+      });
+    } catch {
+      emitOperationalEvent({
+        kind: "alarm",
+        component: "guest",
+        outcome: "unknown",
+        processed: null,
+        backlogLagMs: null,
+        durationMs: Date.now() - started,
+      });
+      throw new Error("Guest cleanup unavailable");
+    }
   }
 }
