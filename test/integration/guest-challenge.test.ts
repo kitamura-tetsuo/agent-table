@@ -112,9 +112,9 @@ describe("server-verified guest admission challenge", () => {
           "Content-Length": "5000",
         },
       });
-    expect(
-      await verifyGuestChallenge(required, TOKEN, forgedLength),
-    ).toBe(false);
+    expect(await verifyGuestChallenge(required, TOKEN, forgedLength)).toBe(
+      false,
+    );
 
     const streamed = async () =>
       new Response(
