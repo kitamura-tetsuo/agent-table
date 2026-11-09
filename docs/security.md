@@ -163,11 +163,12 @@ Non-delivery to the host's tunnel receiver during DNS-only private IP resolution
 demonstrates tunnel non-delivery, not absence of connection to the Cloudflare edge
 server's internal loopback.
 
-Adversarial in-flight DNS rebinding was empirically tested against a dedicated
-programmable authoritative DNS daemon on GCP (`34.3.98.126`): dynamic rebinding to
-127.0.0.1 on the second query resulted in immediate edge refusal with HTTP 530 Error 1016
-without forwarding traffic to port 443, and multi-A mixed public/private responses
-were actively refused with HTTP 403.
+Request-to-request DNS changes were tested with a dedicated programmable
+authoritative DNS daemon on GCP: a later fetch whose DNS answer changed to
+127.0.0.1 returned HTTP 530 / diagnostic 1016 without a corresponding request
+at the controlled public receiver, and mixed public/private A records
+returned HTTP 403. Neither result instruments the private socket dial nor
+tests a DNS change between address validation and dial in the same connection.
 Evidence is strictly classified across four tiers: directly OBSERVED on Hosted Workers,
 OFFICIAL GUARANTEE documented by Cloudflare, SOURCE-BASED INFERENCE from workerd,
 and BLOCKED (unexposed platform runtime capability).
