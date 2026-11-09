@@ -13,6 +13,7 @@
     "lint": "biome check src schema test",
     "test": "vitest run",
     "test:integration": "vitest run test/integration",
+    "measure:synthetic": "vitest run test/integration/telemetry-workload.test.ts",
     "test:e2e": "playwright test",
     "build": "wrangler deploy --dry-run --outdir dist"
   },
