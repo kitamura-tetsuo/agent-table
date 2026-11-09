@@ -78,6 +78,16 @@ def test_dns_record_creation_and_session_tracking(mock_cf_cmd):
     assert not session.created_dns_records
 
 
+def test_dns_create_without_returned_id_never_claims_a_concurrent_record(mock_cf_cmd):
+    session = SafeExperimentSession(zone="example.com", tunnel_id="tunnel-123")
+    mock_cf_cmd.side_effect = [[], {}]
+    with pytest.raises(RuntimeError, match="created DNS record ID"):
+        session.create_dns_record("A", "new.example.com", "127.0.0.1", False)
+    assert session.created_dns_records == set()
+    assert len(mock_cf_cmd.call_args_list) == 2
+    assert all("delete" not in call.args[0] for call in mock_cf_cmd.call_args_list)
+
+
 def test_tunnel_full_snapshot_update_and_restore(mock_cf_cmd):
     """A replace-style API update must preserve all non-ingress fields in both directions."""
     remote, updates = mock_tunnel_api(mock_cf_cmd)
