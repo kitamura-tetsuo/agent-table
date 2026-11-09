@@ -291,5 +291,4 @@ describe("cross-isolate admission policy", () => {
       ).toBe(1);
     });
   });
-
 });
