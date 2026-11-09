@@ -6,6 +6,7 @@ import {
   type VerifiedConnectionActor,
 } from "../shared/auth";
 import {
+  type CreationActor,
   creationRequestDigest,
   InvalidCreationRequestError,
   parseCreationRequest,
@@ -559,6 +560,24 @@ export class GuestDO extends DurableObject<Env> {
     ).allowed;
   }
 
+  /** Recheck session or grant at the GuestDO transaction boundary. */
+  private async creationPermission(
+    actor: CreationActor,
+  ): Promise<() => boolean> {
+    if (!actor || typeof actor !== "object") return () => false;
+    if ("kind" in actor) return () => this.creationAuthorized(actor);
+    if (
+      typeof actor.guestId !== "string" ||
+      actor.guestId !== this.guestId() ||
+      !validCredential(actor.sessionId, actor.secret)
+    )
+      return () => false;
+    const digest = await digestSessionSecret(actor.secret);
+    return () =>
+      this.guestId() === actor.guestId &&
+      this.activeSession(actor.sessionId, digest, Date.now()) !== null;
+  }
+
   private creationRow(requestId: string): CreationRow | undefined {
     return this.ctx.storage.sql
       .exec<CreationRow>(
@@ -591,9 +610,10 @@ export class GuestDO extends DurableObject<Env> {
    * later TableDO initializer can establish whether creation succeeded.
    */
   async reserveCreation(
-    actor: VerifiedConnectionActor,
+    actor: CreationActor,
     input: unknown,
   ): Promise<CreationResult> {
+    const permitted = await this.creationPermission(actor);
     let parsed: ReturnType<typeof parseCreationRequest>;
     try {
       parsed = parseCreationRequest(input);
@@ -613,7 +633,7 @@ export class GuestDO extends DurableObject<Env> {
     return (
       await this.deadlines.commitWithWakeup(retentionDeadline, () =>
         this.ctx.storage.transactionSync(() => {
-          if (!this.creationAuthorized(actor)) {
+          if (!permitted()) {
             return { ok: false, code: "UNAUTHORIZED" } as const;
           }
           const now = Date.now();
@@ -699,14 +719,15 @@ export class GuestDO extends DurableObject<Env> {
   }
 
   /** Read a retained receipt without implicitly authorizing initialization. */
-  getCreationReservation(
-    actor: VerifiedConnectionActor,
+  async getCreationReservation(
+    actor: CreationActor,
     requestId: string,
-  ): CreationLookupResult {
+  ): Promise<CreationLookupResult> {
     if (!validCreationRequestId(requestId)) {
       return { ok: false, code: "INVALID_REQUEST" };
     }
-    if (!this.creationAuthorized(actor)) {
+    const permitted = await this.creationPermission(actor);
+    if (!permitted()) {
       return { ok: false, code: "UNAUTHORIZED" };
     }
     const now = Date.now();
@@ -722,12 +743,12 @@ export class GuestDO extends DurableObject<Env> {
   }
 
   /** An outcome annotation never refunds quota or proves TableDO membership. */
-  recordCreationOutcome(
-    actor: VerifiedConnectionActor,
+  async recordCreationOutcome(
+    actor: CreationActor,
     requestId: string,
     tableId: string,
     outcome: CreationOutcome,
-  ): CreationResult {
+  ): Promise<CreationResult> {
     if (
       !validCreationRequestId(requestId) ||
       !UUID_V4.test(tableId) ||
@@ -735,8 +756,9 @@ export class GuestDO extends DurableObject<Env> {
     ) {
       return { ok: false, code: "INVALID_REQUEST" };
     }
+    const permitted = await this.creationPermission(actor);
     return this.ctx.storage.transactionSync(() => {
-      if (!this.creationAuthorized(actor)) {
+      if (!permitted()) {
         return { ok: false, code: "UNAUTHORIZED" } as const;
       }
       const row = this.creationRow(requestId);
