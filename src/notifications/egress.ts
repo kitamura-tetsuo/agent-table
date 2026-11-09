@@ -33,7 +33,12 @@ export type CallbackDestinationDecision =
 
 export type CallbackTransportOutcome =
   | { ok: true; status: number; body: Uint8Array }
-  | { ok: false; reason: CallbackFailure; status?: number };
+  | {
+      ok: false;
+      reason: CallbackFailure;
+      status?: number;
+      cfErrorCode?: number;
+    };
 
 export interface CallbackRequest {
   body: Uint8Array;
@@ -242,7 +247,49 @@ async function readBoundedResponse(
 }
 
 /**
+ * Safely inspect a 5xx upstream response for a Cloudflare 1xxx error code.
+ * Reads at most 4 KiB and returns only the matched integer code without
+ * logging or echoing headers, URLs, or response bodies.
+ */
+async function extractSafeCloudflareErrorCode(
+  response: Response,
+): Promise<number | undefined> {
+  const headerCode = response.headers.get("cf-error-code");
+  if (headerCode && /^1\d{3}$/.test(headerCode)) {
+    return Number(headerCode);
+  }
+  if (response.statusText && /^1\d{3}$/.test(response.statusText)) {
+    return Number(response.statusText);
+  }
+  if (!response.body) return undefined;
+  try {
+    const reader = response.body.getReader();
+    const { value } = await reader.read();
+    reader.releaseLock();
+    if (value && value.byteLength > 0) {
+      const text = new TextDecoder().decode(value.subarray(0, 4096));
+      const match =
+        text.match(/class=["']cf-error-code["']>\s*(1\d{3})\s*</i) ??
+        text.match(/data-translate=["']error_(1\d{3})["']/i) ??
+        text.match(/error\s*(?:reference\s*number|code)?[:\s]+(1\d{3})\b/i) ??
+        text.match(/error\s+(1\d{3})\b/i) ??
+        text.match(/"code"\s*:\s*(1\d{3})\b/);
+      if (match) {
+        const parsed = Number(match[1]);
+        if (parsed >= 1000 && parsed <= 1999) {
+          return parsed;
+        }
+      }
+    }
+  } catch {
+    // Fail closed with undefined on read errors; do not block or throw
+  }
+  return undefined;
+}
+
+/**
  * Candidate production sender. Only an explicitly reviewed destination may
+
  * reach the global Workers fetch; no per-request proxy, resolveOverride,
  * socket fallback, automatic redirect or retry is permitted.
  *
@@ -291,9 +338,17 @@ export async function sendVerifiedHttps(
     )
       return { ok: false, reason: "redirect-refused" };
     if (response.status < 200 || response.status >= 300) {
-      // Refuse non-successful statuses without parsing or echoing error bodies.
+      let cfErrorCode: number | undefined;
+      if (response.status >= 500 && response.status < 600) {
+        cfErrorCode = await extractSafeCloudflareErrorCode(response);
+      }
       controller.abort();
-      return { ok: false, reason: "upstream-non-2xx", status: response.status };
+      return {
+        ok: false,
+        reason: "upstream-non-2xx",
+        status: response.status,
+        ...(cfErrorCode !== undefined ? { cfErrorCode } : {}),
+      };
     }
     const body = await readBoundedResponse(response, deadline);
     if (!body) {

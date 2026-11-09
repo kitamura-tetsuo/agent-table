@@ -25,14 +25,17 @@ function result(
   category: ProbeResult,
   upstreamStatus?: number,
   testId?: string,
+  cfErrorCode?: number,
 ): Response {
   const payload: {
     result: ProbeResult;
     upstreamStatus?: number;
     testId?: string;
+    cfErrorCode?: number;
   } = { result: category };
   if (upstreamStatus !== undefined) payload.upstreamStatus = upstreamStatus;
   if (testId !== undefined) payload.testId = testId;
+  if (cfErrorCode !== undefined) payload.cfErrorCode = cfErrorCode;
   return Response.json(payload, {
     status,
     headers: { "Cache-Control": "no-store" },
@@ -81,6 +84,12 @@ export default {
         : outcome.reason === "destination-rejected"
           ? 422
           : 502;
-    return result(status, outcome.reason, outcome.status, testId);
+    return result(
+      status,
+      outcome.reason,
+      outcome.status,
+      testId,
+      outcome.cfErrorCode,
+    );
   },
 };

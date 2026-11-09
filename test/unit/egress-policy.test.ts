@@ -200,6 +200,69 @@ describe("callback egress preflight", () => {
     }
   });
 
+  it("safely extracts Cloudflare 1xxx error code on 5xx responses without leaking bodies", async () => {
+    const spy = vi.spyOn(globalThis, "fetch");
+    try {
+      // 1. Error 1000 in HTML body
+      spy.mockResolvedValueOnce(
+        new Response(
+          '<!DOCTYPE html><html><head><title>DNS points to prohibited IP | Error 1000</title></head><body><div class="cf-error-details"><h1>Error 1000</h1><p>DNS points to prohibited IP</p></div></body></html>',
+          { status: 530 },
+        ),
+      );
+      expect(
+        await sendVerifiedHttps(
+          "https://events.provider.example.org/callback",
+          reviewed,
+          { method: "POST", body: new Uint8Array([1]) },
+        ),
+      ).toEqual({
+        ok: false,
+        reason: "upstream-non-2xx",
+        status: 530,
+        cfErrorCode: 1000,
+      });
+
+      // 2. Error 1016 with cf-error-code header
+      spy.mockResolvedValueOnce(
+        new Response("origin dns error", {
+          status: 530,
+          headers: { "cf-error-code": "1016" },
+        }),
+      );
+      expect(
+        await sendVerifiedHttps(
+          "https://events.provider.example.org/callback",
+          reviewed,
+          { method: "POST", body: new Uint8Array([1]) },
+        ),
+      ).toEqual({
+        ok: false,
+        reason: "upstream-non-2xx",
+        status: 530,
+        cfErrorCode: 1016,
+      });
+
+      // 3. Generic 5xx without 1xxx code
+      spy.mockResolvedValueOnce(
+        new Response("internal server error", { status: 500 }),
+      );
+      expect(
+        await sendVerifiedHttps(
+          "https://events.provider.example.org/callback",
+          reviewed,
+          { method: "POST", body: new Uint8Array([1]) },
+        ),
+      ).toEqual({
+        ok: false,
+        reason: "upstream-non-2xx",
+        status: 500,
+      });
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it("never allows an unreviewed destination, including when disabled", async () => {
     expect(
       await sendVerifiedHttps("https://127.0.0.1/callback", reviewed, {

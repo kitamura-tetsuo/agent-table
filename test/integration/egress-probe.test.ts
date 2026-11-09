@@ -86,6 +86,29 @@ describe("isolated diagnostic fetch probe (not connection-boundary proof)", () =
         result: "upstream-non-2xx",
         upstreamStatus: 401,
       });
+
+      spy.mockResolvedValueOnce(
+        new Response(
+          "<!DOCTYPE html><html><body><h1>Error 1000</h1><p>DNS points to prohibited IP</p></body></html>",
+          { status: 530 },
+        ),
+      );
+      const probe530 = await probe.fetch(
+        new Request("http://localhost/__egress_probe", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${config.PROBE_AUTH_TOKEN}`,
+            "x-probe-test-id": "test-cf-1000",
+          },
+        }),
+        config,
+      );
+      expect(await probe530.json()).toEqual({
+        result: "upstream-non-2xx",
+        upstreamStatus: 530,
+        cfErrorCode: 1000,
+        testId: "test-cf-1000",
+      });
     } finally {
       spy.mockRestore();
     }
