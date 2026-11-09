@@ -176,13 +176,18 @@ The test infrastructure and candidate transport have been hardened:
 - P0: `scripts/egress_experiments.py` enforces DNS collision abort, full tunnel ingress
   snapshot and transactional rollback, isolated process-group termination (zero `pkill`),
   atomic 0600 `.dev.vars` preservation, and 7/7 automated fault-injection unit tests.
-- P1: `extractSafeCloudflareErrorCode()` enforces a 4 KiB read cap with immediate stream
-  cancellation, shares the overall 10-second deadline, validates authentic Cloudflare
-  edge headers (`server: cloudflare`, `cf-ray`, `cf-error-type`) against external origin
-  spoofing, and isolates diagnostic parsing exclusively to probe/test callers while
-  keeping the production sender free of 5xx body/header inspection.
+- P1: `extractSafeCloudflareErrorCode()` enforces a 4 KiB cap across stream
+  chunks with prompt cancellation and the common 10-second deadline. It recognizes
+  Cloudflare-shaped headers and 1xxx markup **only as untrusted diagnostic hints**:
+  any origin can forge those indicators; they cannot authenticate an edge refusal.
+  A synthetic forged-header regression verifies the public readiness gate stays off.
+  Only opt-in probe/test calls parse 5xx response bodies; the production sender does not.
 
-REQ-006 offensive verification is PASS. However, REQ-002 remains BLOCKED because the
+REQ-006 remains PARTIAL / NOT ACCEPTED. Hosted positive reachability, redirects,
+deadlines, size bounds, wrong-host HTTP 526, and refusal after a DNS change
+**across two separate fetches** were observed. They do not prove that a DNS answer
+cannot change between address validation and dial **within one connection**.
+REQ-002 remains BLOCKED because the
 Workers JavaScript runtime (`fetch()`) provides no API to programmatically inspect or pin
 the connected socket IP or peer certificate chain; safety relies on platform edge proxy
 behavior rather than application-verifiable invariants.
