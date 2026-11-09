@@ -1,4 +1,5 @@
 import { allowNewTables } from "../shared/admission";
+import { emitOperationalEvent } from "../shared/telemetry";
 import type { VerifiedConnectionActor } from "../shared/auth";
 import {
   InvalidCreationRequestError,
@@ -38,6 +39,7 @@ export async function createTable(
   actor: VerifiedConnectionActor,
   input: unknown,
 ): Promise<PublicTableResult> {
+  const started = Date.now();
   if (!allowNewTables(env)) {
     return { ok: false, code: "ADMISSION_DISABLED" };
   }
@@ -89,6 +91,12 @@ export async function createTable(
       "initialized",
     );
     if (!recorded.ok) return unavailable();
+    emitOperationalEvent({
+      kind: "commit",
+      operation: "create_table",
+      outcome: "committed",
+      durationMs: Date.now() - started,
+    });
     return result;
   } catch {
     // A timed-out initializer might have committed. Preserve the reservation.
@@ -201,11 +209,18 @@ export async function closeTable(
   requestId: string,
   onTerminal?: (hint: LifecycleInvalidation) => void,
 ): Promise<TableResult<CloseTableReceipt>> {
+  const started = Date.now();
   try {
     const committed = await env.TABLES.get(
       env.TABLES.idFromName(id),
     ).closeTable(actor, requestId);
     if (!committed.ok) return committed;
+    emitOperationalEvent({
+      kind: "commit",
+      operation: "close_table",
+      outcome: "committed",
+      durationMs: Date.now() - started,
+    });
     if (committed.terminalHint && onTerminal) {
       try {
         onTerminal(committed.terminalHint);

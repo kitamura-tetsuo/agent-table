@@ -13,6 +13,7 @@ import {
 } from "../shared/creation";
 import { DurableDeadlineScheduler } from "../shared/deadlines";
 import { CREATION_LIMITS } from "../shared/limits";
+import { emitOperationalEvent } from "../shared/telemetry";
 import { digestSessionSecret, randomBase64Url } from "../shared/random";
 import {
   initializeApplicationSchema,
@@ -841,9 +842,31 @@ export class GuestDO extends DurableObject<Env> {
 
   /** At-least-once alarm processing; remaining work is always rearmed. */
   async alarm(): Promise<void> {
-    await this.deadlines.drainDueWork(
-      () => this.earliestDeadline(),
-      (now, budget) => this.pruneDue(now, budget),
-    );
+    const started = Date.now();
+    try {
+      const earliest = this.earliestDeadline();
+      const drained = await this.deadlines.drainDueWork(
+        () => this.earliestDeadline(),
+        (now, budget) => this.pruneDue(now, budget),
+      );
+      emitOperationalEvent({
+        kind: "alarm",
+        component: "guest",
+        outcome: "committed",
+        processed: drained.processed,
+        backlogLagMs: earliest === null ? null : Math.max(0, started - earliest),
+        durationMs: Date.now() - started,
+      });
+    } catch {
+      emitOperationalEvent({
+        kind: "alarm",
+        component: "guest",
+        outcome: "unknown",
+        processed: null,
+        backlogLagMs: null,
+        durationMs: Date.now() - started,
+      });
+      throw new Error("Guest cleanup unavailable");
+    }
   }
 }
