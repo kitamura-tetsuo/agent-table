@@ -163,10 +163,19 @@ export async function verifyGuestChallenge(
   } catch {
     return false;
   }
+  // Include streamed response bytes in the same deadline as the network call.
+  // A verifier that sends headers but never ends its body must not hold ingress.
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      controller.abort();
+      reject(new Error("siteverify-deadline"));
+    }, 3_000);
+  });
   try {
-    const response = await verifierFetch(
-      "https://challenges.cloudflare.com/turnstile/v0/siteverify",
-      {
+    const response = await Promise.race([
+      verifierFetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", {
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
         body: new URLSearchParams({
@@ -175,9 +184,10 @@ export async function verifyGuestChallenge(
         }),
         // Workers accepts manual, not the Fetch standard's "error" mode.
         redirect: "manual",
-        signal: AbortSignal.timeout(3_000),
-      },
-    );
+        signal: controller.signal,
+      }),
+      deadline,
+    ]);
     // Never follow verifier redirects, even if the target returns a Location.
     if (
       response.type === "opaqueredirect" ||
@@ -199,10 +209,14 @@ export async function verifyGuestChallenge(
     const reader = response.body.getReader();
     const chunks: Uint8Array[] = [];
     let totalBytes = 0;
+    let completed = false;
     try {
       while (true) {
-        const chunk = await reader.read();
-        if (chunk.done) break;
+        const chunk = await Promise.race([reader.read(), deadline]);
+        if (chunk.done) {
+          completed = true;
+          break;
+        }
         totalBytes += chunk.value.byteLength;
         if (totalBytes > MAX_CHALLENGE_VERDICT_BYTES) {
           void reader.cancel().catch(() => undefined);
@@ -211,6 +225,7 @@ export async function verifyGuestChallenge(
         chunks.push(chunk.value);
       }
     } finally {
+      if (!completed) void reader.cancel().catch(() => undefined);
       reader.releaseLock();
     }
     const bytes = new Uint8Array(totalBytes);
@@ -241,6 +256,8 @@ export async function verifyGuestChallenge(
     );
   } catch {
     return false;
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
   }
 }
 
