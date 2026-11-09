@@ -249,12 +249,13 @@ async function readBoundedResponse(
 /**
  * Safely inspect a 5xx upstream response for a Cloudflare 1xxx error code.
  *
- * Distinguishes genuine Cloudflare edge error responses from external origin responses
- * by verifying Cloudflare platform edge headers (server: cloudflare or cf-ray, plus
- * official cf-error-type / cf-error-origin headers).
+ * Header and body patterns are untrusted diagnostic hints, NOT authenticated
+ * proof that Cloudflare generated the response or rejected a connection.
+ * An upstream can spoof Server, CF-Ray and 1xxx values. The sender's public
+ * capability remains disabled independently of this diagnostic.
  *
- * Reads at most 4 KiB within the shared overall deadline and returns only the matched
- * integer code without logging or echoing headers, URLs, or response bodies.
+ * Reads at most 4 KiB across stream chunks within the shared deadline and
+ * returns only a numeric hint without logging headers, URLs or response bodies.
  */
 export async function extractSafeCloudflareErrorCode(
   response: Response,
@@ -265,13 +266,13 @@ export async function extractSafeCloudflareErrorCode(
     return undefined;
   }
 
-  // Verify Cloudflare edge response indicators to prevent origin spoofing
+  // Heuristic only: even Cloudflare-shaped headers can be supplied by an origin.
   const serverHeader = response.headers.get("server")?.toLowerCase() ?? "";
   const cfRay = response.headers.get("cf-ray");
-  const isCloudflareEdge =
+  const resemblesCloudflareError =
     serverHeader.includes("cloudflare") || cfRay !== null;
-  if (!isCloudflareEdge) {
-    // External origin response; untrusted / spoofed 1xxx code refused
+  if (!resemblesCloudflareError) {
+    // No Cloudflare-shaped diagnostic indicators; provenance is unverified.
     return undefined;
   }
 
@@ -306,26 +307,30 @@ export async function extractSafeCloudflareErrorCode(
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   try {
     reader = response.body.getReader();
-    const readPromise = reader.read();
-    const next = deadline
-      ? await Promise.race([readPromise, deadline])
-      : await readPromise;
+    const prefix = new Uint8Array(4096);
+    let used = 0;
+    while (used < prefix.byteLength) {
+      const readPromise = reader.read();
+      const next = deadline
+        ? await Promise.race([readPromise, deadline])
+        : await readPromise;
+      if (next.done) break;
 
-    if (next.value && next.value.byteLength > 0) {
-      // Bounded decode: inspect at most 4096 bytes
-      const slice = next.value.subarray(0, 4096);
-      const text = new TextDecoder().decode(slice);
+      const slice = next.value.subarray(0, prefix.byteLength - used);
+      prefix.set(slice, used);
+      used += slice.byteLength;
+
+      // Search after every chunk so an early 1xxx hint does not wait for EOF.
+      const text = new TextDecoder().decode(prefix.subarray(0, used));
       const match =
-        text.match(/class=["']cf-error-code["']>\s*(1\d{3})\s*</i) ??
-        text.match(/data-translate=["']error_(1\d{3})["']/i) ??
-        text.match(/error\s*(?:reference\s*number|code)?[:\s]+(1\d{3})\b/i) ??
-        text.match(/error\s+(1\d{3})\b/i) ??
-        text.match(/"code"\s*:\s*(1\d{3})\b/);
+        text.match(/class=["']cf-error-code["']>\\s*(1\\d{3})\\s*</i) ??
+        text.match(/data-translate=["']error_(1\\d{3})["']/i) ??
+        text.match(/error\\s*(?:reference\\s*number|code)?[:\\s]+(1\\d{3})\\b/i) ??
+        text.match(/error\\s+(1\\d{3})\\b/i) ??
+        text.match(/"code"\\s*:\\s*(1\\d{3})\\b/);
       if (match) {
         const parsed = Number(match[1]);
-        if (parsed >= 1000 && parsed <= 1999) {
-          return parsed;
-        }
+        if (parsed >= 1000 && parsed <= 1999) return parsed;
       }
     }
   } catch {
