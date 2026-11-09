@@ -111,7 +111,8 @@ export function emitOperationalEvent(event: OperationalEvent): void {
       event.status < 100 ||
       event.status > 599 ||
       !CORRELATION.test(event.correlationId)
-    ) return;
+    )
+      return;
     publish({
       kind: "http",
       route: event.route,
@@ -126,13 +127,15 @@ export function emitOperationalEvent(event: OperationalEvent): void {
     if (
       (event.component !== "guest" && event.component !== "table") ||
       (event.outcome !== "committed" && event.outcome !== "unknown")
-    ) return;
+    )
+      return;
     const processed = measurement(event.processed);
     const lag = measurement(event.backlogLagMs);
     if (
       (event.processed !== null && processed === null) ||
       (event.backlogLagMs !== null && lag === null)
-    ) return;
+    )
+      return;
     publish({
       kind: "alarm",
       component: event.component,

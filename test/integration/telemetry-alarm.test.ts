@@ -48,13 +48,20 @@ describe("telemetry from real GuestDO cleanup alarms", () => {
       internal.deadlines.checkpoint = async () => {
         throw new Error(secret);
       };
-      await expect(instance.alarm()).rejects.toThrow("Guest cleanup unavailable");
+      await expect(instance.alarm()).rejects.toThrow(
+        "Guest cleanup unavailable",
+      );
     });
     const events = captured
       .filter((s) => s.includes('"kind":"alarm"'))
       .map((s) => JSON.parse(s));
     expect(events).toMatchObject([
-      { kind: "alarm", component: "guest", outcome: "unknown", processed: null },
+      {
+        kind: "alarm",
+        component: "guest",
+        outcome: "unknown",
+        processed: null,
+      },
     ]);
     expect(captured.join("\n")).not.toContain(secret);
   });

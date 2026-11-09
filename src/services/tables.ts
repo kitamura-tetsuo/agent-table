@@ -1,5 +1,4 @@
 import { allowNewTables } from "../shared/admission";
-import { emitOperationalEvent } from "../shared/telemetry";
 import type { VerifiedConnectionActor } from "../shared/auth";
 import {
   InvalidCreationRequestError,
@@ -12,6 +11,7 @@ import type {
 } from "../shared/lifecycle";
 import { parseOwnInboxUri } from "../shared/resources";
 import type { SafeTableMetadata, TableResult } from "../shared/table";
+import { emitOperationalEvent } from "../shared/telemetry";
 import type {
   PostMessageInput,
   PostReceipt,

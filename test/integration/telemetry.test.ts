@@ -38,8 +38,12 @@ describe("allowlisted Worker operational telemetry", () => {
     const records = captured.map((line) => JSON.parse(line));
     expect(records).toHaveLength(2);
     expect(records.map((r) => r.status)).toEqual([200, 405]);
-    expect(records.every((r) => r.kind === "http" && r.route === "other")).toBe(true);
-    expect(records.every((r) => /^[a-f0-9]{12}$/.test(r.correlationId))).toBe(true);
+    expect(records.every((r) => r.kind === "http" && r.route === "other")).toBe(
+      true,
+    );
+    expect(records.every((r) => /^[a-f0-9]{12}$/.test(r.correlationId))).toBe(
+      true,
+    );
     expect(new Set(records.map((r) => r.correlationId)).size).toBe(2);
     expect(captured.join("\n")).not.toContain(sentinel);
     expect(captured.join("\n")).not.toContain("callback=");

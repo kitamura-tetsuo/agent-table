@@ -13,12 +13,12 @@ import {
 } from "../shared/creation";
 import { DurableDeadlineScheduler } from "../shared/deadlines";
 import { CREATION_LIMITS } from "../shared/limits";
-import { emitOperationalEvent } from "../shared/telemetry";
 import { digestSessionSecret, randomBase64Url } from "../shared/random";
 import {
   initializeApplicationSchema,
   readApplicationSchemaVersion,
 } from "../shared/schema";
+import { emitOperationalEvent } from "../shared/telemetry";
 
 const SESSION_LIFETIME_MS = 30 * 24 * 60 * 60 * 1_000;
 const MAX_CLEANUP_BATCH = 100;
@@ -854,7 +854,8 @@ export class GuestDO extends DurableObject<Env> {
         component: "guest",
         outcome: "committed",
         processed: drained.processed,
-        backlogLagMs: earliest === null ? null : Math.max(0, started - earliest),
+        backlogLagMs:
+          earliest === null ? null : Math.max(0, started - earliest),
         durationMs: Date.now() - started,
       });
     } catch {

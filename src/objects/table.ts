@@ -29,7 +29,6 @@ import type {
   PurgeTableReceipt,
 } from "../shared/lifecycle";
 import { TABLE_LIMITS } from "../shared/limits";
-import { emitOperationalEvent } from "../shared/telemetry";
 import { digestSessionSecret, randomBase64Url } from "../shared/random";
 import { ownInboxUri, parseOwnInboxUri } from "../shared/resources";
 import {
@@ -44,6 +43,7 @@ import {
   type TableResult,
   type TableState,
 } from "../shared/table";
+import { emitOperationalEvent } from "../shared/telemetry";
 import {
   MAX_POSTS_PER_MINUTE,
   POST_WINDOW_MS,
@@ -1534,7 +1534,8 @@ export class TableDO extends DurableObject<Env> {
         component: "table",
         outcome: "committed",
         processed: drained.processed,
-        backlogLagMs: earliest === null ? null : Math.max(0, started - earliest),
+        backlogLagMs:
+          earliest === null ? null : Math.max(0, started - earliest),
         durationMs: Date.now() - started,
       });
     } catch {
