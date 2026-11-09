@@ -1,6 +1,5 @@
 /** Bounded Worker ingress and independently controlled admission switches. */
 
-const HTTP_METHODS_WITH_BODIES = new Set(["POST", "PUT", "PATCH"]);
 const MAX_URL_BYTES = 2_048;
 const MAX_COOKIE_BYTES = 8_192;
 const MAX_AUTHORIZATION_BYTES = 8_192;
@@ -90,9 +89,8 @@ export async function rejectOversizedIngress(
   ) {
     return reject(413);
   }
-  if (!HTTP_METHODS_WITH_BODIES.has(request.method) || !request.body) {
-    return null;
-  }
+  // Enforce a size limit for any payload, including unexpected HTTP methods.
+  if (!request.body) return null;
   const limit = bodyLimit(new URL(request.url));
   const declared = request.headers.get("Content-Length");
   if (declared !== null) {
