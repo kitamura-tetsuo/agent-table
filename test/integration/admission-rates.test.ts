@@ -343,6 +343,91 @@ describe("cross-isolate admission policy", () => {
       ).toBe(1);
     });
   });
+
+  it("shares a durable Worker-subrequest limit despite x-real-ip and CF-Worker churn", async () => {
+    const limited: Env = { ...env, EDGE_DCR_RATE_PER_MINUTE: "2" };
+    const register = (source: string, worker: string) =>
+      dispatch(limited, "/oauth/register", {
+        method: "POST",
+        headers: {
+          "CF-Worker": worker,
+          "CF-Connecting-IP": source,
+          "X-Real-IP": source,
+          "Content-Type": "application/json",
+        },
+        body: "{}",
+      });
+    const sourceA = "192.0.2.90";
+    const sourceB = "192.0.2.91";
+    const sourceC = "192.0.2.92";
+    expect((await register(sourceA, "outliner-online.com")).status).not.toBe(
+      429,
+    );
+    expect((await register(sourceB, "other-zone.example")).status).not.toBe(
+      429,
+    );
+    const denied = await register(sourceC, "outliner-online.com");
+    expect(denied.status).toBe(429);
+    expect(denied.headers.get("Retry-After")).toMatch(/^[1-9][0-9]*$/);
+
+    const workerStub = await admissionStub(
+      limited,
+      "edge-v1:worker-subrequest",
+    );
+    await runInDurableObject(workerStub, async (_instance, state) => {
+      expect(
+        state.storage.sql
+          .exec<{ count: number }>(
+            "SELECT COUNT(*) AS count FROM admission_hits WHERE category = 'dcr'",
+          )
+          .one().count,
+      ).toBe(2);
+    });
+    for (const source of [sourceA, sourceB]) {
+      const stub = await admissionStub(limited, `edge-v1:${source}`);
+      await runInDurableObject(stub, async (_instance, state) => {
+        expect(
+          state.storage.sql
+            .exec<{ count: number }>(
+              "SELECT COUNT(*) AS count FROM admission_hits WHERE category = 'dcr'",
+            )
+            .one().count,
+        ).toBe(1);
+      });
+    }
+    // Direct traffic from another source has its own budget.
+    expect(
+      (
+        await dispatch(limited, "/oauth/register", {
+          method: "POST",
+          headers: {
+            "CF-Connecting-IP": sourceC,
+            "Content-Type": "application/json",
+          },
+          body: "{}",
+        })
+      ).status,
+    ).not.toBe(429);
+  });
+
+  it("does not let a forged CF-Worker header bypass the direct source budget", async () => {
+    const limited: Env = { ...env, EDGE_DCR_RATE_PER_MINUTE: "1" };
+    const source = "192.0.2.93";
+    const register = (forwardedWorker?: string) =>
+      dispatch(limited, "/oauth/register", {
+        method: "POST",
+        headers: {
+          "CF-Connecting-IP": source,
+          ...(forwardedWorker ? { "CF-Worker": forwardedWorker } : {}),
+          "Content-Type": "application/json",
+        },
+        body: "{}",
+      });
+    expect((await register()).status).not.toBe(429);
+    const denied = await register("attacker-controlled.example");
+    expect(denied.status).toBe(429);
+    expect(await denied.text()).toBe("RATE_LIMITED");
+  });
   it("rejects oversized DELETE payloads before edge accounting and without reflecting input", async () => {
     const source = "192.0.2.76";
     const limited: Env = { ...env, EDGE_APPLICATION_RATE_PER_MINUTE: "1" };

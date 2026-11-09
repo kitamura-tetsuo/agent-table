@@ -348,8 +348,9 @@ async function admissionKey(identity: string): Promise<string> {
 /**
  * CF-Connecting-IP is meaningful only on the trusted direct edge boundary.
  * Canonicalize valid IPv4/IPv6 forms before assigning a durable rate bucket.
- * Malformed values share the same bounded unknown-source bucket; forwarding
- * from a same-zone Worker still requires independent ingress trust controls.
+ * Malformed values share the same bounded unknown-source bucket.
+ * Worker-origin requests also consume an independent shared Worker budget,
+ * because same-zone Workers can alter their forwarded CF-Connecting-IP value.
  */
 function edgeSource(request: Request): string {
   const source = request.headers.get("CF-Connecting-IP");
@@ -401,7 +402,7 @@ async function consumeAdmission(
 }
 
 /** Cross-guest ingress policy; applied before sensitive public route handlers. */
-export function checkEdgeAdmission(
+export async function checkEdgeAdmission(
   request: Request,
   env: Env,
   category: EdgeAdmissionCategory,
@@ -411,6 +412,19 @@ export function checkEdgeAdmission(
     EDGE_RATE_SETTINGS[category],
     EDGE_DEFAULTS[category],
   );
+  // Cloudflare adds CF-Worker to fetch() subrequests after WAF header evaluation.
+  // Its value is not an authorization identity: any present value charges the
+  // same durable bucket. This prevents source-IP rotation within same-zone
+  // Workers and does not let a forged header evade the normal IP quota.
+  if (request.headers.has("CF-Worker")) {
+    const workerRefusal = await consumeAdmission(
+      env,
+      "edge-v1:worker-subrequest",
+      category,
+      limit,
+    );
+    if (workerRefusal) return workerRefusal;
+  }
   return consumeAdmission(
     env,
     `edge-v1:${edgeSource(request)}`,
