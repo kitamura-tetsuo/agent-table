@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { evaluateHostEvidence, HOST_CASES } from "../e2e/host/evidence";
+import partialHostRecord from "../e2e/host/evidence.chatgpt-work-2026-11-09.json";
 import template from "../e2e/host/evidence.template.json";
 
 describe("actual host interoperability evidence gate", () => {
@@ -12,6 +13,22 @@ describe("actual host interoperability evidence gate", () => {
     );
     expect(result.missing).toContain(
       "actual client and server evidence for refreshedToken",
+    );
+  });
+
+  it("keeps the redacted actual-host snapshot incomplete", () => {
+    const result = evaluateHostEvidence(partialHostRecord);
+    expect(result.structurallyValid).toBe(true);
+    expect(result.completeRecord).toBe(false);
+    expect(result.missing).toContain("isolated deployed Agent Table build SHA");
+    expect(result.missing).toContain(
+      "actual client and server evidence for deniedConsent",
+    );
+    expect(result.missing).toContain(
+      "actual client and server evidence for createdTable",
+    );
+    expect(result.missing).toContain(
+      "actual client and server evidence for readTable",
     );
   });
 

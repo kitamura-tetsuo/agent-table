@@ -1,11 +1,15 @@
 # Guest OAuth interoperability — actual host evidence gate
 
-Status: **BLOCKED / NOT RUN** as of 2026-11-09. This is a procedure and a
-metadata-only fixture, **not** evidence that a real host supports Agent Table.
-Issue [#23](https://github.com/kitamura-tetsuo/agent-table/issues/23)
-requires an eligible owner-authorized agent host and an isolated reachable
-deployment; neither is available to this connector-only validation run.
-The successful local MCP SDK/OAuth tests for #6/#9 are server regressions only.
+Status: **PARTIAL REAL-HOST EVIDENCE — ACCEPTANCE OPEN** as of 2026-11-10.
+An owner-authorized ChatGPT Work private MCP app (`Agent Table Test2`) was
+connected to an isolated staging Worker. Real host-origin create/read operations,
+a `refresh_token` exchange and post-browser-revocation HTTP 401 have been
+reported with redacted server receipts. This is **not** a completed nine-case
+host acceptance result: an actual-host Deny test, independent per-case receipt
+review and a trustworthy deployed Git-SHA mapping remain outstanding. See
+Issue [#23](https://github.com/kitamura-tetsuo/agent-table/issues/23) and
+[PR #41](https://github.com/kitamura-tetsuo/agent-table/pull/41).
+The local MCP SDK/OAuth regression tests cannot replace real-host evidence.
 
 ## Scope and inputs
 
@@ -80,16 +84,57 @@ case; do not loosen PKCE, redirect, scope, audience, guest identity or
 revocation rules. Use exact product/build and endpoint in any compatibility
 claim, not a blanket provider label.
 
-Current results:
+## Observed 2026-11-09 UTC — partial, redacted
 
-| Check | Status | Missing independent evidence |
+- **Actual host:** ChatGPT Work owner-authorized **private MCP app**
+  `Agent Table Test2`. The account could register and use the private app.
+  The host SaaS build/version was **not exposed** in the captured host UI or
+  connector responses. This is an eligibility observation for **this** account
+  and surface, not all ChatGPT accounts, dots, or other hosts.
+- **Endpoint/transport:** `https://agent-table-test.outliner-online.com/mcp`
+  over HTTPS MCP, on `agent-table-staging` with separate staging Durable
+  Object and OAuth bindings. The owner selected/reused the same synthetic guest.
+  No production origin or personal conversation was used.
+- **Deployment provenance limitation:** Cloudflare identifies distinct
+  deployed versions, not the Git SHA of the uploaded bundle. Revocation
+  occurred under version `6296bab9-d3cf-45b5-a9b5-f2a408938556` at
+  13:54:04Z; refresh-token audit under
+  `0bf4b7b6-6221-43dc-9e49-c26a1b67a8fe` at 15:59:42Z; audit-off
+  cleanup under `aede0218-480c-46e3-b3a8-dd39a44a6bc7` at 16:12:26Z.
+  The audit deployment was reported as built from
+  `8c92fec397b22c15cbff4a87c01bfe965357e333`, **not independently
+  attested by Cloudflare**. These observations must not be represented as a
+  single exact-head run.
+- **Correlation limit:** Cloudflare Zone HTTP Analytics supplied redacted
+  time/method/path/status. The metadata-only live tail supplied
+  `grant_type=refresh_token`, HTTP 200, a validated binding digest and
+  identical approved/issued four-scope arrays. The tail lacked a shared
+  request ID and per-event timestamps: correlation is by the narrow test
+  window. Retained private traces were not replayed by an independent reviewer.
+
+| Required host case | Observed result | Evidence and remaining limitation |
 | --- | --- | --- |
-| Eligible real host and isolated deployed SHA | BLOCKED | Authorized host surface/account, test deployment |
-| Host denial, guest choice and consent | NOT RUN | Host UI + server grant traces |
-| Host create/get and storage correlation | NOT RUN | Host-origin requests + committed table |
-| Host refresh and subsequent protected operation | NOT RUN | Host-origin refresh + unchanged grant |
-| Browser revoke and host next-request denial | NOT RUN | Same-guest browser and host/server refusal |
-| Notification receipt / autonomous execution | UNTESTED | Separate #18–#24 evidence gates |
+| Denied consent without grant | **NOT RUN** | Must Deny on a separate actual-host test connection, then confirm absent usable grant/protected-call refusal |
+| Deliberate guest choice/reuse | **OWNER OBSERVED** | Same guest shown across old revoked and fresh active grants; [browser report](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6743908128) |
+| Approved consent | **OBSERVED** | Actual reconnect Allow and `/authorize` 200/302 followed by token 200; [client report](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6743908128), [server status](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6744413982) |
+| Host `create_table` | **HOST TOOL OBSERVED** | Actual private-app tool result; direct independent DO table persistence audit still needed ([client report](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6743636141)) |
+| Host `get_table` | **HOST TOOL OBSERVED** | Host read after creation and after reauthorization; exact protected operation to persisted table needs independent join ([client report](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6743908128)) |
+| Actual host refresh token | **SERVER OBSERVED** | Live redacted `refresh_token`/200; active connection digest and equal four-scope arrays ([audit receipt](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6744941273)) |
+| Authenticated read after refresh | **HOST/SERVER OBSERVED** | Host `get_table` succeeded; matching-window `/mcp` 200, no shared request ID ([audit receipt](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6744941273)) |
+| Same-guest browser revocation | **BROWSER/SERVER OBSERVED** | Old grant Revoked, fresh grant Active; `POST /guest/connections/revoke` 303 ([browser report](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6743908128), [edge receipt](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6744413982)) |
+| First host call refused after revocation | **HOST/SERVER OBSERVED** | Host showed reconnect without protected table; `POST /mcp` HTTP **401** at 15:22:55Z, before new Allow ([edge receipt](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6744413982)) |
+| Host-side Disconnect | **NOT RUN** | Service-side Revoke and host-side Disconnect are distinct |
+| Notification receipt / idle autonomy | **UNTESTED** | Not part of #23 OAuth gate; separate #18–#24 |
 
-No account credential, callback URL, production deployment or public-IPv4
-server is required by this documentation update alone.
+The default `evidence.template.json` intentionally remains entirely blocked
+for **new** test runs. A separate redacted, **incomplete** actual-host snapshot
+(`evidence.chatgpt-work-2026-11-09.json`) tracks observed facts without
+pretending the missing Deny, exact build attestation or independent causal
+correlation passed. Its validation cannot authenticate the external receipts.
+
+Before closing #23, run actual-host Deny on another connection without touching
+the existing active connection; independently compare the paired receipts,
+establish a source-SHA-attested staging deployment for any new head-specific
+run, then review/merge the evidence and compatibility documentation. Host
+disconnect behavior remains separately identified, not silently presumed.
+No public-IPv4 receiver or production deployment is needed for this OAuth gate.

@@ -1,8 +1,8 @@
 # Notifications and interoperability
 
-Status: proposed profiles. No Agent Table host integration has been tested yet.
+Status: notification profiles proposed; **host OAuth/tool calls partially observed**.
 
-The [guest-OAuth real-host compatibility procedure](compatibility/guest-oauth.md) for Issue #23 and its fail-closed evidence template are available. The required actual-host consent, tool, refresh and revocation observations are **NOT RUN / BLOCKED**, pending an eligible account and isolated deployment. SDK integration tests establish server behavior, not host interoperability; notification and autonomous-execution claims are separate gates.
+The [guest-OAuth real-host compatibility record](compatibility/guest-oauth.md) for Issue #23 now includes owner-authorized ChatGPT Work private-app create/read, a redacted real refresh-token/200 audit and the browser-revocation-to-HTTP-401 sequence. It is **not fully accepted**: real-host Deny, independently reviewed causal evidence and exact deployed Git-SHA attestation remain outstanding. The reusable evidence template still defaults to blocked, and a separate partial snapshot records observations. SDK-only checks do not establish host interoperability. **Notification delivery and idle-host autonomous execution remain untested**, regardless of these tool results.
 
 ## Three distinct capabilities
 
@@ -89,7 +89,7 @@ Agent-side instructions should limit deliberation, avoid repeated acknowledgment
 | Target | Initial classification | Evidence needed before claiming support |
 | --- | --- | --- |
 | Official MCP SDK reference clients | Planned | Tools, OAuth, resource reads, reconnect, and subscription tests |
-| OpenAI Work chats / dots | Provider feature documented; Agent Table untested | Guest OAuth, event registration, idle-host wake-up, read/reply, unsubscribe, and restart tests |
+| ChatGPT Work private MCP app (`Agent Table Test2`) | **Actual OAuth/tool/refresh/revocation observations; #23 still incomplete** | Deny-without-grant, deployed-source attestation, independent record review; Events/idle wake-up/reply/unsubscribe/restart **untested**. No result for dots or other ChatGPT accounts. |
 | Meta Muse | Not assessed for Agent Table | Exact product/version and measured transport/event behavior |
 | Gemini Spark | Not assessed for Agent Table | Exact product/version and measured transport/event behavior |
 | Other hosts | Unknown | Same layered evidence; an MCP logo is insufficient |

@@ -36,7 +36,7 @@ Provider-specific webhook integration documentation. This source identifies a ca
 
 OAuth discovery, client registration, token validation, and host integration requirements. Guest identity is Agent Table's proposed application design, not an OpenAI-provided identity service.
 
-The [guest OAuth interoperability evidence procedure](compatibility/guest-oauth.md) requires actual host-origin observations in an eligible isolated environment. No candidate provider has yet passed that gate; implementation and SDK tests must not be presented as a host compatibility result.
+The [guest OAuth interoperability record](compatibility/guest-oauth.md) now includes partial owner-authorized ChatGPT Work private-app observations: successful host tools, a real refresh exchange and a post-revocation 401, each with explicit evidence and provenance limits. Issue #23 remains open because Deny-without-grant, independent causal review and deployed-source attestation are not complete. This cannot be generalized to other hosts or used as evidence of notification or autonomous execution.
 
 ### OPENAI-SUBMISSION
 
