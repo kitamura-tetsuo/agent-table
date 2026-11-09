@@ -174,23 +174,40 @@ OFFICIAL GUARANTEE documented by Cloudflare, SOURCE-BASED INFERENCE from workerd
 and BLOCKED (unexposed platform runtime capability).
 
 The test infrastructure and candidate transport have been hardened:
-- P0: `scripts/egress_experiments.py` enforces DNS collision abort, full tunnel ingress
-  snapshot and transactional rollback, isolated process-group termination (zero `pkill`),
-  atomic 0600 `.dev.vars` preservation, and 7/7 automated fault-injection unit tests.
-- P1: `extractSafeCloudflareErrorCode()` enforces a 4 KiB cap across stream
-  chunks with prompt cancellation and the common 10-second deadline. It recognizes
-  Cloudflare-shaped headers and 1xxx markup **only as untrusted diagnostic hints**:
-  any origin can forge those indicators; they cannot authenticate an edge refusal.
-  A synthetic forged-header regression verifies the public readiness gate stays off.
-  Only opt-in probe/test calls parse 5xx response bodies; the production sender does not.
+- P0: `scripts/egress_experiments.py` now retains and restores the **entire**
+  mutable Cloudflare Tunnel config, including top-level `originRequest`, and checks for
+  concurrent edits before update and rollback. The replace-only API exposes no
+  atomic compare-and-swap through this CLI: a simultaneous remote write can
+  still race the final update. Use only an authorized isolated fixture, with
+  explicit `AGENT_TABLE_ALLOW_LIVE_EGRESS_EXPERIMENT=yes` opt-in, never a
+  shared production tunnel. DNS cleanup affects session-created record IDs only.
+- P0: `.dev.vars` probe secrets are installed with a same-directory atomic
+  replacement and 0600 permissions. Symlinks and non-regular originals are
+  rejected, prior bytes are preserved for restoration, and concurrent inode or
+  content changes prevent destructive rollback. An interrupted atomic replace
+  leaves prior bytes intact; an uncatchable process kill can leave a private
+  temporary token file requiring operator inspection. Python safety tests
+  cover full-config round-trip, 0644 originals, symlinks and injected faults.
+- P1: `extractSafeCloudflareErrorCode()` enforces a 4 KiB cap across streamed
+  response chunks and the shared 10-second deadline, with prompt cancellation.
+  Forged Cloudflare-looking headers or 1xxx markup are only **untrusted
+  diagnostic hints**, not authenticated evidence of edge enforcement.
+  Production sending does not parse diagnostic error bodies.
 
-REQ-006 remains PARTIAL / NOT ACCEPTED. Hosted positive reachability, redirects,
-deadlines, size bounds, wrong-host HTTP 526, and refusal after a DNS change
-**across two separate fetches** were observed. They do not prove that a DNS answer
-cannot change between address validation and dial **within one connection**.
-REQ-002 remains BLOCKED because the
-Workers JavaScript runtime (`fetch()`) provides no API to programmatically inspect or pin
-the connected socket IP or peer certificate chain; safety relies on platform edge proxy
-behavior rather than application-verifiable invariants.
-`ENABLE_OPENAI_EVENTS=false` and draft PR status are strictly preserved. No production
-deployment or public Events release is authorized.
+**Limited-beta decision (2026-11-09):** The owner expressly accepts Hosted
+Workers native `fetch()`/`global_fetch_strictly_public` and platform TLS/Web PKI
+as trusted but not independently inspected enforcement boundaries for a
+controlled opt-in beta. Hosted sender observations remain relevant, including
+public DNS-only and Cloudflare-fronted HTTPS, private/mixed DNS refusal,
+wrong-host TLS, no redirects, deadlines and size caps. A private answer on
+a second fetch is **not** proof that rebinding during a single dial is safe,
+and a formal guarantee is not required for this limited beta.
+
+**Merge is not activation.** PR #33 still needs exact-head successful CI,
+security review and safety-thread resolutions. Until then it remains draft.
+At merge, `ENABLE_OPENAI_EVENTS=false` and
+`callbackTransportReadiness().enabled=false` must remain. Activating any
+provider delivery requires a separately authorized signed, synthetic-only
+opt-in rollout with reviewed providers, secret controls, quotas, monitoring
+and immediate rollback. No production deployment or Events activation is
+part of this work.
