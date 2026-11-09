@@ -4,6 +4,7 @@ import os
 import signal
 import stat
 import subprocess
+import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -291,6 +292,45 @@ def test_rollback_continues_tunnel_restore_after_dns_failure(mock_cf_cmd):
     session.created_dns_records.add("broken-rec")
     session.rollback()
     assert sum("update" in call.args[0] for call in mock_cf_cmd.call_args_list) == 1
+
+
+
+def test_probe_parses_crlf_from_real_text_mode_subprocess():
+    """Real subprocess text mode normalizes CRLF; a successful probe must survive it."""
+    raw_response = (
+        b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\r\n"
+        b'{"result":"success","upstreamStatus":204}'
+    )
+    actual_run = subprocess.run
+    inputs = []
+    token = "synthetic-secret"
+    fixture_code = f"import sys; sys.stdout.buffer.write({raw_response!r})"
+
+    def text_mode_curl_fixture(cmd, **kwargs):
+        assert cmd[0] == "curl"
+        assert token not in repr(cmd)
+        assert kwargs["text"] is True
+        inputs.append(kwargs["input"])
+        response = actual_run(
+            [sys.executable, "-c", fixture_code],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=20,
+        )
+        assert "\r\n" not in response.stdout
+        assert "\n\n" in response.stdout
+        return response
+
+    with patch(
+        "scripts.egress_experiments.subprocess.run", side_effect=text_mode_curl_fixture
+    ):
+        result = run_probe("real-text-mode", token)
+
+    assert result == {"result": "success", "upstreamStatus": 204}
+    assert len(inputs) == 1
+    assert token in inputs[0]
+
 
 
 def test_probe_credentials_use_stdin_and_untrusted_output_is_not_returned():
