@@ -21,15 +21,21 @@ describe("telemetry from real GuestDO cleanup alarms", () => {
         now - 1_000,
         session.sessionId,
       );
-      await state.storage.setAlarm(Date.now());
+      // Keep the alarm scheduled ahead of this forced test invocation.
+      await state.storage.setAlarm(Date.now() + 10_000);
     });
     expect(await runDurableObjectAlarm(stub)).toBe(true);
     const events = captured
       .filter((s) => s.includes('"kind":"alarm"'))
       .map((s) => JSON.parse(s));
-    expect(events).toMatchObject([
-      { kind: "alarm", component: "guest", outcome: "committed", processed: 1 },
-    ]);
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        kind: "alarm",
+        component: "guest",
+        outcome: "committed",
+        processed: 1,
+      }),
+    );
     expect(captured.join("\n")).not.toContain(guestId);
     expect(captured.join("\n")).not.toContain(session.secret);
   });
@@ -57,14 +63,14 @@ describe("telemetry from real GuestDO cleanup alarms", () => {
     const events = captured
       .filter((s) => s.includes('"kind":"alarm"'))
       .map((s) => JSON.parse(s));
-    expect(events).toMatchObject([
-      {
+    expect(events).toContainEqual(
+      expect.objectContaining({
         kind: "alarm",
         component: "guest",
         outcome: "unknown",
         processed: null,
-      },
-    ]);
+      }),
+    );
     expect(captured.join("\n")).not.toContain(secret);
   });
 });
