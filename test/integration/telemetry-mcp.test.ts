@@ -362,4 +362,3 @@ describe("Privacy-safe invitation and storage telemetry through OAuth/MCP", () =
     }
   });
 });
-
