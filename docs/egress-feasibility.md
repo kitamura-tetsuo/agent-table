@@ -482,7 +482,7 @@ Strict classification taxonomy:
    - **Process Group Termination:** Completely eliminated `pkill -f "wrangler dev --remote"`. Wrangler is spawned with `start_new_session=True` and stopped via process-group signals (`os.killpg(pgid, signal.SIGTERM)` / `SIGKILL`), isolating teardown exclusively to the spawned PID tree.
    - **Secure `.dev.vars` Lifecycle:** Pre-existing regular-file bytes and mode are retained in memory; symlinks/non-regular files are refused. New bearer tokens are written to same-directory 0600 temporary files and installed atomically with `os.replace`, never by in-place `O_TRUNC`. Restoration uses the same atomic path, refuses unexpected inode/content changes and narrows formerly permissive file modes to 0600. A failed replace leaves the original bytes intact. A forced crash can still leave an isolated 0600 probe file; follow the documented local cleanup procedure.
    - **Transactional Rollback:** All operations are protected by `SafeExperimentSession` with `try/finally` and signal handlers (`SIGINT`, `SIGTERM`).
-   - **Safety Regression Suite:** 15 Python tests in `test/unit/test_egress_experiments.py` cover full-config round-trip with nonempty `originRequest`, observed concurrent-update refusal, DNS collision, 0644 source protection, symlink refusal, atomic-write fault cleanup, in-place user edits, session rollback and cleanup-error isolation. CI invokes `python -m pytest -q test/unit/test_egress_experiments.py`. Live DNS/Tunnel mutation now also requires `AGENT_TABLE_ALLOW_LIVE_EGRESS_EXPERIMENT=yes` and separate authorization. Probe curl credentials are passed on stdin rather than exposed in process arguments; unparseable upstream responses return a fixed category rather than raw output.
+   - **Safety Regression Suite:** 18 Python tests in `test/unit/test_egress_experiments.py` cover full-config round-trip with nonempty `originRequest`, observed concurrent-update refusal, DNS collision, 0644 source protection, symlink refusal, atomic-write fault cleanup, in-place user edits, session rollback and cleanup-error isolation. CI invokes `python -m pytest -q test/unit/test_egress_experiments.py`. Live DNS/Tunnel mutation now also requires `AGENT_TABLE_ALLOW_LIVE_EGRESS_EXPERIMENT=yes` and separate authorization. Probe curl credentials are passed on stdin rather than exposed in process arguments; unparseable upstream responses return a fixed category rather than raw output.
 
 2. **P1: Safe 5xx Diagnostic Parsing (`src/notifications/egress.ts`):**
    - **Bounded Stream Reading:** Reads at most 4 KiB and immediately cancels the underlying stream reader in `finally`, protecting against unbounded buffering and memory exhaustion on huge single chunks (tested up to 1 MiB).
@@ -516,3 +516,24 @@ Strict classification taxonomy:
 - The original strict same-connection proof thread was **resolved as superseded by the limited-beta owner decision**, not as experimentally proven. The separate P1 tunnel full-config safety, `.dev.vars` safety, and CI review threads require review of this hardening and successful exact-head CI before they can be resolved.
 - Issue #19 remains **OPEN** pending security review, current-head CI and the required documentation/verification assessment.
 - The code may merge with Events disabled only after these gates; **no production deployment or Events activation is authorized**. A separately approved synthetic-only, signed, monitored opt-in rollout is mandatory.
+
+### 2026-11-09: fail-closed authoritative DNS precondition
+
+The isolated diagnostic runner now treats failed or mismatched authoritative DNS
+propagation as a fatal precondition, not a non-blocking boolean. Its A-record
+check requires an exact line match and a successful bounded `dig` call;
+a timeout raises an exception before an affected hosted probe can be classified.
+The experiment session then attempts its existing owned-resource rollback.
+Three deterministic Python regressions cover partial-answer rejection, exact
+answer acceptance and expiry without any hosted or DNS mutations.
+
+**Evidence boundary:** This tests the selected authoritative DNS response only;
+it does not attest Cloudflare's resolver cache, final dial destination,
+same-connection rebinding, or actual hosted Worker refusal. The historical
+hosted evidence remains the evidence recorded above. No new hosted experiment
+was performed for this harness-only change. The Task A/B/C/D run labeled
+"Current working head" lacks an independently recorded full execution SHA;
+its precise source/runtime provenance is **inconclusive**, and green CI on a
+later head does not retrospectively establish that identity. Reproduction
+requires separately authorized isolated fixtures, exact build SHA capture,
+and receiver-side correlation; a public-IPv4 VPS is not a production requirement.
