@@ -110,7 +110,10 @@ claim, not a blanket provider label.
   `grant_type=refresh_token`, HTTP 200, a validated binding digest and
   identical approved/issued four-scope arrays. The tail lacked a shared
   request ID and per-event timestamps: correlation is by the narrow test
-  window. Retained private traces were not replayed by an independent reviewer.
+  window. The [independent Cloudflare HTTP re-query](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6753587348)
+  reproduced the old-grant revoke 303 / next MCP 401 and refresh-window token
+  200 / MCP 200 results; it cannot independently replay the previous private
+  grant-type/binding audit or create a shared trace ID.
 
 | Required host case | Observed result | Evidence and remaining limitation |
 | --- | --- | --- |
@@ -127,14 +130,40 @@ claim, not a blanket provider label.
 | Notification receipt / idle autonomy | **UNTESTED** | Not part of #23 OAuth gate; separate #18–#24 |
 
 The default `evidence.template.json` intentionally remains entirely blocked
-for **new** test runs. A separate redacted, **incomplete** actual-host snapshot
-(`evidence.chatgpt-work-2026-11-09.json`) tracks observed facts without
-pretending the missing Deny, exact build attestation or independent causal
-correlation passed. Its validation cannot authenticate the external receipts.
+for **new** test runs. The redacted, **incomplete** snapshots
+`evidence.chatgpt-work-2026-11-09.json` and
+`evidence.chatgpt-work-2026-11-10-pinned.json` preserve two **different**
+deployment/test windows. Their validation cannot authenticate external receipts
+or merge older observations into a newer version's acceptance result.
+
+### Source-labeled staging smoke test — 2026-11-09 22:39–22:43 UTC
+
+- With a **clean** Git checkout at
+  `ffb8676010dae337c08c70db91f29429afbe22e5`, deployed to the same
+  isolated staging Worker. Wrangler/Cloudflare independently returned version
+  `8a44a405-6ed3-4f8d-b392-234313f322dd` with a deployment annotation
+  naming that full Git SHA, three preserved secret bindings and
+  `OAUTH_AUDIT_MODE=off`. The version annotation records the operator's
+  deploy command; it is **not a cryptographic binary/source attestation**.
+  An intermediate superseded version had an incorrect short-SHA annotation
+  and is deliberately excluded from acceptance evidence.
+- From the existing live ChatGPT Work connection, a fresh synthetic
+  `create_table` followed by `get_table` returned matching table identity,
+  state and Seat 1 metadata. The owner connection was **not** revoked or
+  reauthorized. One-hour table expiry bounds the test data.
+- Read-only Cloudflare Zone HTTP Analytics corroborated `/oauth/token` 200
+  at 22:41:41Z and `/mcp` 200 at 22:41:44Z, 22:41:50Z and 22:43:18Z.
+  Only UTC time/path/status were queried. These are matching-window edge
+  receipts, **not** independently joined Durable Object write/read evidence.
+  The token's grant type was not observed with audit off.
+- See the [redacted PR receipt](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6753521454).
+  Host SaaS build remains undisclosed; the metadata-only schema must reject
+  sentinels such as `not-exposed` as a completed build identity.
 
 Before closing #23, run actual-host Deny on another connection without touching
-the existing active connection; independently compare the paired receipts,
-establish a source-SHA-attested staging deployment for any new head-specific
-run, then review/merge the evidence and compatibility documentation. Host
-disconnect behavior remains separately identified, not silently presumed.
-No public-IPv4 receiver or production deployment is needed for this OAuth gate.
+the existing active connection; independently compare the paired grant/table
+receipts and ensure any **new** head-specific acceptance run uses the tagged
+deployment, rather than pooling the historical refresh/revocation versions.
+Then review and merge only after all six requirements are satisfied. Host
+disconnect remains separately identified, not silently presumed. No public
+IPv4 receiver or production deployment is needed for this OAuth gate.

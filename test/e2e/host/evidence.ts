@@ -76,9 +76,13 @@ export function evaluateHostEvidence(input: unknown): {
   if (record.host.origin !== "actual-host") {
     missing.push("actual host-origin traffic (not SDK-only)");
   }
+  const exposedBuild = record.host.exposedBuild.trim().toLowerCase();
   if (
-    !record.host.exposedBuild.trim() ||
-    record.host.exposedBuild.toLowerCase() === "unknown"
+    !exposedBuild ||
+    exposedBuild === "unknown" ||
+    exposedBuild === "unavailable" ||
+    exposedBuild.startsWith("not-exposed") ||
+    exposedBuild.startsWith("not available")
   ) {
     missing.push("exact host product/build identity");
   }

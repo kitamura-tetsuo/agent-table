@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { evaluateHostEvidence, HOST_CASES } from "../e2e/host/evidence";
 import partialHostRecord from "../e2e/host/evidence.chatgpt-work-2026-11-09.json";
+import pinnedHostRecord from "../e2e/host/evidence.chatgpt-work-2026-11-10-pinned.json";
 import template from "../e2e/host/evidence.template.json";
 
 describe("actual host interoperability evidence gate", () => {
@@ -29,6 +30,19 @@ describe("actual host interoperability evidence gate", () => {
     );
     expect(result.missing).toContain(
       "actual client and server evidence for readTable",
+    );
+  });
+
+  it("does not certify a pinned Worker without exposed host build or denial", () => {
+    const result = evaluateHostEvidence(pinnedHostRecord);
+    expect(result.structurallyValid).toBe(true);
+    expect(result.completeRecord).toBe(false);
+    expect(result.missing).toContain("exact host product/build identity");
+    expect(result.missing).toContain(
+      "actual client and server evidence for deniedConsent",
+    );
+    expect(result.missing).toContain(
+      "actual client and server evidence for createdTable",
     );
   });
 
