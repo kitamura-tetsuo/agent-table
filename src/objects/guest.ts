@@ -15,6 +15,7 @@ import {
 import { DurableDeadlineScheduler } from "../shared/deadlines";
 import { CREATION_LIMITS } from "../shared/limits";
 import { digestSessionSecret, randomBase64Url } from "../shared/random";
+import { isRestoreQuarantined } from "../shared/release-quarantine";
 import {
   initializeApplicationSchema,
   readApplicationSchemaVersion,
@@ -864,6 +865,11 @@ export class GuestDO extends DurableObject<Env> {
 
   /** At-least-once alarm processing; remaining work is always rearmed. */
   async alarm(): Promise<void> {
+    // A restored snapshot is not trusted to perform irreversible lifecycle
+    // mutations before independent expiry/deletion/revocation reconciliation.
+    // A subsequent authorized deployment reconstructs the object and rearms
+    // its persisted deadlines; no alarm clears restore quarantine itself.
+    if (isRestoreQuarantined(this.env)) return;
     const started = Date.now();
     try {
       const earliest = this.earliestDeadline();

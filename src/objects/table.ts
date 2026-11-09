@@ -31,6 +31,7 @@ import type {
 } from "../shared/lifecycle";
 import { TABLE_LIMITS } from "../shared/limits";
 import { digestSessionSecret, randomBase64Url } from "../shared/random";
+import { isRestoreQuarantined } from "../shared/release-quarantine";
 import { ownInboxUri, parseOwnInboxUri } from "../shared/resources";
 import {
   initializeApplicationSchema,
@@ -1635,6 +1636,11 @@ export class TableDO extends DurableObject<Env> {
 
   /** Alarms are recoverable; no wakeup implies that content is readable. */
   async alarm(): Promise<void> {
+    // A restored snapshot is not trusted to perform irreversible lifecycle
+    // mutations before independent expiry/deletion/revocation reconciliation.
+    // A subsequent authorized deployment reconstructs the object and rearms
+    // its persisted deadlines; no alarm clears restore quarantine itself.
+    if (isRestoreQuarantined(this.env)) return;
     const started = Date.now();
     try {
       const earliest = this.earliestLifecycleDeadline();

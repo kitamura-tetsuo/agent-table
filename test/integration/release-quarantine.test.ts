@@ -271,3 +271,73 @@ describe("retained private state under recovery and normal admission pause", () 
     });
   });
 });
+
+// Exercise real persisted DO rows without mutating the shared local test
+// bindings. The test-only receiver inherits the actual instance's storage and
+// deadline scheduler while injecting a quarantined release configuration.
+function quarantinedAlarmReceiver<T extends { alarm(): Promise<void> }>(
+  instance: T,
+): T {
+  const receiver = Object.create(instance) as T;
+  Object.defineProperty(receiver, "env", {
+    value: {
+      ...env,
+      RELEASE_ENVIRONMENT: "staging",
+      RESTORE_QUARANTINE: "true",
+    },
+  });
+  return receiver;
+}
+
+describe("restore quarantine isolation of Durable Object alarm paths", () => {
+  it("does not purge an expired retained table or its private transcript", async () => {
+    const stored = await storedPrivateTable();
+    await runInDurableObject(stored.table, async (instance, state) => {
+      state.storage.sql.exec(
+        "UPDATE table_metadata SET created_at = ?, expires_at = ? WHERE singleton = 1",
+        Date.now() - 2 * 24 * 60 * 60_000,
+        Date.now() - 24 * 60 * 60_000,
+      );
+      const alarm = await state.storage.getAlarm();
+      await quarantinedAlarmReceiver(instance).alarm();
+      expect(
+        state.storage.sql
+          .exec("SELECT COUNT(*) AS n FROM table_messages")
+          .one(),
+      ).toEqual({ n: 1 });
+      expect(
+        state.storage.sql
+          .exec("SELECT COUNT(*) AS n FROM table_metadata")
+          .one(),
+      ).toEqual({ n: 1 });
+      expect(
+        state.storage.sql
+          .exec("SELECT COUNT(*) AS n FROM table_tombstones")
+          .one(),
+      ).toEqual({ n: 0 });
+      expect(await state.storage.getAlarm()).toBe(alarm);
+    });
+  });
+
+  it("preserves expired guest sessions through a quarantined alarm", async () => {
+    const guestId = crypto.randomUUID();
+    const guest = env.GUESTS.get(env.GUESTS.idFromName(guestId));
+    const session = await guest.createSession(guestId);
+    await runInDurableObject(guest, async (instance, state) => {
+      state.storage.sql.exec(
+        "UPDATE guest_sessions SET created_at = ?, expires_at = ? WHERE session_id = ?",
+        Date.now() - 31 * 24 * 60 * 60_000,
+        Date.now() - 24 * 60 * 60_000,
+        session.sessionId,
+      );
+      const alarm = await state.storage.getAlarm();
+      await quarantinedAlarmReceiver(instance).alarm();
+      expect(
+        state.storage.sql
+          .exec("SELECT COUNT(*) AS n FROM guest_sessions")
+          .one(),
+      ).toEqual({ n: 1 });
+      expect(await state.storage.getAlarm()).toBe(alarm);
+    });
+  });
+});
