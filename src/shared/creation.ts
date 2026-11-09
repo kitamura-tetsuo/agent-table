@@ -1,4 +1,9 @@
+import type { VerifiedConnectionActor } from "./auth";
+import type { BrowserDeletionCredential } from "./deletion";
 import { CREATION_LIMITS } from "./limits";
+
+/** Browser creation is session-authorized, never a synthetic OAuth grant. */
+export type CreationActor = VerifiedConnectionActor | BrowserDeletionCredential;
 
 const REQUEST_ID = /^[A-Za-z0-9_-]{16,128}$/;
 

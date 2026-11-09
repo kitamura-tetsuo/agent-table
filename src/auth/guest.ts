@@ -201,6 +201,7 @@ export async function handleGuestIdentity(
 
 export async function readBoundedForm(
   request: Request,
+  maxBytes = BODY_LIMIT,
 ): Promise<URLSearchParams | null> {
   if (
     request.headers.get("Content-Type")?.split(";")[0]?.trim() !==
@@ -216,7 +217,7 @@ export async function readBoundedForm(
     const { done, value } = await reader.read();
     if (done) break;
     total += value.byteLength;
-    if (total > BODY_LIMIT) {
+    if (total > Math.min(maxBytes, 32_768)) {
       await reader.cancel();
       return null;
     }
