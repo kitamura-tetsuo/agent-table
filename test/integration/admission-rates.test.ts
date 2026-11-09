@@ -411,26 +411,24 @@ describe("cross-isolate admission policy", () => {
   });
 
   it("does not consume the shared Worker budget when source admission already refused", async () => {
-    const limited: Env = { ...env, EDGE_DCR_RATE_PER_MINUTE: "2" };
-    const register = (source: string, workerHeader: boolean) =>
-      dispatch(limited, "/oauth/register", {
-        method: "POST",
+    const limited: Env = { ...env, EDGE_APPLICATION_RATE_PER_MINUTE: "2" };
+    // This category is independent of the DCR Worker-budget regression above.
+    const attempt = (source: string, workerHeader: boolean) =>
+      dispatch(limited, "/mcp", {
         headers: {
           "CF-Connecting-IP": source,
           ...(workerHeader ? { "CF-Worker": "spoofed.example" } : {}),
-          "Content-Type": "application/json",
         },
-        body: "{}",
       });
     const sourceA = "192.0.2.94";
     const sourceB = "192.0.2.95";
     const sourceC = "192.0.2.96";
-    expect((await register(sourceA, true)).status).not.toBe(429);
-    expect((await register(sourceA, false)).status).not.toBe(429);
-    const sourceDenied = await register(sourceA, true);
+    expect((await attempt(sourceA, true)).status).not.toBe(429);
+    expect((await attempt(sourceA, false)).status).not.toBe(429);
+    const sourceDenied = await attempt(sourceA, true);
     expect(sourceDenied.status).toBe(429);
-    expect((await register(sourceB, true)).status).not.toBe(429);
-    const workerDenied = await register(sourceC, true);
+    expect((await attempt(sourceB, true)).status).not.toBe(429);
+    const workerDenied = await attempt(sourceC, true);
     expect(workerDenied.status).toBe(429);
     expect(workerDenied.headers.get("Retry-After")).toMatch(/^[1-9][0-9]*$/);
 
@@ -442,7 +440,7 @@ describe("cross-isolate admission policy", () => {
       expect(
         state.storage.sql
           .exec<{ count: number }>(
-            "SELECT COUNT(*) AS count FROM admission_hits WHERE category = 'dcr'",
+            "SELECT COUNT(*) AS count FROM admission_hits WHERE category = 'application'",
           )
           .one().count,
       ).toBe(2);
