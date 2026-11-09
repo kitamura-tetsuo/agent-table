@@ -229,6 +229,10 @@ export function validateRelease({
   getNames(config);
   const oauthKvId = kvId(config);
   requireCondition(
+    vars.RESTORE_QUARANTINE === "true" || vars.RESTORE_QUARANTINE === "false",
+    "restore-quarantine-mode-missing",
+  );
+  requireCondition(
     [
       "ENABLE_MCP_SUBSCRIPTIONS",
       "ENABLE_OPENAI_EVENTS",

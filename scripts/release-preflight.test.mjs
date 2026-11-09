@@ -24,6 +24,7 @@ const makeConfig = (environment, overrides = {}) => ({
   ],
   vars: {
     RELEASE_ENVIRONMENT: environment,
+    RESTORE_QUARANTINE: "true",
     PUBLIC_ORIGIN: `https://${environment}.service.test`,
     ENABLE_MCP_SUBSCRIPTIONS: "false",
     ENABLE_OPENAI_EVENTS: "false",
@@ -191,5 +192,20 @@ test("rejects mismatched environment markers and worker names", () => {
   blocked(
     { ...args, configText: JSON.stringify(config) },
     "worker-name-mismatch",
+  );
+});
+
+test("requires an explicit independent restore-quarantine binding for a release", () => {
+  const args = fixture();
+  const config = JSON.parse(args.configText);
+  delete config.vars.RESTORE_QUARANTINE;
+  blocked(
+    { ...args, configText: JSON.stringify(config) },
+    "restore-quarantine-mode-missing",
+  );
+  config.vars.RESTORE_QUARANTINE = "invalid";
+  blocked(
+    { ...args, configText: JSON.stringify(config) },
+    "restore-quarantine-mode-missing",
   );
 });
