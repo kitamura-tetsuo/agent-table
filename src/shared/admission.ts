@@ -175,17 +175,20 @@ export async function verifyGuestChallenge(
   });
   try {
     const response = await Promise.race([
-      verifierFetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({
-          secret: env.TURNSTILE_SECRET as string,
-          response: token,
-        }),
-        // Workers accepts manual, not the Fetch standard's "error" mode.
-        redirect: "manual",
-        signal: controller.signal,
-      }),
+      verifierFetch(
+        "https://challenges.cloudflare.com/turnstile/v0/siteverify",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body: new URLSearchParams({
+            secret: env.TURNSTILE_SECRET as string,
+            response: token,
+          }),
+          // Workers accepts manual, not the Fetch standard's "error" mode.
+          redirect: "manual",
+          signal: controller.signal,
+        },
+      ),
       deadline,
     ]);
     // Never follow verifier redirects, even if the target returns a Location.
