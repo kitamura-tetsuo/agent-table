@@ -8,6 +8,35 @@ const EXPECTED_DOS = new Map([
   ["OAUTH_SERIALIZER", "OAuthTokenDO"],
   ["ADMISSION", "AdmissionDO"],
 ]);
+// Historical SQLite class declarations are immutable. Replaying an altered
+// migration list can bind the wrong DO namespace or lose prior authority.
+const EXPECTED_SQLITE_MIGRATIONS = [
+  { tag: "v1", new_sqlite_classes: ["TableDO", "GuestDO"] },
+  { tag: "v2", new_sqlite_classes: ["OAuthTokenDO"] },
+  { tag: "v3", new_sqlite_classes: ["AdmissionDO"] },
+];
+
+function validateSqliteMigrationHistory(config) {
+  const actual = config?.migrations;
+  requireCondition(
+    Array.isArray(actual) &&
+      actual.length === EXPECTED_SQLITE_MIGRATIONS.length &&
+      actual.every((entry, index) => {
+        const expected = EXPECTED_SQLITE_MIGRATIONS[index];
+        return (
+          entry &&
+          typeof entry === "object" &&
+          Object.keys(entry).sort().join(",") === "new_sqlite_classes,tag" &&
+          entry.tag === expected.tag &&
+          Array.isArray(entry.new_sqlite_classes) &&
+          entry.new_sqlite_classes.length === expected.new_sqlite_classes.length &&
+          entry.new_sqlite_classes.every((name, i) => name === expected.new_sqlite_classes[i])
+        );
+      }),
+    "unsafe-sqlite-migration-history",
+  );
+}
+
 const REQUIRED_SECRETS = [
   "INVITATION_RESPONSE_KEYRING",
   "CALLBACK_CREDENTIAL_KEYRING",
@@ -227,6 +256,7 @@ export function validateRelease({
   );
   parseOrigin(vars.PUBLIC_ORIGIN, environment);
   getNames(config);
+  validateSqliteMigrationHistory(config);
   const oauthKvId = kvId(config);
   requireCondition(
     vars.RESTORE_QUARANTINE === "true" || vars.RESTORE_QUARANTINE === "false",
@@ -263,6 +293,7 @@ export function validateRelease({
     "shared-public-origin",
   );
   getNames(peer);
+  validateSqliteMigrationHistory(peer);
 
   validateSecretInventory(secrets, environment, config.name);
   // A runtime switch cannot assert readiness for a profile lacking independent evidence.

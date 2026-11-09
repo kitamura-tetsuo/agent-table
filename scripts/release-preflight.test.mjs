@@ -16,6 +16,11 @@ const makeConfig = (environment, overrides = {}) => ({
       { name: "ADMISSION", class_name: "AdmissionDO" },
     ],
   },
+  migrations: [
+    { tag: "v1", new_sqlite_classes: ["TableDO", "GuestDO"] },
+    { tag: "v2", new_sqlite_classes: ["OAuthTokenDO"] },
+    { tag: "v3", new_sqlite_classes: ["AdmissionDO"] },
+  ],
   kv_namespaces: [
     {
       binding: "OAUTH_KV",
@@ -207,5 +212,36 @@ test("requires an explicit independent restore-quarantine binding for a release"
   blocked(
     { ...args, configText: JSON.stringify(config) },
     "restore-quarantine-mode-missing",
+  );
+});
+
+test("fails closed on altered SQLite migration history in either environment", () => {
+  const args = fixture();
+  const base = JSON.parse(args.configText);
+  const missing = { ...base };
+  delete missing.migrations;
+  blocked(
+    { ...args, configText: JSON.stringify(missing) },
+    "unsafe-sqlite-migration-history",
+  );
+  for (const mutation of [
+    (config) => config.migrations.reverse(),
+    (config) => (config.migrations[0].new_sqlite_classes = ["TableDO"]),
+    (config) => (config.migrations[1].tag = "v2-replaced"),
+    (config) => (config.migrations[2].deleted_classes = ["TableDO"]),
+    (config) => config.migrations.push({ tag: "v4", new_sqlite_classes: ["TableDO"] }),
+  ]) {
+    const config = JSON.parse(args.configText);
+    mutation(config);
+    blocked(
+      { ...args, configText: JSON.stringify(config) },
+      "unsafe-sqlite-migration-history",
+    );
+  }
+  const peer = JSON.parse(args.peerText);
+  peer.migrations[0].new_sqlite_classes = ["GuestDO", "TableDO"];
+  blocked(
+    { ...args, peerText: JSON.stringify(peer) },
+    "unsafe-sqlite-migration-history",
   );
 });

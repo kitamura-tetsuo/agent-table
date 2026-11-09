@@ -5,8 +5,11 @@ import {
 } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
+import { APPLICATION_SCHEMA_VERSION } from "../../schema/migrations";
 import { SESSION_COOKIE_NAME } from "../../src/auth/guest";
 import worker from "../../src/index";
+import { GuestDO } from "../../src/objects/guest";
+import { TableDO } from "../../src/objects/table";
 import { closeTable, createTable } from "../../src/services/tables";
 import { allowOutboundNotifications } from "../../src/shared/admission";
 import { authorizeGuestConnection } from "../../src/shared/auth";
@@ -351,6 +354,95 @@ describe("restore quarantine isolation of Durable Object alarm paths", () => {
       expect(wakeup).toBeLessThanOrEqual(
         Date.now() + RESTORE_QUARANTINE_RECHECK_MS,
       );
+    });
+  });
+});
+
+describe("retained-state rollback and independent quarantine decisions", () => {
+  it("refuses a recovered old session across a changed or absent release binding", async () => {
+    const stored = await storedPrivateTable();
+    const path = `/guest/table?table_id=${stored.tableId}`;
+    const permitted = await dispatchWithBindings(
+      path,
+      { ...env, RELEASE_ENVIRONMENT: "staging", RESTORE_QUARANTINE: "false" },
+      { headers: { Cookie: stored.cookie } },
+    );
+    expect(permitted.status).toBe(200);
+    await evictDurableObject(stored.table);
+    await evictDurableObject(stored.guest);
+
+    // A restored snapshot may contain a grant since revoked externally.
+    // Without independent post-snapshot reconciliation, that stored grant
+    // cannot authorize HTTP reads, token handling, or outbound dispatch.
+    for (const independentDecision of ["true", undefined, "invalid"] as const) {
+      const recovered: Env = {
+        ...env,
+        RELEASE_ENVIRONMENT: "staging",
+        RESTORE_QUARANTINE: independentDecision,
+        ALLOW_OUTBOUND_NOTIFICATIONS: "true",
+      };
+      for (const endpoint of [path, "/guest/connections", "/mcp"]) {
+        const response = await dispatchWithBindings(endpoint, recovered, {
+          method: endpoint === "/mcp" ? "POST" : "GET",
+          headers: { Cookie: stored.cookie },
+        });
+        expect(response.status).toBe(503);
+      }
+      expect(allowOutboundNotifications(recovered)).toBe(false);
+    }
+    await runInDurableObject(stored.table, async (_instance, state) => {
+      expect(
+        state.storage.sql
+          .exec<{ body: string }>("SELECT body FROM table_messages")
+          .one().body,
+      ).toBe("Synthetic private recovery fixture");
+    });
+  });
+
+  it("refuses a newer persisted table/guest schema on rollback without erasing rows", async () => {
+    const stored = await storedPrivateTable();
+    const rollbackEnv: Env = {
+      ...env,
+      RELEASE_ENVIRONMENT: "staging",
+      RESTORE_QUARANTINE: "true",
+    };
+    await runInDurableObject(stored.table, async (_instance, state) => {
+      state.storage.sql.exec(
+        "UPDATE __agent_table_schema SET version = ? WHERE singleton = 1",
+        APPLICATION_SCHEMA_VERSION + 1,
+      );
+      expect(() => new TableDO(state, rollbackEnv)).toThrow(
+        /newer than supported/,
+      );
+      expect(
+        state.storage.sql
+          .exec<{ version: number }>("SELECT version FROM __agent_table_schema")
+          .one().version,
+      ).toBe(APPLICATION_SCHEMA_VERSION + 1);
+      expect(
+        state.storage.sql
+          .exec<{ body: string }>("SELECT body FROM table_messages")
+          .one().body,
+      ).toBe("Synthetic private recovery fixture");
+    });
+    await runInDurableObject(stored.guest, async (_instance, state) => {
+      state.storage.sql.exec(
+        "UPDATE __agent_table_schema SET version = ? WHERE singleton = 1",
+        APPLICATION_SCHEMA_VERSION + 1,
+      );
+      expect(() => new GuestDO(state, rollbackEnv)).toThrow(
+        /newer than supported/,
+      );
+      expect(
+        state.storage.sql
+          .exec("SELECT COUNT(*) AS n FROM guest_sessions")
+          .one(),
+      ).toEqual({ n: 1 });
+      expect(
+        state.storage.sql
+          .exec<{ version: number }>("SELECT version FROM __agent_table_schema")
+          .one().version,
+      ).toBe(APPLICATION_SCHEMA_VERSION + 1);
     });
   });
 });
