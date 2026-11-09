@@ -104,3 +104,137 @@ The isolated Issue #19 [egress preflight](egress-feasibility.md) does not send c
 The provider supplies the per-subscription callback URL (including opaque
 path/query); the eventual Agent Table sender originates HTTPS POSTs to it.
 An Agent Table-owned public IPv4 receiver is not part of production topology.
+
+## Issue #18 feasibility and disabled-capability slice (2026-11-10 JST)
+
+**Issue #18 is not implemented or complete.** The pinned official SDK supports
+`subscriptions/listen`; there is no demonstrated SDK wire incompatibility.
+This work adds a reproducible SDK probe and corrects discovery/admission while
+application streaming remains unavailable. Neither an environment flag nor an
+SDK-only successful exchange enables private inbox subscriptions.
+
+### Source inspection and executed compatibility probe
+
+The installed and lockfile-pinned `@modelcontextprotocol/{client,server,core}`
+versions are **2.4.0**; the Agents wrapper is **0.33.0**. The inspected shipped
+SDK implementation is in these package files (under `node_modules`):
+
+- `server/dist/listenRouter-Bartj63y.mjs`: parses the standard filter, intersects
+  it with capabilities, writes the acknowledgment first, stamps
+  `io.modelcontextprotocol/subscriptionId`, subscribes to a bus, and sends the
+  standard completion result on handler close.
+- `server/dist/index.mjs`, `serveModern`: intercepts `subscriptions/listen`
+  before ordinary request dispatch and the McpServer scope-challenge path.
+  Registering an application request handler or relying on tool scopes is
+  therefore insufficient to authorize this stream.
+- `server/dist/createMcpHandler-DzlXH0KL.d.mts`: the official entry exposes
+  `bus`, `maxSubscriptions`, `keepAliveMs`, and handler `close()`.
+- `client/dist/public-CvV4ZHkX.mjs`, `Client.listen`: resolves on acknowledgment;
+  cancellation aborts the request and sends `notifications/cancelled`; reopening
+  is explicit. It does not provide application transcript replay.
+- `agents/dist/handler-stateless-B5hU3dxK.js`: the wrapper rejects the `bus`
+  option and returns `fetch`/`notify` without the official handler's `close()`.
+  A future TableDO adapter can use the official SDK entry directly, preserving
+  equivalent origin/host and OAuth checks. The wrapper restriction does not
+  establish that the underlying SDK cannot implement this feature.
+
+Run `npm run probe:subscriptions:sdk` with the pinned Node version. The four
+shared probes in `test/probes/sdk-subscriptions.ts` passed locally in Node:
+
+1. Standard acknowledgment before resource update, exact URI filtering,
+   subscription-ID correlation, and graceful completion.
+2. Cancellation releases the SDK bus listener and permits explicit reconnect.
+3. Unsupported capabilities yield an empty honored filter and immediate
+   completion in the generic SDK (this is not an active application stream).
+4. A zero-capacity handler rejects before acknowledgment, without a listener.
+
+These probes use the real official client and HTTP handler with web-standard
+Request/Response objects. They do not open a socket, invoke OAuth, access a
+TableDO, prove cross-isolate delivery, test a slow receiver, or measure billing.
+The paired `test/integration/sdk-listen-probe.test.ts` runs exactly the same
+probes in workerd when that runtime is available.
+
+### Corrected public behavior
+
+`src/mcp/server.ts` explicitly declares tools/resources `listChanged: false`
+and resource `subscribe: false`. Otherwise the SDK defaults list-change
+capabilities to true when tools or resource templates are registered, despite
+this application's absent notification producer. The handler also sets
+`maxSubscriptions: 0`, so all authenticated listen filters are refused by the
+SDK with code `-32603` / `Subscription limit reached` before acknowledgment.
+This includes owned, foreign, mixed, list-change, and empty filters. It is a
+permanent unavailable-feature refusal in this slice, not a retryable capacity
+promise. Ordinary authorized tools and resource reads retain their existing
+authorization boundaries. Discovery does not enumerate private inboxes.
+
+`ENABLE_MCP_SUBSCRIPTIONS=true` cannot override this gate. Public OpenAI Events
+and `callbackTransportReadiness()` remain independently fail-closed; no
+callback code, outbound flag, authorization check, TableDO mutation or schema
+was changed. The OAuth/SDK regression in `public-table-tools.test.ts` checks
+capabilities, refusal and ordinary own-inbox reads with flags set to true.
+These assertions reuse an existing authenticated flow so they do not expend an
+extra registration from the separately tested DCR budget. They passed in the
+authorized Ubuntu Workerd runtime.
+
+### Local sandbox boundary and remaining work
+
+The isolated coding-agent sandbox cannot bind loopback sockets:
+`Error: listen EPERM: operation not permitted 127.0.0.1` (errno `-1`).
+Its initial Vitest attempts were **not executed**, rather than application
+test failures. The same source checkout was then tested outside that sandbox
+on the authorized Ubuntu host with actual Workerd, without deploying.
+The single-handler SDK Workerd probe, authenticated OAuth/SDK integration
+and existing tests passed. This is **local Workerd evidence**, not a
+two-entry-Worker/TableDO live-delivery test or hosted Cloudflare evidence.
+
+A full implementation still needs all of the following, tested through at
+least two separate Worker entrypoints sharing the same actual TableDO:
+
+- Strict single-owned-canonical-inbox filters and fresh `events:subscribe`
+  authority, independent `tables:read` content retrieval, immutable stream
+  actors and finite token/grant/table deadlines (OAuth library expiry is
+  seconds; application grant/table times are milliseconds).
+- TableDO-hosted stream registry and post-commit producer; peer-only hints
+  from new committed messages, never self, receipt replay, failure, read or
+  maintenance operations. The existing Worker service observer is transient
+  and does not supply distributed stream delivery.
+- One stream per membership/table with replacement; cancellation routed to
+  the correct immutable actor/stream generation; bounded buffering, emission
+  work and duration; slow-consumer termination and cleanup. The SDK's generic
+  router enqueues without checking `desiredSize`; its count cap alone is not
+  a buffering or duration bound.
+- Fresh grant revalidation immediately before every emission; terminal
+  close/delete/expiry and revocation shutdown, including idle connections and
+  authorization RPC failure. Existing lifecycle observer hints cannot recall
+  already transmitted bytes.
+- Ack-before-catch-up and cursor-based ordinary reads after reconnect;
+  peer/self/duplicate/replacement/slow/disconnect-reconnect/actor-isolation/
+  revocation/close/delete/expiry real-workerd regressions.
+- Stream-specific admission controls and privacy-safe active-count, duration
+  and fixed-category error observations from the actual stream owner.
+
+The required two-Worker/TableDO streaming integration is **NOT IMPLEMENTED /
+NOT RUN**, not replaced by the single-handler SDK probe. Issue #18 must stay
+open; there is no offline wakeup, durable notification delivery, or named-host
+compatibility claim.
+
+### Runtime costs and verification
+
+The local Node probe run took about **107 ms** for four cases (test harness
+elapsed time only). That is not workerd CPU, Worker/DO active duration, a
+per-stream cost, or a price estimate. Hosted/staging stream duration, request
+counts, SQL operations, reconnect churn, slow-consumer costs and billed costs:
+**NOT RUN**. No deployment or account/secret access was performed. SSE may keep
+a TableDO active; WebSocket hibernation must not be assumed. Measure quiet and
+active tables, replacements and reconnect churn on an independently authorized
+staging deployment before enabling the feature.
+
+Executed host checks for this exact working tree: `npm run typecheck`
+**PASS**; `npm run lint` **PASS** (two pre-existing TableDO
+test-barrier warnings); `npm run test:integration` **25 files / 128 tests
+PASS**; `npm test` **27 files / 157 tests PASS**; `npm run test:e2e`
+**6 PASS**; `npm run build` **PASS** (Wrangler dry-run only);
+`npm run probe:subscriptions:sdk` **4 PASS**. The initial sandbox
+socket-startup failure is separately recorded above and must not overwrite
+these subsequent host results. No staging or real agent-host execution was
+performed; no cross-isolate subscription stream exists yet.

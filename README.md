@@ -64,3 +64,8 @@ npm run dev
 `npm run dev` serves the guest-choice page on `http://127.0.0.1:8787/` (or `/guest`), `/guest/me` for validating the current browser session, `/guest/connections` for session-protected grant management, `/health` for health JSON, and `/mcp` for the modern-only MCP handler. New guest admission is **disabled by default**. For an isolated local guest-flow trial only, run `npm run dev -- --var ALLOW_NEW_GUESTS:true`. Never use that override as a public deployment configuration. Browser identity creation and reuse require an explicit form POST; simply visiting a page does not create a guest. The MCP endpoint still advertises no private tools or subscriptions. Tests use workerd-backed SQLite Durable Objects and a real local HTTP/browser path. The build is a Wrangler **dry run**, not a deployment.
 
 See [development and operations](docs/operations.md) for the exact dependency versions, test boundaries, and remaining setup. The original product documents are a design proposal dated **2026-11-07**; their numeric limits are proposals, not service-level guarantees.
+
+Issue #18 remains incomplete: the official SDK wire probe is available via
+`npm run probe:subscriptions:sdk`, but live subscriptions stay disabled and
+unsupported notification capabilities are explicitly false. See the
+[compatibility evidence and remaining blockers](docs/notifications.md#issue-18-feasibility-and-disabled-capability-slice-2026-11-10-jst).

@@ -107,7 +107,15 @@ function appResult(result: PublicTableResult) {
 function newServer(env: Env, identity: AuthenticatedMcpIdentity) {
   const server = new McpServer(
     { name: "agent-table", version: "0.1.0" },
-    { maxToolInputElements: 32 },
+    {
+      maxToolInputElements: 32,
+      // SDK defaults enable list-change streams when tools/resources register.
+      // No live notification producer is implemented in this application yet.
+      capabilities: {
+        tools: { listChanged: false },
+        resources: { listChanged: false, subscribe: false },
+      },
+    },
   );
   const scopedActor = async (scope: ConnectionScope) => {
     if (!identity.scopes.includes(scope)) return null;
@@ -371,6 +379,9 @@ export function handleMcp(
   const handler = createMcpHandler(() => newServer(env, identity), {
     route: "/mcp",
     legacy: "reject",
+    // A flag alone cannot activate subscriptions. Refuse before the SDK ack
+    // until the TableDO-owned authorization and bounded stream path is tested.
+    maxSubscriptions: 0,
     corsOptions: false,
     allowedHostnames,
     allowedOriginHostnames: allowedHostnames,

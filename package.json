@@ -15,7 +15,8 @@
     "test:integration": "vitest run test/integration",
     "measure:synthetic": "vitest run test/integration/telemetry-workload.test.ts",
     "test:e2e": "playwright test",
-    "build": "wrangler deploy --dry-run --outdir dist"
+    "build": "wrangler deploy --dry-run --outdir dist",
+    "probe:subscriptions:sdk": "node scripts/mcp-subscriptions-sdk.test.mjs"
   },
   "dependencies": {
     "@cloudflare/workers-oauth-provider": "1.2.4",

@@ -223,3 +223,21 @@ The script only adds the exact rule if absent, places it before existing zone-le
 Cloudflare references: [Worker request header trust](https://developers.cloudflare.com/fundamentals/reference/http-headers/#cf-connecting-ip-in-worker-subrequests), [WAF Worker-subrequest matching](https://developers.cloudflare.com/waf/custom-rules/use-cases/block-worker-subrequests/), [zone custom rule API](https://developers.cloudflare.com/waf/custom-rules/create-api/).
 
 **Still unmet #15 release gates:** while hosted tests have confirmed the WAF rule behavior, application-level Worker shared quota enforcement under IP rotation, and negative Turnstile rejection paths, **a genuine positive Cloudflare Turnstile human challenge round trip** remains required and cannot be substituted by automated mocks or CI. Per-source admission is charged before the shared Worker-subrequest bucket: an already-exhausted source cannot drain that shared bucket by adding a forged `CF-Worker` header. However, a direct caller with remaining source quota can still spend the shared bucket with such a header; the application cannot authenticate that header and must not substitute this defense for the independently verified hosted WAF/trusted-ingress gate. A shared edge bucket is an abuse barrier, not an absolute protection against distributed IP or network rotation, paid-resource consumption, or a zero-cost service. Neither the Siteverify mock tests nor a green CI proves a real Cloudflare challenge round trip. Public guest admission remains disabled by default (`ALLOW_NEW_GUESTS=false`). See https://developers.cloudflare.com/turnstile/get-started/server-side-validation/ for the required official server-side verifier and response fields.
+
+### Issue #18 subscription feasibility slice (2026-11-10 JST)
+
+Live inbox subscriptions remain unavailable. The MCP entry now disables the
+SDK's default tool/resource list-change announcements and refuses every listen
+request before acknowledgment with a zero-capacity SDK handler. Setting the
+subscription flag alone cannot activate an unimplemented stream path. OpenAI
+Events and callback readiness remain fail-closed.
+
+`npm run probe:subscriptions:sdk` executes four socket-free official SDK wire
+probes in Node; the same probes are included in the workerd integration suite.
+Node results are not TableDO/cross-Worker integration or billing evidence.
+The coding sandbox could not bind `127.0.0.1` (`listen EPERM`), but
+subsequent execution in the authorized Ubuntu Workerd runtime passed all
+128 integration tests, 157 Vitest tests, 6 Playwright tests and 4 SDK probes.
+These are local tests, not cross-isolate or staged delivery evidence.
+Staging stream runtime costs: **NOT RUN**; no deployment was attempted. See the [Issue #18 evidence and remaining implementation
+requirements](notifications.md#issue-18-feasibility-and-disabled-capability-slice-2026-11-10-jst).

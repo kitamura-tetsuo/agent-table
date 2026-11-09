@@ -268,8 +268,21 @@ function fetchThroughWorker(overlay: Env) {
 describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () => {
   it("creates exactly one waiting table, checks membership, and rejects unexpected fields", async () => {
     const owner = await tokenForGuest("tables:read tables:write");
-    const client = await sdk(owner.token);
+    const client = await sdk(
+      owner.token,
+      fetchThroughWorker({
+        ...env,
+        ENABLE_MCP_SUBSCRIPTIONS: "true",
+        ENABLE_OPENAI_EVENTS: "true",
+        ALLOW_OUTBOUND_NOTIFICATIONS: "true",
+      }),
+    );
     try {
+      expect(client.getServerCapabilities()).toMatchObject({
+        tools: { listChanged: false },
+        resources: { subscribe: false, listChanged: false },
+      });
+      expect(client.getServerCapabilities()).not.toHaveProperty("experimental");
       const tools = await client.listTools();
       expect(tools.tools.map((tool) => tool.name).sort()).toEqual([
         "close_table",
@@ -298,6 +311,25 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
         limits: { participants: 2 },
         notifications: { available: false, reason: "not_implemented" },
       });
+      const ownUri = String(metadata.ownInboxUri);
+      // No stream may be acknowledged until TableDO-owned delivery is implemented.
+      // Flags alone cannot authorize a listener or disclose a private URI.
+      for (const filter of [
+        { resourceSubscriptions: [ownUri] },
+        { resourceSubscriptions: [ownUri, "agent-table://foreign/inbox"] },
+        { resourceSubscriptions: ["agent-table://foreign/inbox"] },
+        { toolsListChanged: true },
+        { resourcesListChanged: true },
+        {},
+      ]) {
+        await expect(client.listen(filter)).rejects.toMatchObject({
+          code: -32603,
+        });
+      }
+      expect((await client.listResources()).resources).toEqual([]);
+      expect(
+        (await client.readResource({ uri: ownUri })).contents,
+      ).toHaveLength(1);
       const tableId = String(metadata.tableId);
       expect(tableId).toMatch(/^[0-9a-f-]{36}$/);
       expect(metadata.ownMembershipId).toEqual(
