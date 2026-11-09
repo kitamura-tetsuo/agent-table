@@ -3,14 +3,20 @@
  * A missing mode, missing quarantine flag, or unknown value fails closed.
  * It must be set to false only after independently authorized release.
  */
-export function rejectRestoredAccess(
+export function isRestoreQuarantined(
   env: Pick<Env, "RELEASE_ENVIRONMENT" | "RESTORE_QUARANTINE">,
-): Response | null {
+): boolean {
   const knownEnvironment =
     env.RELEASE_ENVIRONMENT === "local" ||
     env.RELEASE_ENVIRONMENT === "staging" ||
     env.RELEASE_ENVIRONMENT === "production";
-  if (knownEnvironment && env.RESTORE_QUARANTINE === "false") return null;
+  return !(knownEnvironment && env.RESTORE_QUARANTINE === "false");
+}
+
+export function rejectRestoredAccess(
+  env: Pick<Env, "RELEASE_ENVIRONMENT" | "RESTORE_QUARANTINE">,
+): Response | null {
+  if (!isRestoreQuarantined(env)) return null;
   return new Response("Service unavailable during recovery", {
     status: 503,
     headers: {
