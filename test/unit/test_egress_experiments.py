@@ -13,6 +13,7 @@ from scripts.egress_experiments import (
     DnsCollisionError,
     SafeExperimentSession,
     run_probe,
+    wait_for_dns,
     TunnelCollisionError,
     TunnelUpdateError,
 )
@@ -293,6 +294,40 @@ def test_rollback_continues_tunnel_restore_after_dns_failure(mock_cf_cmd):
     session.rollback()
     assert sum("update" in call.args[0] for call in mock_cf_cmd.call_args_list) == 1
 
+
+
+
+def test_authoritative_dns_requires_exact_expected_address():
+    """An unrelated/partial A reply must not authorize an adversarial DNS probe."""
+    clock = iter([0.0, 0.0, 2.0])
+    reply = MagicMock(returncode=0, stdout="127.0.0.12\\n")
+    with (
+        patch("scripts.egress_experiments.time.monotonic", side_effect=lambda: next(clock)),
+        patch("scripts.egress_experiments.time.sleep"),
+        patch("scripts.egress_experiments.subprocess.run", return_value=reply) as dig,
+    ):
+        with pytest.raises(TimeoutError, match="did not converge"):
+            wait_for_dns("switch.example.com", "127.0.0.1", max_wait=1)
+
+    dig.assert_called_once()
+    assert dig.call_args.args[0] == [
+        "dig", "@jimmy.ns.cloudflare.com", "+short", "A", "switch.example.com"
+    ]
+    assert dig.call_args.kwargs["timeout"] == 5
+
+
+def test_authoritative_dns_exact_answer_allows_probe_to_proceed():
+    reply = MagicMock(returncode=0, stdout="127.0.0.1\\n")
+    with (
+        patch("scripts.egress_experiments.time.monotonic", side_effect=[0.0, 0.0]),
+        patch("scripts.egress_experiments.subprocess.run", return_value=reply),
+    ):
+        assert wait_for_dns("switch.example.com", "127.0.0.1", max_wait=1) is None
+
+
+def test_authoritative_dns_zero_wait_fails_closed():
+    with pytest.raises(TimeoutError, match="did not converge"):
+        wait_for_dns("switch.example.com", "127.0.0.1", max_wait=0)
 
 
 def test_probe_parses_crlf_from_real_text_mode_subprocess():
