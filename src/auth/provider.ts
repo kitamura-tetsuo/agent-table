@@ -254,7 +254,9 @@ export async function handleAuthorize(
       const headers = new Headers(consent.headers);
       headers.set("Content-Type", "text/html; charset=utf-8");
       headers.set("Cache-Control", "no-store");
-      headers.set("Referrer-Policy", "no-referrer");
+      // Preserve the same-origin Origin header on the browser consent POST.
+      // no-referrer makes navigation-mode form submissions send Origin: null.
+      headers.set("Referrer-Policy", "same-origin");
       headers.set(
         "Content-Security-Policy",
         "default-src 'none'; style-src 'none'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
