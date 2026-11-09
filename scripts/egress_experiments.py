@@ -1,11 +1,14 @@
+import copy
 import json
 import os
 import re
 import secrets
 import signal
+import stat
 import subprocess
 import sys
 import time
+import tempfile
 from pathlib import Path
 from loguru import logger
 
@@ -64,10 +67,13 @@ class SafeExperimentSession:
         self.zone = zone
         self.tunnel_id = tunnel_id
         self.created_dns_records: set[str] = set()
-        self.saved_tunnel_ingress: list[dict] | None = None
+        self.saved_tunnel_config: dict | None = None
+        self.applied_tunnel_config: dict | None = None
         self.active_processes: list[subprocess.Popen] = []
         self.dev_vars_path = Path("test/egress/.dev.vars")
-        self.saved_dev_vars_content: str | None = None
+        self.saved_dev_vars_content: bytes | None = None
+        self.saved_dev_vars_mode: int | None = None
+        self.written_dev_vars_identity: tuple[int, int] | None = None
         self.dev_vars_modified: bool = False
         self._installed_signals = False
 
@@ -160,65 +166,141 @@ class SafeExperimentSession:
         raise RuntimeError("Failed to retrieve valid JSON tunnel configuration")
 
     def snapshot_tunnel_ingress(self):
-        if self.saved_tunnel_ingress is None:
-            full_config = self.get_tunnel_config()
-            ingress = full_config.get("config", {}).get("ingress", [])
-            self.saved_tunnel_ingress = [dict(rule) for rule in ingress]
-            logger.info(
-                f"Captured snapshot of current tunnel ingress ({len(self.saved_tunnel_ingress)} rules)"
+        """Capture the complete mutable tunnel config, including originRequest and other fields."""
+        if self.saved_tunnel_config is not None:
+            return
+        full = self.get_tunnel_config()
+        config = full.get("config")
+        if not isinstance(config, dict) or not isinstance(config.get("ingress"), list):
+            raise TunnelUpdateError("Tunnel config has no valid config.ingress list")
+        self.saved_tunnel_config = copy.deepcopy(config)
+        logger.info(f"Captured tunnel config with {len(config['ingress'])} ingress rules")
+
+    def _assert_tunnel_config_equals(self, expected: dict):
+        """Best-effort optimistic check; the CLI offers no atomic compare-and-swap."""
+        actual = self.get_tunnel_config().get("config")
+        if actual != expected:
+            raise TunnelCollisionError(
+                "Tunnel config changed since this session's snapshot; refusing to overwrite"
             )
 
     def add_temporary_tunnel_rule(self, hostname: str, service: str):
         self.snapshot_tunnel_ingress()
-        assert self.saved_tunnel_ingress is not None
+        assert self.saved_tunnel_config is not None
+        rules = copy.deepcopy(self.saved_tunnel_config["ingress"])
+        if any(rule.get("hostname") == hostname for rule in rules):
+            raise TunnelCollisionError(f"Tunnel ingress collision for {hostname}")
 
-        # Check for rule collision
-        for rule in self.saved_tunnel_ingress:
-            if rule.get("hostname") == hostname:
-                msg = f"Tunnel ingress collision: rule for {hostname} already exists"
-                logger.error(msg)
-                raise TunnelCollisionError(msg)
+        # Preserve all sibling fields and insert before the catch-all rule.
+        if not rules or "hostname" in rules[-1]:
+            raise TunnelUpdateError("Expected an explicit terminal tunnel catch-all rule")
+        updated = copy.deepcopy(self.saved_tunnel_config)
+        updated["ingress"] = rules[:-1] + [{"service": service, "hostname": hostname}] + rules[-1:]
 
-        # Insert temporary rule before the catch-all (last) rule
-        temp_rule = {"service": service, "hostname": hostname}
-        if len(self.saved_tunnel_ingress) > 0:
-            new_rules = (
-                self.saved_tunnel_ingress[:-1]
-                + [temp_rule]
-                + self.saved_tunnel_ingress[-1:]
-            )
-        else:
-            new_rules = [temp_rule, {"service": "http_status:404"}]
-
+        # Do not overwrite changes observed before our write. Cloudflare's update
+        # endpoint replaces config; it has no exposed conditional-update token here.
+        self._assert_tunnel_config_equals(self.saved_tunnel_config)
+        self.applied_tunnel_config = copy.deepcopy(updated)
         logger.info(f"Applying temporary tunnel ingress rule for {hostname}")
-        self._update_tunnel_ingress(new_rules)
+        self._update_tunnel_config(updated)
 
-    def _update_tunnel_ingress(self, rules: list[dict]):
-        body = {"config": {"ingress": rules}}
+    def _update_tunnel_config(self, config: dict):
+        """Send every mutable config field, not an ingress-only replacement."""
+        body = {"config": copy.deepcopy(config)}
         try:
             run_cf_cmd(
                 ["tunnels", "config", "update", self.tunnel_id, "--body", json.dumps(body)]
             )
         except Exception as e:
-            logger.error(f"Failed to update tunnel ingress: {e}")
-            raise TunnelUpdateError(f"Tunnel update failed: {e}") from e
+            logger.error(f"Tunnel configuration update failed: {type(e).__name__}")
+            raise TunnelUpdateError("Tunnel configuration update failed") from e
 
     def restore_tunnel_ingress(self):
-        if self.saved_tunnel_ingress is not None:
-            logger.info("Restoring original tunnel ingress rules from snapshot")
-            self._update_tunnel_ingress(self.saved_tunnel_ingress)
-            self.saved_tunnel_ingress = None
+        if self.saved_tunnel_config is None:
+            return
+        original = self.saved_tunnel_config
+        current = self.get_tunnel_config().get("config")
+        if current == original:
+            # A failed write may not have reached the remote API.
+            self.saved_tunnel_config = None
+            self.applied_tunnel_config = None
+            return
+        if self.applied_tunnel_config is None or current != self.applied_tunnel_config:
+            raise TunnelCollisionError(
+                "Tunnel configuration changed concurrently; refusing destructive rollback"
+            )
+        logger.info("Restoring the complete original tunnel configuration")
+        self._update_tunnel_config(original)
+        self.saved_tunnel_config = None
+        self.applied_tunnel_config = None
 
     # --- Dev vars & secret management ---
+
+    def _atomic_replace_dev_vars(self, contents: bytes, mode: int) -> None:
+        """Replace the file via a same-directory 0600 temp; never truncate it in place."""
+        parent = self.dev_vars_path.parent
+        parent.mkdir(parents=True, exist_ok=True)
+        parent_stat = parent.lstat()
+        if not stat.S_ISDIR(parent_stat.st_mode) or parent.is_symlink():
+            raise RuntimeError("Refusing an unsafe .dev.vars directory")
+        fd, temporary_name = tempfile.mkstemp(prefix=".egress-vars-", dir=parent)
+        try:
+            os.fchmod(fd, mode & 0o600)
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(contents)
+                stream.flush()
+                os.fsync(stream.fileno())
+            # os.replace never follows a destination symlink. The caller additionally
+            # rejects pre-existing symlinks and verifies our own inode on restoration.
+            os.replace(temporary_name, self.dev_vars_path)
+        finally:
+            if os.path.lexists(temporary_name):
+                os.unlink(temporary_name)
+
+    def _read_regular_dev_vars(self) -> tuple[bytes, int] | None:
+        try:
+            fd = os.open(self.dev_vars_path, os.O_RDONLY | os.O_NOFOLLOW)
+        except FileNotFoundError:
+            return None
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode):
+                raise RuntimeError("Refusing non-regular .dev.vars")
+            with os.fdopen(fd, "rb", closefd=False) as stream:
+                contents = stream.read()
+            # Recheck that the path is still the opened regular file.
+            current = self.dev_vars_path.lstat()
+            if (current.st_dev, current.st_ino) != (info.st_dev, info.st_ino):
+                raise RuntimeError(".dev.vars changed during snapshot")
+            return contents, stat.S_IMODE(info.st_mode)
+        finally:
+            os.close(fd)
+
+    def _assert_written_dev_vars_unchanged(self) -> None:
+        if self.written_dev_vars_identity is None:
+            raise RuntimeError("No managed .dev.vars inode to restore")
+        try:
+            current = self.dev_vars_path.lstat()
+        except FileNotFoundError as e:
+            raise RuntimeError("Managed .dev.vars disappeared; refusing rollback overwrite") from e
+        if (
+            not stat.S_ISREG(current.st_mode)
+            or (current.st_dev, current.st_ino) != self.written_dev_vars_identity
+        ):
+            raise RuntimeError(".dev.vars changed concurrently; refusing destructive rollback")
 
     def prepare_dev_vars(
         self, token: str, callback_url: str, origin: str, path_prefix: str
     ):
-        if not self.dev_vars_modified:
-            if self.dev_vars_path.exists():
-                self.saved_dev_vars_content = self.dev_vars_path.read_text()
-                logger.info("Preserving existing .dev.vars content in memory")
-            self.dev_vars_modified = True
+        if self.dev_vars_modified:
+            self._assert_written_dev_vars_unchanged()
+        else:
+            original = self._read_regular_dev_vars()
+            if original is not None:
+                self.saved_dev_vars_content, self.saved_dev_vars_mode = original
+                logger.info("Preserving the original .dev.vars contents in memory")
+            elif self.dev_vars_path.is_symlink():
+                raise RuntimeError("Refusing symlink .dev.vars")
 
         vars_content = (
             f'PROBE_AUTH_TOKEN="{token}"\n'
@@ -226,40 +308,34 @@ class SafeExperimentSession:
             f'PROBE_REVIEWED_ORIGIN="{origin}"\n'
             f'PROBE_REVIEWED_PATH_PREFIX="{path_prefix}"\n'
         )
-
-        # Atomic create with 0600 permissions
-        self.dev_vars_path.parent.mkdir(parents=True, exist_ok=True)
-        fd = os.open(
-            self.dev_vars_path,
-            os.O_CREAT | os.O_WRONLY | os.O_TRUNC,
-            0o600,
-        )
-        with open(fd, "w") as f:
-            f.write(vars_content)
-        logger.info("Created temporary .dev.vars with restricted permissions (0600)")
+        self._atomic_replace_dev_vars(vars_content.encode("utf-8"), 0o600)
+        current = self.dev_vars_path.lstat()
+        self.written_dev_vars_identity = (current.st_dev, current.st_ino)
+        self.dev_vars_modified = True
+        logger.info("Atomically installed temporary .dev.vars with mode 0600")
 
     def restore_dev_vars(self):
         if not self.dev_vars_modified:
             return
         try:
+            self._assert_written_dev_vars_unchanged()
             if self.saved_dev_vars_content is not None:
-                fd = os.open(
-                    self.dev_vars_path,
-                    os.O_CREAT | os.O_WRONLY | os.O_TRUNC,
-                    0o600,
+                self._atomic_replace_dev_vars(
+                    self.saved_dev_vars_content,
+                    self.saved_dev_vars_mode if self.saved_dev_vars_mode is not None else 0o600,
                 )
-                with open(fd, "w") as f:
-                    f.write(self.saved_dev_vars_content)
-                logger.info("Restored original .dev.vars file")
+                logger.info("Restored original .dev.vars contents atomically")
             else:
-                if self.dev_vars_path.exists():
-                    self.dev_vars_path.unlink()
-                    logger.info("Removed temporary .dev.vars file")
+                self.dev_vars_path.unlink()
+                logger.info("Removed temporary .dev.vars")
         except Exception as e:
-            logger.error(f"Error restoring .dev.vars: {e}")
-        finally:
-            self.saved_dev_vars_content = None
-            self.dev_vars_modified = False
+            # Retain snapshot on failure so a subsequent explicit retry is possible.
+            logger.error(f"Failed to restore .dev.vars: {type(e).__name__}")
+            raise
+        self.saved_dev_vars_content = None
+        self.saved_dev_vars_mode = None
+        self.written_dev_vars_identity = None
+        self.dev_vars_modified = False
 
     # --- Process management (no pkill) ---
 
@@ -686,6 +762,11 @@ def run_task_b():
 
 
 if __name__ == "__main__":
+    if os.environ.get("AGENT_TABLE_ALLOW_LIVE_EGRESS_EXPERIMENT") != "yes":
+        raise SystemExit(
+            "Refusing DNS/tunnel mutation: set AGENT_TABLE_ALLOW_LIVE_EGRESS_EXPERIMENT=yes "
+            "only for an explicitly authorized isolated experiment"
+        )
     task_a_res = run_task_a()
     task_b_res = run_task_b()
     summary = {"task_a": task_a_res, "task_b": task_b_res}
