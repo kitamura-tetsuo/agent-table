@@ -325,33 +325,50 @@ describe("callback egress preflight", () => {
     }
   });
 
-  it("distinguishes external origin spoofed error pages from authentic Cloudflare edge errors", async () => {
-    // External origin server returns status 530 with spoofed Error 1016 HTML but no Cloudflare headers
-    const spoofedResponse = new Response(
-      '<!DOCTYPE html><html><body><div class="cf-error-code">1016</div></body></html>',
-      {
-        status: 530,
-        headers: {
-          server: "Apache/2.4.41 (Ubuntu)",
-        },
-      },
+  it("keeps forged Cloudflare-shaped error hints separate from release proof", async () => {
+    const ordinaryOrigin = new Response(
+      '<html><div class="cf-error-code">1016</div></html>',
+      { status: 530, headers: { server: "Apache" } },
     );
-    expect(
-      await extractSafeCloudflareErrorCode(spoofedResponse),
-    ).toBeUndefined();
+    expect(await extractSafeCloudflareErrorCode(ordinaryOrigin)).toBeUndefined();
 
-    // Authenticated Cloudflare edge response returns 1016
-    const authenticResponse = new Response(
-      '<!DOCTYPE html><html><body><div class="cf-error-code">1016</div></body></html>',
+    // These headers and this body can be synthesized by an upstream; no
+    // authenticated connection-time policy decision follows from the hint.
+    const forgedEdgeShape = new Response(
+      '<html><div class="cf-error-code">1016</div></html>',
       {
         status: 530,
         headers: {
           server: "cloudflare",
-          "cf-ray": "authentic-ray-1016",
+          "cf-ray": "untrusted-origin-supplied",
         },
       },
     );
-    expect(await extractSafeCloudflareErrorCode(authenticResponse)).toBe(1016);
+    expect(await extractSafeCloudflareErrorCode(forgedEdgeShape)).toBe(1016);
+    expect(callbackTransportReadiness()).toEqual({
+      enabled: false,
+      reason: "connection-boundary-unverified",
+    });
+  });
+
+  it("finds a diagnostic hint split across stream chunks without awaiting EOF", async () => {
+    let cancelled = false;
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode('<html><p>Error 10'));
+        controller.enqueue(encoder.encode('16</p></html>'));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const response = new Response(stream, {
+      status: 530,
+      headers: { server: "cloudflare", "content-type": "text/html" },
+    });
+    expect(await extractSafeCloudflareErrorCode(response)).toBe(1016);
+    expect(cancelled).toBe(true);
   });
 
   it("bounds 5xx diagnostic reading against huge chunks, infinite streams, and stream aborts", async () => {
