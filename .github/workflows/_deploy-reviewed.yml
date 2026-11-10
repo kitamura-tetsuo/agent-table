@@ -1,0 +1,102 @@
+name: Reviewed manual deployment (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      target_environment:
+        required: true
+        type: string
+      expected_sha:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  candidate:
+    if: >-
+      github.repository == 'kitamura-tetsuo/agent-table' &&
+      github.ref == 'refs/heads/main' &&
+      github.event_name == 'workflow_dispatch' &&
+      (inputs.target_environment == 'staging' || inputs.target_environment == 'production')
+    environment:
+      name: ${{ inputs.target_environment }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - name: Validate immutable requested source
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          CHECKED_OUT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_SHA" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$EXPECTED_SHA" == "$CHECKED_OUT_SHA" ]]
+          [[ "$(git rev-parse HEAD)" == "$CHECKED_OUT_SHA" ]]
+      - run: npm ci
+      - name: Recheck application and isolated Workerd gates
+        run: |
+          set -euo pipefail
+          npm run typecheck
+          npm run lint
+          npm test
+          npm run test:integration
+          npm run test:restore-runtime
+          npm run build
+      - name: Validate release candidate and require independent approval
+        env:
+          TARGET_ENVIRONMENT: ${{ inputs.target_environment }}
+          RELEASE_CONFIG_JSON: ${{ secrets.RELEASE_CONFIG_JSON }}
+          PEER_CONFIG_JSON: ${{ secrets.PEER_CONFIG_JSON }}
+          RELEASE_SECRET_INVENTORY_JSON: ${{ secrets.RELEASE_SECRET_INVENTORY_JSON }}
+          RELEASE_EVIDENCE_JSON: ${{ secrets.RELEASE_EVIDENCE_JSON }}
+        run: |
+          set -euo pipefail
+          umask 077
+          test -n "$RELEASE_CONFIG_JSON"
+          test -n "$PEER_CONFIG_JSON"
+          test -n "$RELEASE_SECRET_INVENTORY_JSON"
+          test -n "$RELEASE_EVIDENCE_JSON"
+          scratch="$(mktemp -d "$RUNNER_TEMP/agent-table-release.XXXXXXXX")"
+          config="$(mktemp "$GITHUB_WORKSPACE/.release-XXXXXXXX.json")"
+          trap 'rm -f "$config"; rm -rf "$scratch"' EXIT
+          printf '%s' "$RELEASE_CONFIG_JSON" > "$config"
+          printf '%s' "$PEER_CONFIG_JSON" > "$scratch/peer.json"
+          printf '%s' "$RELEASE_SECRET_INVENTORY_JSON" > "$scratch/secrets.json"
+          printf '%s' "$RELEASE_EVIDENCE_JSON" > "$scratch/evidence.json"
+          manifest="$(
+            node scripts/release-preflight.mjs \
+              --environment "$TARGET_ENVIRONMENT" --profile manual \
+              --build-sha "$GITHUB_SHA" \
+              --config "$config" --peer-config "$scratch/peer.json" \
+              --secret-inventory "$scratch/secrets.json" \
+              --evidence "$scratch/evidence.json"
+          )"
+          npx wrangler deploy --dry-run --config "$config" --outdir "$scratch/dry-run"
+          # Current preflight intentionally returns deploymentApproved:false.
+          # This must remain an error until independently authenticated release
+          # evidence, environment protections, and operator decisions exist.
+          printf '%s\n' "$manifest" | node scripts/require-release-approval.mjs \
+            "$TARGET_ENVIRONMENT" "$GITHUB_SHA"
+      - name: Publish only an independently approved manual profile
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          RELEASE_CONFIG_JSON: ${{ secrets.RELEASE_CONFIG_JSON }}
+        run: |
+          set -euo pipefail
+          umask 077
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test -n "$CLOUDFLARE_ACCOUNT_ID"
+          config="$(mktemp "$GITHUB_WORKSPACE/.release-XXXXXXXX.json")"
+          trap 'rm -f "$config"' EXIT
+          printf '%s' "$RELEASE_CONFIG_JSON" > "$config"
+          npx wrangler deploy --config "$config"

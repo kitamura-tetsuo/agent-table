@@ -1,0 +1,20 @@
+name: Staging deployment (manual, protected)
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: Exact reviewed main commit SHA (40 lowercase hex digits)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  reviewed-deployment:
+    uses: ./.github/workflows/_deploy-reviewed.yml
+    with:
+      target_environment: staging
+      expected_sha: ${{ inputs.expected_sha }}
+    secrets: inherit

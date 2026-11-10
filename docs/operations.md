@@ -119,6 +119,33 @@ The GitHub Actions PR workflow repeats clean `npm ci`, type checking, linting, w
 
 New guest admission is disabled by default (`ALLOW_NEW_GUESTS=false`). For a temporary, isolated local browser session test, start `npm run dev -- --var ALLOW_NEW_GUESTS:true`; the Playwright web server uses that override, while the standard `npm run dev` does not. Browser routes are `/guest` (explicit choice UI), `/guest/session` (same-origin CSRF-protected POST only), `/guest/me` (read-only validated session check), and `/guest/connections` (session-protected connection list) with POST-only `/guest/connections/revoke`. The `__Host-` session cookie needs HTTPS except on loopback during development. Version 2 of the application schema adds guest identity/session tables **only in GuestDO**. It migrates existing version 1 objects transactionally and rejects unsupported newer versions without clearing state. The SHA-256 session digests remain durable across instance eviction; raw session credentials must never enter SQL, logs, or diagnostic artifacts.
 
+### Manual deployment workflow scaffold (Issue #22, fail-closed)
+
+The repository has **manual-only** dispatch entries `.github/workflows/deploy-staging.yml`
+and `deploy-production.yml`, sharing a bounded reviewed source and release
+preflight. They accept an exact expected **main** SHA, require the repository and
+branch identity, use the selected GitHub `staging` or `production` environment,
+re-run application and Workerd checks, and consume private configuration and
+evidence files only from that environment's secrets. The Worker config is written
+with owner-only permissions for the duration of the job. Pull requests never
+trigger publication. A separate `production` environment with required human
+reviewers and branch restrictions **must be configured and independently verified**
+before any release attempt; the existence of an `environment` field in YAML
+does not prove protection is configured.
+
+Environment secrets: `RELEASE_CONFIG_JSON`, `PEER_CONFIG_JSON`,
+`RELEASE_SECRET_INVENTORY_JSON`, `RELEASE_EVIDENCE_JSON`,
+`CLOUDFLARE_API_TOKEN`, and `CLOUDFLARE_ACCOUNT_ID`. Supply real values only
+from an authorized secret store, never source files or issue comments. Scope the
+Cloudflare token to the reviewed Worker/namespace and required operations.
+The offline preflight deliberately returns `deploymentApproved:false` even
+when its structural and self-reported evidence checks succeed; the distinct
+`require-release-approval.mjs` gate therefore **stops before the publish
+step**. These workflows do not grant approval, attest evidence, provision a
+production deployment, or make an unsafe quarantine-clear path. A future
+independent authenticated approval producer and externally configured protected
+environments are prerequisites to enabling a real publication.
+
 ## Deployment procedure after implementation
 
 After the guest/OAuth and later application stages have been implemented, separately approve staging publication, provision the OAuth KV binding if the selected library requires it, and set real staging origin/namespace configuration outside the committed local scaffold. Store encryption keyrings with `wrangler secret put`, not in committed configuration, shell history, deployment logs or test artifacts. Configure additional secrets from the chosen OAuth library's pinned documentation. The following commands are a future **interactive** operator workflow, **not** part of PR CI:
