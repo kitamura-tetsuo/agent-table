@@ -1737,6 +1737,149 @@ describe("authenticated event producer through native alarm and HTTPS sender (co
     }
   });
 
+  it("delivers a pre-refresh event once with the verified rotated credential", async () => {
+    const owner = await newPrincipal();
+    const peer = await newPrincipal();
+    const ownerClient = await clientFor(owner.token);
+    const peerClient = await clientFor(peer.token);
+    const challengeReceiver = echoReceiver();
+    try {
+      const tableId = await createTable(ownerClient);
+      const invite = toolOutput(
+        await ownerClient.callTool({
+          name: "create_invite",
+          arguments: { table_id: tableId, request_id: crypto.randomUUID() },
+        }),
+      );
+      expect(
+        (
+          await peerClient.callTool({
+            name: "join_table",
+            arguments: {
+              invitation: invite.invitation,
+              request_id: crypto.randomUUID(),
+            },
+          })
+        ).isError,
+      ).not.toBe(true);
+      const subscription = (await callEvent(
+        peerClient,
+        "events/subscribe",
+        subscriptionParams(tableId),
+      )) as { id: string };
+      const post = toolOutput(
+        await ownerClient.callTool({
+          name: "post_message",
+          arguments: {
+            table_id: tableId,
+            request_id: crypto.randomUUID(),
+            body: "PRIVATE CONTENT NOT IN CALLBACK",
+          },
+        }),
+      );
+      const stub = env.TABLES.get(env.TABLES.idFromName(tableId));
+      type Row = {
+        event_id: string;
+        message_id: string;
+        subscription_generation: number;
+        status: string;
+        attempt_count: number;
+        first_attempt_at: number | null;
+      };
+      const rows = () =>
+        runInDurableObject(stub, (_instance, state) =>
+          state.storage.sql
+            .exec<Row>("SELECT * FROM table_event_outbox")
+            .toArray(),
+        );
+      const first = (await rows())[0];
+      expect(first).toMatchObject({
+        message_id: post.message_id,
+        subscription_generation: 1,
+        status: "pending",
+        attempt_count: 0,
+      });
+      const refreshed = (await callEvent(
+        peerClient,
+        "events/subscribe",
+        subscriptionParams(tableId, CALLBACK, REPLACEMENT_SECRET),
+      )) as { id: string };
+      expect(refreshed.id).toBe(subscription.id);
+      expect(challengeReceiver).toHaveBeenCalledTimes(2);
+      expect((await rows())[0]).toMatchObject({
+        event_id: first.event_id,
+        message_id: post.message_id,
+        subscription_generation: 2,
+        status: "pending",
+        attempt_count: 0,
+        first_attempt_at: null,
+      });
+
+      // Let the actual alarm/native signer choose the refreshed credential.
+      challengeReceiver.mockRestore();
+      const applications: Array<{
+        body: string;
+        headers: Record<string, string>;
+      }> = [];
+      vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+        applications.push({
+          body: new TextDecoder().decode(init?.body as ArrayBuffer),
+          headers: Object.fromEntries(new Headers(init?.headers)),
+        });
+        return new Response(null, { status: 204 });
+      });
+      await runInDurableObject(stub, (_instance, state) =>
+        state.storage.sql.exec(
+          "UPDATE table_event_outbox SET next_attempt_at = ? WHERE event_id = ?",
+          Date.now() - 1,
+          first.event_id,
+        ),
+      );
+      await evictDurableObject(stub);
+      const alarm = () =>
+        runInDurableObject(stub, async (instance) => {
+          const harness = instance as unknown as {
+            env: Env;
+            outboxDispatchEnabled(): boolean;
+          };
+          harness.env = {
+            ...harness.env,
+            EVENTS_REVIEWED_CALLBACK_TARGETS: REVIEWED,
+          };
+          harness.outboxDispatchEnabled = () => true;
+          await instance.alarm();
+        });
+      await alarm();
+      expect(applications).toHaveLength(1);
+      expect(
+        new Webhook(REPLACEMENT_SECRET).verify(
+          applications[0].body,
+          applications[0].headers,
+        ),
+      ).toMatchObject({
+        eventId: first.event_id,
+        data: { message_id: post.message_id, seq: post.seq },
+      });
+      expect(applications[0].headers["x-mcp-subscription-id"]).toBe(
+        subscription.id,
+      );
+      expect(applications[0].body).not.toContain("PRIVATE CONTENT");
+      expect((await rows())[0]).toMatchObject({
+        event_id: first.event_id,
+        subscription_generation: 2,
+        status: "accepted",
+        attempt_count: 1,
+      });
+      await evictDurableObject(stub);
+      await alarm();
+      expect(applications).toHaveLength(1);
+    } finally {
+      await peerClient.close();
+      await ownerClient.close();
+      vi.restoreAllMocks();
+    }
+  });
+
   it("fences native alarm delivery after real grant revocation or table closure", async () => {
     for (const intervention of ["revoke", "close"] as const) {
       const owner = await newPrincipal();

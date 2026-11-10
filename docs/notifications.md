@@ -796,3 +796,18 @@ recalled; concurrent held-HTTP revocation/closure, credential rotation,
 receiver-controlled barriers and hosted network evidence remain outside this
 regression. The production Events gate stays fail-closed pending #19's
 independent transport security evidence.
+
+### 2026-11-11: same-identity refresh before first delivery
+
+A second authenticated integration test commits a peer event under callback
+credential generation 1, then performs the actual MCP events/subscribe
+same-identity refresh with a rotated, challenge-verified credential. After
+retained-storage reconstruction, the native TableDO alarm uses that new
+credential to sign exactly one controlled receiver-captured application
+callback, preserving the original event/message ID, with generation 2 and
+one charged accepted attempt. Further alarms do not replay the acceptance.
+
+This is a serial pre-dispatch credential-rotation case, not proof that a
+held old HTTP response cannot affect a simultaneous refresh; that interleaving
+and the independent #19 connection-time transport safety criteria remain
+unverified. The public Events flag remains disabled.
