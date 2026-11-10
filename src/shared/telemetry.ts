@@ -12,6 +12,20 @@ export type SafeRoute =
 
 export type OperationalEvent =
   | {
+      kind: "stream";
+      reason:
+        | "cancelled"
+        | "replaced"
+        | "deadline"
+        | "authorization"
+        | "slow_consumer"
+        | "concurrency"
+        | "terminal"
+        | "output_cap"
+        | "transport";
+      durationMs: number;
+    }
+  | {
       kind: "http";
       route: SafeRoute;
       outcome: "response" | "exception";
@@ -157,6 +171,24 @@ export function emitOperationalEvent(event: OperationalEvent): void {
       backlogLagMs: lag,
       durationMs: duration,
     });
+    return;
+  }
+  if (event.kind === "stream") {
+    if (
+      ![
+        "cancelled",
+        "replaced",
+        "deadline",
+        "authorization",
+        "slow_consumer",
+        "concurrency",
+        "terminal",
+        "output_cap",
+        "transport",
+      ].includes(event.reason)
+    )
+      return;
+    publish({ kind: "stream", reason: event.reason, durationMs: duration });
     return;
   }
   if (event.kind === "invitation") {

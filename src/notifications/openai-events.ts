@@ -53,6 +53,30 @@ function exactRecord(
   );
 }
 
+function acceptableProtocolMetadata(value: unknown): boolean {
+  if (
+    value === null ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    Object.keys(value).length > 16
+  )
+    return false;
+  try {
+    return JSON.stringify(value).length <= 2048;
+  } catch {
+    return false;
+  }
+}
+
+export function validEventListParams(value: unknown): boolean {
+  return (
+    value === undefined ||
+    (exactRecord(value, ["cursor", "_meta"]) &&
+      (!("cursor" in value) || value.cursor === null) &&
+      (!("_meta" in value) || acceptableProtocolMetadata(value._meta)))
+  );
+}
+
 /**
  * Only parse the pinned webhook profile. Authorization and reviewed callback
  * destination enforcement are separate mandatory boundaries.
@@ -63,9 +87,12 @@ export function parseEventSubscriptionParams(
 ): EventSubscriptionParams | null {
   const keys =
     operation === "subscribe"
-      ? ["name", "arguments", "delivery", "cursor", "ttlMs"]
-      : ["name", "arguments", "delivery"];
+      ? ["name", "arguments", "delivery", "cursor", "ttlMs", "_meta"]
+      : ["name", "arguments", "delivery", "_meta"];
   if (!exactRecord(value, keys)) return null;
+  // Official MCP clients inject protocol metadata into custom request params.
+  // It has no authority and is never copied into the application arguments.
+  if ("_meta" in value && !acceptableProtocolMetadata(value._meta)) return null;
   if (value.name !== MESSAGE_EVENT_NAME) return null;
   if (
     !exactRecord(value.arguments, ["table_id"]) ||

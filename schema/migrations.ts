@@ -7,6 +7,7 @@ import { invitationsSchema } from "./006_invitations";
 import { transcriptSchema } from "./007_transcript";
 import { lifecycleSchema } from "./008_lifecycle";
 import { deletionConfirmationSchema } from "./009_deletion_confirmation";
+import { eventSubscriptionsSchema } from "./010_event_subscriptions";
 
 export const migrations = [
   initialSchema,
@@ -18,6 +19,7 @@ export const migrations = [
   transcriptSchema,
   lifecycleSchema,
   deletionConfirmationSchema,
+  eventSubscriptionsSchema,
 ] as const;
 
 export const APPLICATION_SCHEMA_VERSION = migrations.at(-1)?.version ?? 0;

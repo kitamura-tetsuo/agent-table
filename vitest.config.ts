@@ -2,7 +2,19 @@ import { cloudflareTest } from "@cloudflare/vitest-plugin";
 import { defineConfig } from "vitest/config";
 
 export default defineConfig({
-  plugins: [cloudflareTest({ wrangler: { configPath: "./wrangler.jsonc" }, miniflare: { bindings: { INVITATION_RESPONSE_KEYRING: "{\"current\":{\"id\":\"synthetic-test-2026\",\"key\":\"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8\"},\"previous\":[]}" } } })],
+  plugins: [
+    cloudflareTest({
+      wrangler: { configPath: "./wrangler.jsonc" },
+      miniflare: {
+        bindings: {
+          INVITATION_RESPONSE_KEYRING:
+            '{"current":{"id":"synthetic-test-2026","key":"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"},"previous":[]}',
+          CALLBACK_CREDENTIAL_KEYRING:
+            '{"current":{"id":"synthetic-test-2026","key":"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"},"previous":[]}',
+        },
+      },
+    }),
+  ],
   test: {
     testTimeout: 15_000,
     include: ["test/{unit,integration}/**/*.test.ts"],
@@ -13,7 +25,7 @@ export default defineConfig({
       // See https://github.com/cloudflare/workers-sdk/issues/14736.
       if (
         error.name === "UnsupportedApplicationSchemaError" &&
-        /^Application schema version 999 is newer than supported 8$/.test(
+        /^Application schema version 999 is newer than supported 10$/.test(
           error.message,
         )
       ) {

@@ -6,6 +6,7 @@ import {
   OAuthResourceServer,
 } from "@cloudflare/workers-oauth-provider";
 import { handleMcp } from "../mcp/server";
+import { validatedTokenDeadline } from "../mcp/subscriptions";
 import { checkPrincipalAdmission } from "../shared/admission";
 import {
   authorizeGuestConnection,
@@ -27,6 +28,35 @@ const CSRF_COOKIE = "__Host-agent_table_oauth_csrf";
 const CSRF = /^[A-Za-z0-9_-]{43}$/;
 const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+export type OAuthAuditGrant =
+  | "authorization_code"
+  | "refresh_token"
+  | "other"
+  | "unknown";
+
+/** Return only fixed grant categories; never expose token request fields to logs. */
+export async function classifyOAuthGrant(
+  request: Request,
+): Promise<OAuthAuditGrant> {
+  if (
+    !/^application\/x-www-form-urlencoded(?:;|$)/i.test(
+      request.headers.get("Content-Type") ?? "",
+    )
+  ) {
+    return "unknown";
+  }
+  try {
+    const form = await request.clone().formData();
+    const grants = form.getAll("grant_type");
+    if (grants.length !== 1 || typeof grants[0] !== "string") return "unknown";
+    if (grants[0] === "authorization_code") return "authorization_code";
+    if (grants[0] === "refresh_token") return "refresh_token";
+    return "other";
+  } catch {
+    return "unknown";
+  }
+}
 
 export type OAuthActorProps = {
   guestId: string;
@@ -114,6 +144,33 @@ export function authorizationServer(env: Env) {
           throw new OAuthError("invalid_grant", {
             description: "Connection revoked or expired",
           });
+        }
+      }
+      if (env.OAUTH_AUDIT_MODE === "metadata") {
+        // Audit only a one-way binding fingerprint and approved scope names.
+        try {
+          const digest = new Uint8Array(
+            await crypto.subtle.digest(
+              "SHA-256",
+              new TextEncoder().encode(
+                `${props.guestId}:${props.connectionId}`,
+              ),
+            ),
+          );
+          const bindingFingerprint = Array.from(
+            digest.subarray(0, 12),
+            (byte) => byte.toString(16).padStart(2, "0"),
+          ).join("");
+          console.info(
+            JSON.stringify({
+              event: "agent_table.oauth_binding_validated",
+              binding_fingerprint: bindingFingerprint,
+              approved_scopes: [...options.scope].sort(),
+              issued_scopes: [...options.requestedScope].sort(),
+            }),
+          );
+        } catch {
+          // Audit failure must not block valid token exchanges.
         }
       }
       return {
@@ -434,6 +491,7 @@ export async function handleAuthenticatedMcp(
           guestId: props.guestId,
           connectionId: props.connectionId,
           scopes,
+          tokenExpiresAtMs: validatedTokenDeadline(authCtx.auth.expiresAt),
         });
       },
     },

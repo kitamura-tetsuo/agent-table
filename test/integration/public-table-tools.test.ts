@@ -34,22 +34,32 @@ async function json(response: Response) {
   return response.json() as Promise<Record<string, unknown>>;
 }
 
+// The DCR client is not a guest identity. Reuse one real registration across
+// isolated consent flows so this suite does not consume the shared DCR quota.
+let registeredClient: Promise<string> | undefined;
+function oauthTestClientId(): Promise<string> {
+  registeredClient ??= (async () => {
+    const registered = await exports.default.fetch(`${ORIGIN}/oauth/register`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        client_name: "SDK table client",
+        redirect_uris: [REDIRECT],
+        token_endpoint_auth_method: "none",
+      }),
+    });
+    expect(registered.status).toBe(201);
+    return String((await json(registered)).client_id);
+  })();
+  return registeredClient;
+}
+
 async function tokenForGuest(scope: string) {
   const guestId = crypto.randomUUID();
   const guest = env.GUESTS.get(env.GUESTS.idFromName(guestId));
   const session = await guest.createSession(guestId);
   const cookie = `__Host-agent_table_session=v1.${guestId}.${session.sessionId}.${session.secret}`;
-  const registered = await exports.default.fetch(`${ORIGIN}/oauth/register`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      client_name: "SDK table client",
-      redirect_uris: [REDIRECT],
-      token_endpoint_auth_method: "none",
-    }),
-  });
-  expect(registered.status).toBe(201);
-  const clientId = String((await json(registered)).client_id);
+  const clientId = await oauthTestClientId();
   const verifier = crypto.randomUUID().replaceAll("-", "").repeat(2);
   const hash = new Uint8Array(
     await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier)),
@@ -266,10 +276,129 @@ function fetchThroughWorker(overlay: Env) {
 }
 
 describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () => {
+  it("acknowledges an enabled own-inbox stream and delivers committed peer updates", async () => {
+    const owner = await tokenForGuest(
+      "tables:read tables:write events:subscribe",
+    );
+    const peer = await tokenForGuest("tables:read tables:write");
+    const enabledEnv = { ...env, ENABLE_MCP_SUBSCRIPTIONS: "true" };
+    const first = await sdk(owner.token, fetchThroughWorker(enabledEnv));
+    const second = await sdk(peer.token, fetchThroughWorker(enabledEnv));
+    let subscription: Awaited<ReturnType<Client["listen"]>> | undefined;
+    try {
+      expect(first.getServerCapabilities()).toMatchObject({
+        resources: { subscribe: true, listChanged: false },
+      });
+      expect(second.getServerCapabilities()).toMatchObject({
+        resources: { subscribe: false, listChanged: false },
+      });
+      const created = output(
+        await first.callTool({
+          name: "create_table",
+          arguments: {
+            ...input,
+            request_id: "live_public_create_00001",
+          },
+        }),
+      );
+      const tableId = String(created.tableId);
+      const ownUri = String(created.ownInboxUri);
+      const invite = output(
+        await first.callTool({
+          name: "create_invite",
+          arguments: {
+            table_id: tableId,
+            request_id: "live_public_invite_00001",
+          },
+        }),
+      );
+      expect(
+        (
+          await second.callTool({
+            name: "join_table",
+            arguments: {
+              invitation: invite.invitation,
+              request_id: "live_public_join_000001",
+            },
+          })
+        ).isError,
+      ).not.toBe(true);
+      const hints: string[] = [];
+      let notify: (() => void) | undefined;
+      first.setNotificationHandler(
+        "notifications/resources/updated",
+        (event) => {
+          hints.push(event.params.uri);
+          notify?.();
+        },
+      );
+      for (const filter of [
+        { resourceSubscriptions: [ownUri, ownUri] },
+        { resourceSubscriptions: ["agent-table://other/inbox"] },
+        { toolsListChanged: true },
+      ]) {
+        await expect(first.listen(filter)).rejects.toMatchObject({
+          code: -32602,
+        });
+      }
+      subscription = await first.listen({ resourceSubscriptions: [ownUri] });
+      expect(subscription.honoredFilter).toEqual({
+        resourceSubscriptions: [ownUri],
+      });
+      const self = {
+        table_id: tableId,
+        body: "Self message",
+        request_id: "live_public_self_000001",
+      };
+      await first.callTool({ name: "post_message", arguments: self });
+      await first.callTool({ name: "post_message", arguments: self });
+      expect(hints).toEqual([]);
+      const update = new Promise<void>((resolve) => {
+        notify = resolve;
+      });
+      const posted = await second.callTool({
+        name: "post_message",
+        arguments: {
+          table_id: tableId,
+          body: "Committed by a different authenticated edge request",
+          request_id: "live_public_peer_000001",
+        },
+      });
+      expect(output(posted).seq).toBe(2);
+      await update;
+      expect(hints).toEqual([ownUri]);
+      const page = output(
+        await first.callTool({
+          name: "read_messages",
+          arguments: { table_id: tableId, after_seq: 1 },
+        }),
+      );
+      expect(page.messages).toMatchObject([
+        { seq: 2, body: "Committed by a different authenticated edge request" },
+      ]);
+    } finally {
+      await subscription?.close();
+      await first.close();
+      await second.close();
+    }
+  });
   it("creates exactly one waiting table, checks membership, and rejects unexpected fields", async () => {
     const owner = await tokenForGuest("tables:read tables:write");
-    const client = await sdk(owner.token);
+    const client = await sdk(
+      owner.token,
+      fetchThroughWorker({
+        ...env,
+        ENABLE_MCP_SUBSCRIPTIONS: "true",
+        ENABLE_OPENAI_EVENTS: "true",
+        ALLOW_OUTBOUND_NOTIFICATIONS: "true",
+      }),
+    );
     try {
+      expect(client.getServerCapabilities()).toMatchObject({
+        tools: { listChanged: false },
+        resources: { subscribe: false, listChanged: false },
+      });
+      expect(client.getServerCapabilities()).not.toHaveProperty("experimental");
       const tools = await client.listTools();
       expect(tools.tools.map((tool) => tool.name).sort()).toEqual([
         "close_table",
@@ -298,6 +427,25 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
         limits: { participants: 2 },
         notifications: { available: false, reason: "not_implemented" },
       });
+      const ownUri = String(metadata.ownInboxUri);
+      // No stream may be acknowledged until TableDO-owned delivery is implemented.
+      // Flags alone cannot authorize a listener or disclose a private URI.
+      for (const filter of [
+        { resourceSubscriptions: [ownUri] },
+        { resourceSubscriptions: [ownUri, "agent-table://foreign/inbox"] },
+        { resourceSubscriptions: ["agent-table://foreign/inbox"] },
+        { toolsListChanged: true },
+        { resourcesListChanged: true },
+        {},
+      ]) {
+        await expect(client.listen(filter)).rejects.toMatchObject({
+          code: -32603,
+        });
+      }
+      expect((await client.listResources()).resources).toEqual([]);
+      expect(
+        (await client.readResource({ uri: ownUri })).contents,
+      ).toHaveLength(1);
       const tableId = String(metadata.tableId);
       expect(tableId).toMatch(/^[0-9a-f-]{36}$/);
       expect(metadata.ownMembershipId).toEqual(
@@ -309,7 +457,14 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
         name: "get_table",
         arguments: { table_id: tableId },
       });
-      expect(output(fetched)).toEqual(metadata);
+      expect(output(fetched)).toEqual({
+        ...metadata,
+        notifications: {
+          available: false,
+          reason: "delivery_not_ready",
+          status: "disabled",
+        },
+      });
       const retried = await client.callTool({
         name: "create_table",
         arguments: { ...input, ttl_seconds: 86_400 },

@@ -19,6 +19,9 @@ declare global {
       ALLOW_NEW_TABLES: string;
       ALLOW_OUTBOUND_NOTIFICATIONS: string;
       GUEST_CHALLENGE_MODE?: string;
+      OAUTH_AUDIT_MODE?: string;
+      STAGING_EVIDENCE_MODE?: string;
+      STAGING_EVIDENCE_KEY?: string;
       TURNSTILE_SITE_KEY?: string;
       TURNSTILE_SECRET?: string;
       EDGE_GUEST_RATE_PER_MINUTE?: string;
@@ -29,6 +32,7 @@ declare global {
       PRINCIPAL_RATE_PER_MINUTE?: string;
       INVITATION_RESPONSE_KEYRING?: string;
       CALLBACK_CREDENTIAL_KEYRING?: string;
+      EVENTS_REVIEWED_CALLBACK_TARGETS?: string;
     }
     interface GlobalProps {
       mainModule: typeof import("./index");
