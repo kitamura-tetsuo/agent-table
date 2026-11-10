@@ -8,9 +8,9 @@ have been observed. Separately, a standalone OAuth client confirmed that a
 revoked access token receives `/mcp` HTTP 401; **that 401 was not host-origin**.
 This is **not** a completed nine-case host acceptance result: a separate
 owner-origin Deny has matching Cloudflare HTTP observations and a same-guest,
-DO-backed connection-list readback with no new grant. Independent per-operation
-Durable Object receipt review and a trustworthy deployed Git-SHA mapping
-remain outstanding. See
+DO-backed connection-list readback with no new grant. Independent persisted
+create/read and newest-grant revocation receipts have since been obtained. A shared host-to-Worker per-request trace and
+trustworthy deployed Git-SHA mapping remain outstanding. See
 Issue [#23](https://github.com/kitamura-tetsuo/agent-table/issues/23) and
 [PR #41](https://github.com/kitamura-tetsuo/agent-table/pull/41).
 The local MCP SDK/OAuth regression tests cannot replace real-host evidence.
@@ -124,12 +124,12 @@ claim, not a blanket provider label.
 | Denied consent without grant | **PASSED FOR TESTED GUEST (OWNER STATE READBACK)** | Owner selected Deny, host showed connection failure, Cloudflare `/authorize` 200/302 matches and same-guest DO-backed connection list contains the same two prior rows with no new grant ([edge receipt](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6754509851), [state readback](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6754667287)). Direct independent DO export and raw `access_denied` callback were not captured. |
 | Deliberate guest choice/reuse | **OWNER OBSERVED** | Same guest shown across old revoked and fresh active grants; [browser report](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6743908128) |
 | Approved consent | **OBSERVED** | Actual reconnect Allow and `/authorize` 200/302 followed by token 200; [client report](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6743908128), [server status](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6744413982) |
-| Host `create_table` | **HOST TOOL OBSERVED** | Actual private-app tool results on older and source-labeled staging versions; direct independent DO table persistence audit still needed ([older client report](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6743636141), [latest corroboration](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6754828876)) |
-| Host `get_table` | **HOST TOOL OBSERVED** | Host read after creation and after reauthorization; exact protected operation to persisted table still needs an independent join ([older client report](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6743908128), [latest corroboration](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6754828876)) |
+| Host `create_table` | **HOST TOOL + PERSISTED STATE OBSERVED** | Actual private-app tool result and independent 04:55 GuestDO reservation/TableDO waiting-row join for the new synthetic table; source is operator-labeled, not bundle-attested ([earlier host](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6754828876), [cross-DO receipt](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6759493658)) |
+| Host `get_table` | **HOST TOOL + PERSISTED TABLE OBSERVED** | Host read matched its new create result; independent GuestDO/TableDO creation fingerprint and Seat 1 matched before the one-hour table expired. There is no shared HTTP request trace ID ([cross-DO receipt](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6759493658)) |
 | Actual host refresh token | **PASSED ON SOURCE-LABELED STAGING** | Real ChatGPT host `refresh_token`/200 and binding fingerprint matched the owner's Active guest connection; scope arrays identical ([same-version receipt](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6754963099), [older audit](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6744941273)) |
 | Authenticated read after refresh | **PASSED ON SOURCE-LABELED STAGING** | Host `get_table` succeeded immediately after the independently bound active-connection refresh; edge `/mcp` 200 in the same short window, no shared request ID ([same-version receipt](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6754963099)) |
-| Same-guest browser revocation | **PASSED ON SOURCE-LABELED STAGING** | Owner revoked the current Active grant; browser POST `/guest/connections/revoke` returned 303, which the implemented route sends only after a successful GuestDO transaction. Later `/oauth/token` 400; no independent DO export ([new receipt](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6756230954), [older browser report](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6743908128)) |
-| First host call refused after revocation | **PASSED AT HOST REFUSAL LAYER; NO HOST `/mcp` 401 CLAIM** | The next actual-host `get_table` failed `UNAUTHORIZED` / `oauth_token_invalid_grant` after browser revoke; `/oauth/token` returned 400 on the same deployed Worker. REQ-003 asks for a refused **host protected operation**, not specifically a host `/mcp` 401. The separately measured stale-token `/mcp` 401 came from an **independent OAuth client**, not ChatGPT ([first host refusal](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6756230954), [reconnect/revoke host refusal](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6757741647), [independent resource 401](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6758016570)). No shared GuestDO/request correlation. |
+| Same-guest browser revocation | **PASSED; INDEPENDENT GRANT-STATE READBACK** | Owner revoked the current grant in browser. Earlier window: revoke 303 and broker token 400. Latest window: GuestDO SQL showed the previously active 04:51 grant `revokedAt=05:17:10.343 UTC`, edge revoke 303 at that second and subsequent token 400 ([older window](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6756230954), [independent SQL/edge](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6760336421)) |
+| First host call refused after revocation | **PASSED AT HOST REFUSAL LAYER; NO HOST `/mcp` 401 CLAIM** | An actual-host `get_table` returned connector `UNAUTHORIZED` / `oauth_token_invalid_grant` with no table data. The latest new-grant run adds exact GuestDO `revokedAt` plus sampled revoke 303 and later `/oauth/token` 400, but still no host-origin resource 401 or per-request trace. The stale-token `/mcp` 401 is from a separate synthetic client ([latest host refusal](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6760062073), [independent SQL/edge](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6760336421), [synthetic resource 401](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6758016570)) |
 | Host-side Disconnect | **NOT RUN** | Service-side Revoke and host-side Disconnect are distinct |
 | Notification receipt / idle autonomy | **UNTESTED** | Not part of #23 OAuth gate; separate #18–#24 |
 
@@ -138,10 +138,14 @@ for **new** test runs. The redacted, **incomplete** snapshots
 `evidence.chatgpt-work-2026-11-09.json`,
 `evidence.chatgpt-work-2026-11-10-pinned.json` and
 `evidence.chatgpt-work-2026-11-10-deny.json` and
-`evidence.chatgpt-work-2026-11-10-refresh.json` and
-`evidence.chatgpt-work-2026-11-10-revocation.json` preserve **distinct**
-deployment/test or connection windows. The Deny case passes on the owner's
-same-guest DO-backed list; actual-host refresh and subsequent read pass in a
+`evidence.chatgpt-work-2026-11-10-refresh.json`,
+`evidence.chatgpt-work-2026-11-10-revocation.json` and
+`evidence.chatgpt-work-2026-11-10-sql-revocation.json` preserve **distinct**
+deployment/test or connection windows. The last snapshot intentionally has
+no single `buildSha`: its real-host create/get, browser revocation and
+post-revocation SQLite readback span several staging Worker versions.
+
+The Deny case passes on the owner's same-guest DO-backed list; actual-host refresh and subsequent read pass in a
 separate staged run; browser revocation passes in its own later staged run.
 The `rejectedAfterRevocation` case in the revocation snapshot records a **host
 protected-tool refusal** at the broker's failed OAuth exchange, **not** an
@@ -401,10 +405,68 @@ host/origin/refresh/revocation acceptance evidence is complete.
   `a5eb0215-eb2e-4968-b840-a846f3c185da`), removed the local key and
   temporary enabled configuration, and verified the probe returned
   **404** afterward. No production Worker was deployed.
-- **Still incomplete:** The newly active grant was not browser-revoked and
-  retested in this bounded run, host SaaS build identity is unavailable,
-  older refresh/denial/revocation windows remain separate, and actual host
-  Disconnect remains not run. Version-to-source mappings above are operator
-  deployment annotations, not cryptographic bundle attestations. Retain
-  Draft PR #41 and open Issue #23; do not mark notifications or autonomous
-  execution verified.
+- **Status at this earlier 04:58 cutoff:** Revocation for the newly active
+  grant had not yet been performed. The owner subsequently revoked it, and
+  independent persisted-state and HTTP readbacks are now documented in the
+  following section. The host SaaS build and exact per-request joins remain
+  unavailable; the refresh and denial windows are distinct. Version-to-source
+  mappings are operator annotations, not cryptographic bundle attestations.
+  Host Disconnect remains not run; #41 stays Draft and #23 stays open.
+
+### Post-revocation independent GuestDO SQLite and edge readback — 2026-11-10 05:17–05:55 UTC
+
+- The owner reported revoking the latest `Agent Table Test2` connection,
+  which had created and read a synthetic table at 04:52 UTC. The actual
+  browser click is owner-reported; it is not an independent browser recording.
+- A separately authenticated, staging-only SQLite read at
+  **05:54:32.033 UTC** found that the **same connection fingerprint**
+  `0d804cfcce827de1052d34bd`, observed `active` in the earlier
+  04:55 GuestDO read, was now **`revoked`**. Its creation timestamp remained
+  **04:51:35.627 UTC**, and the persisted `revokedAt` was
+  **05:17:10.343 UTC**. All four allowed scope names were unchanged;
+  the other four bounded recent grants were also revoked.
+- A read-only, sampled Cloudflare zone HTTP query independently observed
+  `/guest/connections/revoke` HTTP **303 at 05:17:10 UTC**, followed by
+  `/oauth/token` HTTP **400 at 05:19:34 UTC** on the canonical staging host.
+  The browser revocation route's persisted timestamp and the edge 303 align
+  to the second. The exact token and grant type were not captured.
+- An actual ChatGPT private-app `get_table` call after revocation returned
+  connector `UNAUTHORIZED`, reason `oauth_token_invalid_grant`,
+  and requested reauthentication. No new connection was approved. The call
+  used a previously known synthetic table ID from an older run; it proved
+  host connector refusal, **not** an actual host-origin `/mcp` HTTP 401.
+- The newly created table's one-hour retention had ended at
+  **05:52:06.146 UTC**. GuestDO still retained the `initialized`
+  creation reservation and fingerprint `4610bca73dd2bd4a84a8db7e`,
+  while TableDO reported no live metadata and an `expired` tombstone.
+  Its earlier **pre-expiry** 04:55 persisted-row join remains the
+  creation/read authority. This later expired row is not silently counted
+  as a live table.
+- Independent GuestDO history also showed the separate earlier host-refresh
+  connection created at **2026-11-09 15:23:34.309 UTC** was revoked at
+  **2026-11-10 00:58:38.921 UTC**, matching the earlier browser
+  revocation/edge-303 window by guest and time; this does **not** fabricate
+  a missing shared per-request trace ID.
+- For the follow-up read, the operator briefly deployed
+  `STAGING_EVIDENCE_MODE=read-only` with a new 256-bit in-memory key
+  (version `c690bc0c-b3a3-4a6c-a3cf-dcc3f0412d63`, operator-labeled
+  source `a560900dc9ebbbd108bb5c49e312512e1e626553`). The Worker was
+  promptly restored to `off` (version
+  `75effa87-fb15-4e29-99c1-238c33d512c7`), the temporary secret
+  deleted (final version `7fc7d091-614e-4c43-812d-d75ca2d42308`),
+  the secret-list checked, and unauthenticated diagnostic HTTP **404**
+  re-confirmed. No production deploy.
+- Cloudflare's version metadata independently provides hashed script-content
+  ETag `4769f6048a81c2f49b0429731eae329d170c74ac1405576ce16140cba565dcd6`
+  for both the temporary active and final disabled builds. The ETag
+  identifies equal deployed script bytes between those versions; it does
+  **not** itself prove those bytes equal the operator-annotated Git SHA.
+  The exact ChatGPT Work SaaS build is still not exposed.
+
+[Redacted paired host/edge/SQLite receipt](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6760336421).
+The observation upgrades **post-revocation grant-state evidence**, but not
+full single-run nine-case host acceptance. No source/bundle cryptographic
+attestation, exact SaaS build or shared host-to-Worker per-request join
+exists; refresh and denial were observed in distinct earlier windows.
+Host Disconnect remains separately untested. Keep #41 Draft, #23 open,
+and notification/autonomy claims untested.

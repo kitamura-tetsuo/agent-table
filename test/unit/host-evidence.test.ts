@@ -5,6 +5,7 @@ import deniedHostRecord from "../e2e/host/evidence.chatgpt-work-2026-11-10-deny.
 import pinnedHostRecord from "../e2e/host/evidence.chatgpt-work-2026-11-10-pinned.json";
 import refreshedHostRecord from "../e2e/host/evidence.chatgpt-work-2026-11-10-refresh.json";
 import revokedHostRecord from "../e2e/host/evidence.chatgpt-work-2026-11-10-revocation.json";
+import sqlRevokedHostRecord from "../e2e/host/evidence.chatgpt-work-2026-11-10-sql-revocation.json";
 import template from "../e2e/host/evidence.template.json";
 
 describe("actual host interoperability evidence gate", () => {
@@ -102,6 +103,27 @@ describe("actual host interoperability evidence gate", () => {
     expect(result.missing).toContain("exact host product/build identity");
     expect(result.missing).toContain(
       "actual client and server evidence for createdTable",
+    );
+  });
+
+  it("records independent SQLite and edge revocation without combining separate host runs", () => {
+    const result = evaluateHostEvidence(sqlRevokedHostRecord);
+    expect(result.structurallyValid).toBe(true);
+    expect(result.completeRecord).toBe(false);
+    expect(sqlRevokedHostRecord.cases.createdTable.status).toBe("passed");
+    expect(sqlRevokedHostRecord.cases.readTable.status).toBe("passed");
+    expect(sqlRevokedHostRecord.cases.revokedInBrowser.status).toBe("passed");
+    expect(sqlRevokedHostRecord.cases.rejectedAfterRevocation.status).toBe(
+      "passed",
+    );
+    expect(sqlRevokedHostRecord.deployment.buildSha).toBeNull();
+    expect(result.missing).toContain("isolated deployed Agent Table build SHA");
+    expect(result.missing).toContain("exact host product/build identity");
+    expect(result.missing).toContain(
+      "actual client and server evidence for deniedConsent",
+    );
+    expect(result.missing).toContain(
+      "actual client and server evidence for refreshedToken",
     );
   });
 

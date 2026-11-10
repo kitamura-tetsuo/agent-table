@@ -16,8 +16,14 @@ describe("published host compatibility summaries", () => {
     );
     for (const summary of summaries) {
       expect(summary).toContain("Deny-without-grant passed");
-      expect(summary).toContain("broker refusal at OAuth token HTTP 400");
-      expect(summary).toContain("standalone synthetic client, not ChatGPT");
+      expect(summary).toMatch(
+        /(?:broker's `\/oauth\/token`|token exchange) HTTP 400/,
+      );
+      expect(summary).toMatch(
+        /(?:standalone|separately scripted) synthetic client, not ChatGPT/,
+      );
+      expect(summary).toContain("SQLite");
+      expect(summary).toContain("revoked");
       expect(summary).not.toContain("browser-revocation-to-HTTP-401");
       expect(summary).not.toContain("Deny-without-grant, independent");
     }
@@ -29,8 +35,9 @@ describe("published host compatibility summaries", () => {
       .find((line) => line.startsWith("| ChatGPT Work private MCP app"));
     expect(candidate).toBeDefined();
     expect(candidate).toContain("Deny passed");
-    expect(candidate).toContain("standalone (not host) `/mcp` 401");
-    expect(candidate).toContain("#23 incomplete");
+    expect(candidate).toContain("synthetic-only `/mcp` 401");
+    expect(candidate).toContain("latest grant independently confirmed revoked");
+    expect(candidate).toContain("#23 partial");
     expect(candidate).toContain("**untested**");
   });
 });
