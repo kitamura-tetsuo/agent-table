@@ -1,4 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
+import { InboxHintStreams } from "../mcp/inbox-streams";
 import {
   type InboxSubscriptionCheck,
   MAX_INBOX_STREAM_LIFETIME_MS,
@@ -48,7 +49,7 @@ import {
   type TableResult,
   type TableState,
 } from "../shared/table";
-import { emitOperationalEvent } from "../shared/telemetry";
+import { emitOperationalEvent, recordFutureMetric } from "../shared/telemetry";
 import {
   MAX_POSTS_PER_MINUTE,
   POST_WINDOW_MS,
@@ -158,6 +159,12 @@ function sameReservation(
 
 export class TableDO extends DurableObject<Env> {
   private readonly deadlines: DurableDeadlineScheduler;
+  private readonly inboxStreams = new InboxHintStreams((active, durationMs) => {
+    recordFutureMetric({ name: "stream.active", value: active });
+    if (durationMs !== undefined)
+      recordFutureMetric({ name: "stream.duration_ms", value: durationMs });
+  });
+  private pendingInboxAttaches = 0;
   // Integration tests configure this private in-object barrier via the test
   // harness. It is never exposed through a public RPC or production binding.
   private transcriptCommitBarrierEnabledForTest = false;
@@ -244,6 +251,7 @@ export class TableDO extends DurableObject<Env> {
   } | null {
     const table = this.metadataRow();
     if (!table) return null;
+    this.inboxStreams.closeAll();
     const retainUntil = table.expires_at + 24 * 60 * 60_000;
     this.ctx.storage.sql.exec(
       "INSERT INTO table_tombstones (table_id, terminal_state, expires_at, terminal_at, retain_until) VALUES (?, ?, ?, ?, ?)",
@@ -459,6 +467,78 @@ export class TableDO extends DurableObject<Env> {
         latestPeerSeq: member.latest_peer_seq,
       },
     };
+  }
+
+  /**
+   * Internal RPC component only. No public route calls this or acknowledges an
+   * MCP listen. The eventual adapter must supply validated OAuth token expiry,
+   * enforce admission/capability controls, and bound the SDK output itself.
+   */
+  async openInboxHintStream(
+    actor: VerifiedConnectionActor,
+    requested: unknown,
+    tokenExpiresAtMs: number,
+  ): Promise<
+    TableResult<{
+      stream: ReadableStream<Uint8Array>;
+      snapshot: InboxSubscriptionCheck;
+      cancellationId: string;
+    }>
+  > {
+    if (this.pendingInboxAttaches >= 2)
+      return { ok: false, code: "TEMPORARILY_UNAVAILABLE" };
+    this.pendingInboxAttaches++;
+    try {
+      // Copy primitives before any await: a caller cannot mutate stream identity.
+      const identity = Object.freeze({ ...actor });
+      const filter = parseCanonicalInboxFilter(requested);
+      if (!filter) return { ok: false, code: "INVALID_REQUEST" };
+      const canonical = { resourceSubscriptions: [filter.uri] };
+      const check = () =>
+        this.checkInboxSubscription(identity, canonical, tokenExpiresAtMs);
+      const admitted = await check();
+      if (!admitted.ok) return admitted;
+      // The preflight's promise yielded. Recheck local terminal state before
+      // attaching; no await may separate this check from registry insertion.
+      const table = this.metadataRow();
+      const member = this.memberFor(identity.guestId);
+      if (
+        !table ||
+        !member ||
+        member.membership_id !== admitted.value.membershipId ||
+        (table.state !== "waiting" && table.state !== "open") ||
+        table.expires_at <= Date.now() ||
+        admitted.value.expiresAt <= Date.now()
+      )
+        return { ok: false, code: "TABLE_NOT_FOUND" };
+      const cancellationId = crypto.randomUUID();
+      const stream = this.inboxStreams.attach(
+        admitted.value,
+        async () => {
+          const result = await check();
+          return result.ok ? result.value : null;
+        },
+        cancellationId,
+      );
+      return {
+        ok: true,
+        value: { stream, snapshot: admitted.value, cancellationId },
+      };
+    } catch {
+      return { ok: false, code: "TEMPORARILY_UNAVAILABLE" };
+    } finally {
+      this.pendingInboxAttaches--;
+    }
+  }
+
+  /**
+   * Internal cancellation capability; no authority to read or emit. The future
+   * adapter must call this on abort/finally: RPC byte-stream cancellation alone
+   * does not promptly propagate for an unread stream in the measured runtime.
+   * A stale/random capability is a silent no-op, including after replacement.
+   */
+  cancelInboxHintStream(membershipId: string, cancellationId: string): void {
+    this.inboxStreams.cancel(membershipId, cancellationId);
   }
 
   /**
@@ -1111,6 +1191,15 @@ export class TableDO extends DurableObject<Env> {
       } as const;
     });
     if (result.ok && newlyCommitted) {
+      if (result.peerUpdateHint) {
+        // The SQLite transaction has committed. Dispatch stays at the table
+        // authority and cannot turn a committed post into an uncertain retry.
+        this.ctx.waitUntil(
+          this.inboxStreams
+            .notify(result.peerUpdateHint.peerMembershipId)
+            .catch(() => this.inboxStreams.closeAll()),
+        );
+      }
       // Only persisted rows are counted; delivery and host execution are unknown.
       emitOperationalEvent({
         kind: "commit",
@@ -1246,6 +1335,7 @@ export class TableDO extends DurableObject<Env> {
             "UPDATE table_metadata SET state = 'closed', closed_at = ? WHERE singleton = 1",
             now,
           );
+          this.inboxStreams.closeAll();
           this.ctx.storage.sql.exec(
             "UPDATE table_invitations SET state = 'revoked', response_envelope = NULL WHERE state = 'active'",
           );

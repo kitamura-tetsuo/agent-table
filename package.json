@@ -16,7 +16,8 @@
     "measure:synthetic": "vitest run test/integration/telemetry-workload.test.ts",
     "test:e2e": "playwright test",
     "build": "wrangler deploy --dry-run --outdir dist",
-    "probe:subscriptions:sdk": "node scripts/mcp-subscriptions-sdk.test.mjs"
+    "probe:subscriptions:sdk": "node scripts/mcp-subscriptions-sdk.test.mjs",
+    "probe:subscriptions:table": "node scripts/inbox-streams-workerd.test.mjs"
   },
   "dependencies": {
     "@cloudflare/workers-oauth-provider": "1.2.4",
@@ -33,6 +34,8 @@
     "@types/node": "24.19.2",
     "typescript": "6.0.3",
     "vitest": "4.1.0",
-    "wrangler": "4.158.0"
+    "wrangler": "4.158.0",
+    "esbuild": "0.28.2",
+    "workerd": "1.20261104.1"
   }
 }

@@ -6,6 +6,7 @@ import {
   OAuthResourceServer,
 } from "@cloudflare/workers-oauth-provider";
 import { handleMcp } from "../mcp/server";
+import { validatedTokenDeadline } from "../mcp/subscriptions";
 import { checkPrincipalAdmission } from "../shared/admission";
 import {
   authorizeGuestConnection,
@@ -430,6 +431,7 @@ export async function handleAuthenticatedMcp(
           guestId: props.guestId,
           connectionId: props.connectionId,
           scopes,
+          tokenExpiresAtMs: validatedTokenDeadline(authCtx.auth.expiresAt),
         });
       },
     },

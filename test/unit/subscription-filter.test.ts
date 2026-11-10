@@ -58,3 +58,26 @@ describe("single canonical live subscription filter", () => {
     expect(parsed?.membershipId).toBe(otherMember);
   });
 });
+
+describe("validated OAuth token deadline", () => {
+  it("accepts only future safe integer seconds and converts once to milliseconds", async () => {
+    const { validatedTokenDeadline } = await import(
+      "../../src/mcp/subscriptions"
+    );
+    const seconds = Math.floor(Date.now() / 1000) + 60;
+    expect(validatedTokenDeadline(seconds)).toBe(seconds * 1000);
+    for (const value of [
+      undefined,
+      null,
+      `${seconds}`,
+      NaN,
+      Infinity,
+      0,
+      seconds + 0.1,
+      Math.floor(Date.now() / 1000),
+      Number.MAX_SAFE_INTEGER,
+    ]) {
+      expect(validatedTokenDeadline(value)).toBeNull();
+    }
+  });
+});

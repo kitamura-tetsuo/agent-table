@@ -20,6 +20,9 @@ export type AuthenticatedMcpIdentity = {
   readonly guestId: string;
   readonly connectionId: string;
   readonly scopes: readonly ConnectionScope[];
+  // Null must fail closed at any future listen boundary. Populated exclusively
+  // from the OAuth host context, not token claims decoded by this application.
+  readonly tokenExpiresAtMs: number | null;
 };
 
 const TABLE_ID =
@@ -110,7 +113,7 @@ function newServer(env: Env, identity: AuthenticatedMcpIdentity) {
     {
       maxToolInputElements: 32,
       // SDK defaults enable list-change streams when tools/resources register.
-      // No live notification producer is implemented in this application yet.
+      // No public live notification adapter is implemented yet.
       capabilities: {
         tools: { listChanged: false },
         resources: { listChanged: false, subscribe: false },

@@ -327,3 +327,150 @@ test-barrier warnings); `npm run probe:subscriptions:sdk` **5/5 PASS**;
 The isolated coding-agent sandbox itself could not execute Workerd tests
 because its loopback binding is denied. No Cloudflare deployment, staging
 runtime measurement or host-origin notification test was performed.
+
+### Follow-up: bounded internal TableDO hint streams (public gate still disabled)
+
+This increment starts at exact PR #43 head
+`27fd4fac5f8a4bd4cb11520ac7d87cbc91e4d5fb`. It implements an internal component,
+not the Issue #18 public MCP vertical slice. The existing P1 remains unresolved.
+`handleMcp` still sets `maxSubscriptions: 0`, advertises `subscribe: false`, and
+acknowledges no listen. Public Events and outbound notification gates remain
+unchanged and disabled. No production operations were performed.
+
+`TableDO.openInboxHintStream` calls the existing `checkInboxSubscription`
+authority on attach and retains a copied actor and canonical single-inbox
+filter. It repeats current GuestDO authorization and local table/membership
+checks before each new hint. The local terminal state is checked again after
+the attach await, before registry insertion. A result includes an internal
+byte stream, cancellation capability and admission snapshot; **neither is an MCP acknowledgment**.
+The stream contains newline-delimited `{kind:"resource_updated",uri}` records
+only. It contains no message text, sequence, identity, grant, or bearer token.
+This is private RPC plumbing, not an alternative public protocol or WebSocket.
+Ordinary inbox/transcript reads still require their own `tables:read` check.
+
+The transient registry is owned by each TableDO instance. It has one entry per
+membership, at most two entries, one queued URI hint per entry, and no durable
+queue/cursor. Replacement invalidates the old generation; late checks and old
+cancellation cannot target the replacement. A full queue or overlapping
+emission check terminates the stream conservatively instead of queuing more
+work. At most two registry authorization calls and two pending attaches may
+be outstanding per object, including calls belonging to replaced streams.
+A hung authority call consumes its slot until it settles; new work fails closed.
+There is no process-wide listener bus.
+
+Only `postMessage`'s newly committed peer hint reaches the registry, after its
+SQLite transaction. Dispatch uses the DO's `waitUntil`; notification failure
+cannot change the committed post receipt into a failed/uncertain write.
+Self posts, identical receipt retries, failed writes, reads and maintenance
+produce no hints. Close and content purge invalidate streams locally; expiry
+also reaches purge through the existing lifecycle alarm. All terminal stream
+errors are the fixed safe message `Inbox stream ended`; queued local hints are
+discarded, without claiming recall of bytes already transferred downstream.
+
+Each entry has an absolute deadline bounded by token, freshly read grant,
+table expiry and the original 60-second cap. Checks can shorten but never
+renew it. An independent deadline timer terminates even when a grant call
+hangs. Idle authority checks run approximately once per second, sequentially;
+revocation/scope loss is detected by the next successful check, or by the
+absolute deadline if authority hangs. **This is not immediate cross-object
+revocation invalidation.** Grant/table deadlines shortened externally after
+attach are likewise discovered on recheck. Production connection-to-table
+revocation plumbing remains required before claiming complete REQ-005 safety.
+The native probe observed that cancelling an unread RPC byte stream left its
+registry entry present after 50 ms. Therefore the internal attach result also
+returns an unguessable, generation-bound cancellation capability. The future
+adapter must call `cancelInboxHintStream(membershipId, cancellationId)` in its
+abort/finally path, as well as cancelling the body. The native test verifies
+that explicit cancellation removes the entry and an old capability cannot
+terminate its replacement. Never log or expose this internal capability to a
+public tool response. Cancellation returns no lookup/existence information.
+The lifetime timer remains the backstop if an adapter disappears entirely;
+local tests do not establish a deployed disconnect latency guarantee.
+
+OAuth request identity now carries `tokenExpiresAtMs`, converted strictly from
+`authCtx.auth.expiresAt` (validated absolute seconds from OAuth provider 1.2.4).
+Missing, non-integer, overflowing or expired values become `null`; a future
+listen boundary must reject null, never substitute a grant deadline or trust
+headers/arguments. No public route currently calls the new RPC, and its
+numeric deadline parameter remains an internal caller obligation.
+
+Evidence inspected in the installed pinned dependencies:
+
+- Workers RPC `BaseType` explicitly supports `ReadableStream<Uint8Array>`.
+  The native probe below additionally exercises transfer against actual Workerd.
+- Agents 0.33.0's `createStatelessMcpHandler` delegates to the official SDK,
+  rejects a custom `bus` option, and wraps response bodies in request auth
+  context. It supplies no application table-authorization seam by itself.
+- SDK 2.4.0's `createListenRouter` directly calls `controller.enqueue` in
+  `writeFrame`, including acknowledgment, keepalive and completion. It has no
+  `desiredSize` check there. The existing SDK-only 256-unread-frame probe still
+  passes. **Bounding this internal registry does not bound that SSE queue.**
+
+Verification for this increment:
+
+- `npm run typecheck` and `npm run lint`: PASS (the same two existing private
+  TableDO test-barrier warnings).
+- All four unit files through a temporary Node-only Vitest config: 65/65 PASS,
+  including 12 registry cases and strict validated-token deadline coverage.
+  The temporary config excludes the Cloudflare plugin and uses a `/tmp` cache;
+  these results are queue/lifecycle evidence, not Worker execution.
+- `npm run probe:subscriptions:sdk`: 5/5 PASS; SDK-only evidence.
+- `npm run probe:subscriptions:table`: 12/12 native Workerd/SQLite scenarios
+  PASS, using Workerd `1.20261104.1`, compatibility date `2026-11-07`, temporary
+  on-disk SQLite namespaces, real GuestDO/TableDO RPC and the production
+  registry/post commit code. Scenarios cover peer delivery plus retained text
+  and committed sequence, self/retry/failed/read suppression, two actors,
+  replacement/cancel/reconnect gap reads, idle revoke/scope/grant/table/token
+  termination, close/purge, fresh authorization before emission, invalid attach
+  and a slow consumer retained inside TableDO (so RPC prefetch cannot drain
+  its queue). Test-only subclasses inject SQL deadline/scope changes; production
+  bindings gain no fault-injection RPCs. The runner opens no sockets, denies
+  outbound internet, and deletes its temporary bundle/database directory.
+- The native run took about 4.8 seconds for all scenarios, including deliberate
+  one-second idle polls. This is local harness elapsed time, not hosted active
+  duration, CPU, billing or a staging cost measurement. HTTP streaming must
+  not assume WebSocket hibernation. Each quiet stream may require about 60
+  grant rechecks per capped lifetime, in addition to attach/emission checks.
+- Workerd reports generic stream-error/`abortRead` diagnostics for intentional
+  errored or cancelled RPC streams. The native assertions verify those terminal
+  rejections, and Workerd exits successfully; no private values are used in
+  error messages.
+- The added Vitest integration file shares the real fixture with the native
+  probe, but **was not executed** here: `npm run test:integration --
+  --configLoader runner` cannot start any of its 27 files because loopback
+  `listen` is denied (`EPERM 127.0.0.1`). The default config loader additionally
+  attempts a write to the read-only shared dependency cache (`EROFS`); runner
+  mode bypasses that first obstacle. These failures are not passing integration
+  results. Run the normal integration suite on a host permitting local sockets.
+
+Remaining acceptance work: authenticated listen parsing/routing and admission
+controls; a TableDO-owned official SDK wire adapter with bounded **actual** SSE
+output (all frame types); standard ack/cancellation/completion behavior;
+connection-to-table revocation invalidation; metrics for classified stream
+errors; and the REQ-008 official-client suite through two distinct Worker entry
+instances sharing the real TableDO. The internal snapshot-before-read reconnect
+probe does not prove standard acknowledgment-before-catch-up. Native RPC
+observations and SDK-only probes do not prove public Worker-to-DO SDK delivery.
+Staging duration/cost and host compatibility measurements remain NOT RUN.
+No REQ-001..008 is declared fully accepted by this increment.
+
+### Follow-up Ubuntu execution of the previously blocked Worker integration suite
+
+On 2026-11-10, the separately authorized Ubuntu host (not the sandbox that
+returned `EPERM`) ran these unchanged sources from a detached checkout of PR
+#43 at `27fd4fac5f8a4bd4cb11520ac7d87cbc91e4d5fb`, plus this increment:
+
+- `npm run typecheck`, `npm run lint`: PASS (two pre-existing warnings).
+- `npm test`: 211/211 PASS, 31 files.
+- `npm run test:integration`: 146/146 PASS, 27 files; this includes the new
+  `inbox-hint-streams.test.ts` real-DO cases (10/10).
+- `npm run probe:subscriptions:sdk`: 5/5 PASS; the independent isolated
+  `npm run probe:subscriptions:table` native Workerd probe: 12/12 PASS.
+- `npm run build` (Wrangler dry-run), `node --test scripts/*.test.mjs` (15/15),
+  and Playwright `npm run test:e2e` (6/6): PASS.
+
+This supersedes the earlier **not-run due to sandbox EPERM** integration
+status *for this exact Ubuntu checkout only*. The new native probe and SDK
+probe are now included in `.github/workflows/ci.yml` for independent PR-head
+validation. Actual publicly connected `subscriptions/listen` and two-edge
+hosted delivery are still NOT RUN, and the existing P1 review remains open.

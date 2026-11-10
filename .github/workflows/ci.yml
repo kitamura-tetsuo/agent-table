@@ -20,7 +20,7 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm run lint
-      - run: npx biome check scripts/manage-ingress-waf.mjs scripts/manage-ingress-waf.test.mjs scripts/wrangler-sqlite.test.mjs
+      - run: npx biome check scripts/manage-ingress-waf.mjs scripts/manage-ingress-waf.test.mjs scripts/wrangler-sqlite.test.mjs scripts/inbox-streams-workerd.test.mjs
       - run: node --test scripts/*.test.mjs
       - uses: actions/setup-python@v5
         with:
@@ -29,6 +29,8 @@ jobs:
       - run: python -m pytest -q test/unit/test_egress_experiments.py
       - run: npm test
       - run: npm run test:integration
+      - run: npm run probe:subscriptions:sdk
+      - run: npm run probe:subscriptions:table
       - run: node scripts/verify-oauth-redemption-mutant.mjs
       - run: npm run build
       - run: npx wrangler deploy --dry-run --config test/egress/wrangler.jsonc --outdir ../../dist/egress-probe

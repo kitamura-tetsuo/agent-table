@@ -16,6 +16,16 @@ export type InboxSubscriptionCheck = CanonicalInboxFilter & {
 
 export const MAX_INBOX_STREAM_LIFETIME_MS = 60_000;
 
+/** Convert only the OAuth host's validated absolute seconds, never a header. */
+export function validatedTokenDeadline(expiresAt: unknown): number | null {
+  if (typeof expiresAt !== "number" || !Number.isSafeInteger(expiresAt))
+    return null;
+  const milliseconds = expiresAt * 1000;
+  return Number.isSafeInteger(milliseconds) && milliseconds > Date.now()
+    ? milliseconds
+    : null;
+}
+
 /**
  * Parse only the supported single-inbox profile. Parsing is NOT authority:
  * callers must independently verify current events:subscribe grant, table
