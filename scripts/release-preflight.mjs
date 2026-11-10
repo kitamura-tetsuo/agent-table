@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
 const EXPECTED_DOS = new Map([
@@ -355,6 +355,49 @@ export function validateRelease({
   };
 }
 
+/**
+ * Generate a restore-specific Worker configuration from an operator-supplied
+ * candidate. Never inherit a clear quarantine or enabled capability from an
+ * older snapshot. This function cannot reconcile external post-snapshot
+ * revocations; it deliberately has no clear-quarantine operation.
+ */
+export function prepareQuarantinedRestoreConfig(configText) {
+  let source;
+  try {
+    source = JSON.parse(configText);
+  } catch {
+    throw new PreflightError("invalid-config-json");
+  }
+  const environment = source?.vars?.RELEASE_ENVIRONMENT;
+  requireCondition(
+    environment === "staging" || environment === "production",
+    "invalid-restore-environment",
+  );
+  requireCondition(
+    typeof source.name === "string" &&
+      source.name.endsWith(`-${environment}`) &&
+      source.main === "src/index.ts" &&
+      source.compatibility_flags?.includes("global_fetch_strictly_public"),
+    "invalid-restore-worker",
+  );
+  parseOrigin(source.vars.PUBLIC_ORIGIN, environment);
+  kvId(source);
+  getNames(source);
+  validateSqliteMigrationHistory(source);
+  const candidate = structuredClone(source);
+  candidate.vars.RESTORE_QUARANTINE = "true";
+  for (const name of [
+    "ENABLE_MCP_SUBSCRIPTIONS",
+    "ENABLE_OPENAI_EVENTS",
+    "ALLOW_OUTBOUND_NOTIFICATIONS",
+    "ALLOW_NEW_GUESTS",
+    "ALLOW_NEW_TABLES",
+  ]) {
+    candidate.vars[name] = "false";
+  }
+  return `${JSON.stringify(candidate, null, 2)}\n`;
+}
+
 function argumentValue(argv, name) {
   const index = argv.indexOf(`--${name}`);
   requireCondition(index >= 0 && argv[index + 1], `missing-argument:${name}`);
@@ -364,6 +407,18 @@ function argumentValue(argv, name) {
 function main() {
   try {
     const args = process.argv.slice(2);
+    if (args.includes("--prepare-restore")) {
+      const configText = readFileSync(argumentValue(args, "config"), "utf8");
+      const restoredText = prepareQuarantinedRestoreConfig(configText);
+      // Exclusive, owner-readable output: never clobber an operator config.
+      writeFileSync(argumentValue(args, "output"), restoredText, {
+        flag: "wx",
+        mode: 0o600,
+      });
+      const digest = createHash("sha256").update(restoredText).digest("hex");
+      process.stdout.write(`RESTORE_QUARANTINED ${digest}\n`);
+      return;
+    }
     const configText = readFileSync(argumentValue(args, "config"), "utf8");
     const result = validateRelease({
       environment: argumentValue(args, "environment"),
