@@ -794,8 +794,11 @@ This tests the no-new-send rule for terminal authority *before* an attempt
 starts. It does not prove that an already-dispatched external request can be
 recalled; concurrent held-HTTP revocation/closure, credential rotation,
 receiver-controlled barriers and hosted network evidence remain outside this
-regression. The production Events gate stays fail-closed pending #19's
-independent transport security evidence.
+regression. The production Events gate stays fail-closed pending the distinct opt-in
+activation and release controls. Issue #19 accepts the Hosted Workers native
+fetch security boundary as a limited-beta platform dependency; same-connection
+DNS rebinding/validation-to-dial remains explicitly unverified, not a passed
+experiment or a required public-IPv4 server.
 
 ### 2026-11-11: same-identity refresh before first delivery
 
@@ -810,4 +813,6 @@ one charged accepted attempt. Further alarms do not replay the acceptance.
 This is a serial pre-dispatch credential-rotation case, not proof that a
 held old HTTP response cannot affect a simultaneous refresh; that interleaving
 and the independent #19 connection-time transport safety criteria remain
-unverified. The public Events flag remains disabled.
+unverified. The public Events flag remains disabled. These receiver-local tests do not
+change Issue #19's limited-beta risk acceptance or authorize its separate
+activation gate.
