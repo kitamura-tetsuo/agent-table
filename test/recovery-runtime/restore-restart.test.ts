@@ -3,6 +3,7 @@ import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { SESSION_COOKIE_NAME } from "../../src/auth/guest";
 import { RESTORE_QUARANTINE_RECHECK_MS } from "../../src/shared/release-quarantine";
+import { ownInboxUri } from "../../src/shared/resources";
 import generatedRestore from "../fixtures/quarantined-restore-generated.json";
 
 describe("generated restore configuration in a constructed Workerd/DO runtime", () => {
@@ -108,6 +109,13 @@ describe("unreconciled older snapshot in the generated quarantine runtime", () =
     const guest = env.GUESTS.get(env.GUESTS.idFromName(guestId));
     const table = env.TABLES.get(env.TABLES.idFromName(tableId));
     const session = await guest.createSession(guestId);
+    const connection = await guest.createConnection(
+      session.sessionId,
+      session.secret,
+      ["tables:read", "tables:write", "events:subscribe"],
+      Date.now() + 60 * 60_000,
+    );
+    if (!connection) throw new Error("Synthetic connection unavailable");
     const now = Date.now();
     const privateBody = "Synthetic message retained from before restore";
     await runInDurableObject(table, async (_instance, state) => {
@@ -154,6 +162,42 @@ describe("unreconciled older snapshot in the generated quarantine runtime", () =
     // represented in the snapshot. They must never authorize clearance.
     await evictDurableObject(table);
     await evictDurableObject(guest);
+    // A pre-snapshot connection and membership can appear fully valid even
+    // when later revocation/deletion authority is unavailable after restore.
+    const actor = {
+      kind: "verified-connection" as const,
+      guestId,
+      connectionId: connection.connectionId,
+      scope: "events:subscribe" as const,
+      expiresAt: Number.MAX_SAFE_INTEGER,
+    };
+    const filter = {
+      resourceSubscriptions: [ownInboxUri(tableId, membershipId)],
+    };
+    expect(
+      await table.checkInboxSubscription(actor, filter, now + 30_000),
+    ).toEqual({ ok: false, code: "TEMPORARILY_UNAVAILABLE" });
+    expect(
+      await table.openInboxHintStream(actor, filter, now + 30_000),
+    ).toEqual({ ok: false, code: "TEMPORARILY_UNAVAILABLE" });
+    expect(
+      await table.readMessages({ ...actor, scope: "tables:read" }, {}),
+    ).toEqual({ ok: false, code: "TABLE_NOT_FOUND" });
+    expect(
+      await table.readBrowserMessages(
+        { guestId, sessionId: session.sessionId, secret: session.secret },
+        {},
+      ),
+    ).toEqual({ ok: false, code: "TABLE_NOT_FOUND" });
+    expect(
+      await table.postMessage(
+        { ...actor, scope: "tables:write" },
+        {
+          request_id: "synthetic_quarantine_post_001",
+          body: "Must not persist",
+        },
+      ),
+    ).toEqual({ ok: false, code: "TABLE_NOT_FOUND" });
     for (const endpoint of [path, "/guest/connections", "/mcp"]) {
       const response = await SELF.fetch(`http://localhost:8787${endpoint}`, {
         method: endpoint === "/mcp" ? "POST" : "GET",
@@ -170,6 +214,11 @@ describe("unreconciled older snapshot in the generated quarantine runtime", () =
           .exec<{ body: string }>("SELECT body FROM table_messages")
           .one().body,
       ).toBe(privateBody);
+      expect(
+        state.storage.sql
+          .exec("SELECT COUNT(*) AS n FROM table_messages")
+          .one(),
+      ).toEqual({ n: 1 });
       expect(
         state.storage.sql
           .exec("SELECT COUNT(*) AS n FROM table_memberships")
