@@ -14,7 +14,13 @@ const FOREIGN_URI = "agent-table://sdk-probe/other-inbox";
 
 /** SDK-only compatibility fixture: no application authorization or TableDO. */
 async function fixture(
-  options: { disabled?: boolean; capacity?: number } = {},
+  options: {
+    disabled?: boolean;
+    capacity?: number;
+    beforeListenRead?: (
+      handler: ReturnType<typeof createMcpHandler>,
+    ) => Promise<void>;
+  } = {},
 ) {
   const bus = new InMemoryServerEventBus();
   const frames: Array<Record<string, unknown>> = [];
@@ -54,6 +60,8 @@ async function fixture(
         ) {
           return response;
         }
+        // The transport has not received this response or read its body yet.
+        await options.beforeListenRead?.(handler);
         const decoder = new TextDecoder();
         let pending = "";
         const body = response.body.pipeThrough(
@@ -93,6 +101,41 @@ async function fixture(
       await client.close();
     },
   };
+}
+
+/**
+ * Evidence for a release blocker, not a bounded-stream implementation. The
+ * pinned SDK's count cap does not bound an unread subscription's frame queue.
+ */
+export async function probeUnreadStreamBuffering() {
+  const updates = 256;
+  const f = await fixture({
+    capacity: 1,
+    beforeListenRead: async (handler) => {
+      assert.ok(handler.bus instanceof InMemoryServerEventBus);
+      assert.equal(handler.bus.listenerCount, 1);
+      for (let i = 0; i < updates; i++) handler.notify.resourceUpdated(URI);
+      await handler.close();
+    },
+  });
+  try {
+    const stream = await f.client.listen({ resourceSubscriptions: [URI] });
+    assert.equal(await stream.closed, "graceful");
+    assert.equal(
+      f.frames[0]?.method,
+      "notifications/subscriptions/acknowledged",
+    );
+    assert.equal(
+      f.frames.filter(
+        (frame) => frame.method === "notifications/resources/updated",
+      ).length,
+      updates,
+    );
+    assert.equal(f.frames.length, updates + 2);
+    assert.equal(f.bus.listenerCount, 0);
+  } finally {
+    await f.dispose();
+  }
 }
 
 export async function probeAckUpdateCompletion() {

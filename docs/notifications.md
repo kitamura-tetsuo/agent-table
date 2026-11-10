@@ -249,3 +249,81 @@ ownership or connection authorization.** Production continues with the SDK
 `maxSubscriptions: 0` refusal. Fresh `events:subscribe` grant checks,
 TableDO membership/lifecycle verification, cross-isolate peer delivery and
 bounded SDK HTTP streaming remain unimplemented; no listener is acknowledged.
+
+### Follow-up: TableDO admission authority and unread-buffer evidence
+
+The detached-head increment based on `021cc3ee` adds
+`TableDO.checkInboxSubscription(actor, requestedFilter, tokenExpiresAtMs)`.
+This is an **internal preflight snapshot**, not a stream reservation, stream
+acknowledgment, or delivery implementation. It calls the canonical parser in
+TableDO, independently rechecks the current `events:subscribe` grant through
+GuestDO, then reads local membership and lifecycle authority after the remote
+await. The caller must own the exact inbox membership and the request must
+reach the correct table object. Nonmembers and wrong-table/member requests
+share `TABLE_NOT_FOUND`. Unsupported filters get `INVALID_REQUEST`; invalid,
+expired, revoked, missing-scope, or unavailable grants fail closed.
+
+A successful snapshot contains only the canonical URI, table/membership IDs,
+`lastSeq`, `latestPeerSeq`, and an expiry in milliseconds. The expiry is the
+minimum of the validated OAuth token deadline, freshly read connection grant,
+table expiry, and a 60-second lifetime cap. Actor-supplied grant expiry is
+ignored. This method stores no positive authorization, actor, subscription,
+server cursor, or stream state. The snapshot does not grant transcript reads;
+those continue to require `tables:read`. Its sequence values are observations,
+not processing acknowledgments or replay guarantees.
+
+The future adapter must obtain token expiry from validated OAuth context
+(converting seconds to milliseconds), repeat authority checks while attaching
+and before dispatch, and handle revocation while idle. Do not treat a positive
+preflight as a lease: GuestDO revocation can happen immediately afterward.
+The admission snapshot deliberately has no durable registration side effect.
+
+`test/integration/inbox-subscription-authority.test.ts` adds seven Workerd /
+SQLite test cases for positive admission, read-scope separation, reconstruction,
+deadline bounds, ownership/routing/filter denials, stale grant scope/revocation,
+and close/expiry/erasure during the remote grant await. The race cases call
+the real instance method, mutate local SQL after invocation has yielded, and
+require the subsequent snapshot to reject. The coding-agent sandbox could not bind loopback (`listen EPERM`),
+but a separate authorized Ubuntu terminal ran these seven cases against
+the actual Workerd/SQLite pool: **7/7 passed**. The focused SDK/authority
+Workerd pair passed **12/12** after correcting a test-only simulated
+delete transition to honor SQLite foreign keys. This is local Workerd
+evidence, not multi-edge live-stream or deployed Cloudflare evidence.
+
+The shared official SDK probe now has a fifth case:
+`probeUnreadStreamBuffering`. With `maxSubscriptions: 1` and keepalive disabled,
+it publishes 256 updates and closes the handler **before returning the SSE
+response body to the official client transport**. The client subsequently
+receives the ack, all 256 updates, and completion. This passed under Node with
+the pinned SDK. It is concrete evidence that the stream count cap does not
+bound unread frames at this finite workload. It is not a heap measurement,
+network slow-client test, Workerd result, or cross-Worker proof. The paired Workerd
+SDK probe also passed on the separate authorized Ubuntu host. Neither
+probe demonstrates cross-Worker delivery. A bounded adapter must
+control the actual SDK enqueue path, including keepalive and completion;
+wrapping an unbounded producer with another stream is insufficient.
+
+**Public behavior is unchanged.** `src/mcp/server.ts` still advertises no
+subscriptions and sets `maxSubscriptions: 0`. The P1 missing public routing /
+admission integration is **not resolved** by this internal preflight: the
+server does not yet call the parser or the new RPC, and acknowledges no inbox.
+`services/tables.ts` observers remain transient edge callbacks; they are not
+connected to the preflight and are not distributed delivery evidence.
+
+All Issue #18 REQ-001..008 remain acceptance gates; none is marked complete by
+this increment. Remaining blockers include the TableDO-owned official SDK
+transport and post-commit peer producer, atomic attach/replacement and generation
+handling, bounded buffering and lifetime enforcement, cancellation cleanup,
+idle revocation and terminal shutdown, safe stream metrics, read-after-ack /
+reconnect behavior, and two separate Worker entrypoints sharing the real
+SQLite TableDO in an integration test. No cross-Worker stream test, deployment,
+staging measurement, or agent-host compatibility claim was made.
+
+Checks for this follow-up on the separate authorized Ubuntu host:
+`npm run typecheck` **PASS**; `npm run lint` **PASS** (two existing
+test-barrier warnings); `npm run probe:subscriptions:sdk` **5/5 PASS**;
+`npm test` **188/188 PASS**; `npm run test:integration` **136/136 PASS**;
+`npm run build` **PASS** (dry-run only); `npm run test:e2e` **6/6 PASS**.
+The isolated coding-agent sandbox itself could not execute Workerd tests
+because its loopback binding is denied. No Cloudflare deployment, staging
+runtime measurement or host-origin notification test was performed.

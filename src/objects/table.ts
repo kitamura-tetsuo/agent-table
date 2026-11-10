@@ -1,5 +1,10 @@
 import { DurableObject } from "cloudflare:workers";
 import {
+  type InboxSubscriptionCheck,
+  MAX_INBOX_STREAM_LIFETIME_MS,
+  parseCanonicalInboxFilter,
+} from "../mcp/subscriptions";
+import {
   authorizeGuestConnection,
   type ConnectionScope,
   type VerifiedConnectionActor,
@@ -383,6 +388,77 @@ export class TableDO extends DurableObject<Env> {
       requiredScope,
     );
     return decision.allowed;
+  }
+
+  /**
+   * Internal admission preflight, not an active subscription. The token deadline
+   * must come from validated OAuth context (milliseconds), never tool arguments.
+   * No actor, positive decision, stream, or cursor is retained by this method.
+   */
+  async checkInboxSubscription(
+    actor: VerifiedConnectionActor,
+    requested: unknown,
+    tokenExpiresAtMs: number,
+  ): Promise<TableResult<InboxSubscriptionCheck>> {
+    const filter = parseCanonicalInboxFilter(requested);
+    if (!filter) return { ok: false, code: "INVALID_REQUEST" };
+    if (
+      actor?.kind !== "verified-connection" ||
+      actor.scope !== "events:subscribe" ||
+      !Number.isSafeInteger(tokenExpiresAtMs) ||
+      tokenExpiresAtMs <= Date.now()
+    ) {
+      return { ok: false, code: "NOT_AUTHORIZED" };
+    }
+    // Actor-shaped RPC input and its claimed expiry are not grant authority.
+    const decision = await authorizeGuestConnection(
+      this.env,
+      actor.guestId,
+      actor.connectionId,
+      "events:subscribe",
+    );
+    if (!decision.allowed) return { ok: false, code: "NOT_AUTHORIZED" };
+
+    // Read all local authority AFTER the remote grant check. Close, deletion,
+    // expiry, or another RPC may have run while the GuestDO call was pending.
+    // There is no await between this snapshot and the result.
+    const now = Date.now();
+    const table = this.metadataRow();
+    const member = this.memberFor(decision.actor.guestId);
+    if (
+      !table ||
+      !member ||
+      table.table_id !== filter.tableId ||
+      member.table_id !== table.table_id ||
+      member.membership_id !== filter.membershipId ||
+      !this.ctx.id.equals(this.env.TABLES.idFromName(filter.tableId))
+    ) {
+      return { ok: false, code: "TABLE_NOT_FOUND" };
+    }
+    if (table.expires_at <= now || table.state === "expired") {
+      return { ok: false, code: "TABLE_EXPIRED" };
+    }
+    if (table.state !== "waiting" && table.state !== "open") {
+      return { ok: false, code: "TABLE_TERMINAL" };
+    }
+    const expiresAt = Math.min(
+      tokenExpiresAtMs,
+      decision.actor.expiresAt,
+      table.expires_at,
+      now + MAX_INBOX_STREAM_LIFETIME_MS,
+    );
+    if (!Number.isSafeInteger(expiresAt) || expiresAt <= now) {
+      return { ok: false, code: "NOT_AUTHORIZED" };
+    }
+    return {
+      ok: true,
+      value: {
+        ...filter,
+        expiresAt,
+        lastSeq: table.last_seq,
+        latestPeerSeq: member.latest_peer_seq,
+      },
+    };
   }
 
   /**

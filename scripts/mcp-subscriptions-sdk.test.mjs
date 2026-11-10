@@ -3,9 +3,15 @@ import {
   probeAckUpdateCompletion,
   probeCancellationAndReconnect,
   probeDisabledCapabilities,
+  probeUnreadStreamBuffering,
   probeZeroCapacityRefusal,
 } from "../test/probes/sdk-subscriptions.ts";
 
+test(
+  "SDK 2.4.0 evidence: stream count cap still buffers 256 unread updates",
+  { timeout: 5000 },
+  probeUnreadStreamBuffering,
+);
 test(
   "SDK 2.4.0: ack before update, exact URI filtering, correlation and completion",
   { timeout: 5000 },

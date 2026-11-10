@@ -6,6 +6,16 @@ export type CanonicalInboxFilter = {
   readonly membershipId: string;
 };
 
+// A preflight snapshot is not a stream lease or an acknowledgment. A future
+// TableDO adapter must repeat the check when attaching and before dispatch.
+export type InboxSubscriptionCheck = CanonicalInboxFilter & {
+  readonly expiresAt: number;
+  readonly lastSeq: number;
+  readonly latestPeerSeq: number;
+};
+
+export const MAX_INBOX_STREAM_LIFETIME_MS = 60_000;
+
 /**
  * Parse only the supported single-inbox profile. Parsing is NOT authority:
  * callers must independently verify current events:subscribe grant, table
