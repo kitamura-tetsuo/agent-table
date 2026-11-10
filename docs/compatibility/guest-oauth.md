@@ -9,8 +9,9 @@ revoked access token receives `/mcp` HTTP 401; **that 401 was not host-origin**.
 This is **not** a completed nine-case host acceptance result: a separate
 owner-origin Deny has matching Cloudflare HTTP observations and a same-guest,
 DO-backed connection-list readback with no new grant. Independent persisted
-create/read and newest-grant revocation receipts have since been obtained. A shared host-to-Worker per-request trace and
-trustworthy deployed Git-SHA mapping remain outstanding. See
+create/read, newest-grant revocation and archived executable-script/Git-source
+comparisons have since been obtained. A coherent host-to-Worker per-request
+trace and exact host SaaS build identity remain outstanding. See
 Issue [#23](https://github.com/kitamura-tetsuo/agent-table/issues/23) and
 [PR #41](https://github.com/kitamura-tetsuo/agent-table/pull/41).
 The local MCP SDK/OAuth regression tests cannot replace real-host evidence.
@@ -465,8 +466,51 @@ host/origin/refresh/revocation acceptance evidence is complete.
 
 [Redacted paired host/edge/SQLite receipt](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6760336421).
 The observation upgrades **post-revocation grant-state evidence**, but not
-full single-run nine-case host acceptance. No source/bundle cryptographic
-attestation, exact SaaS build or shared host-to-Worker per-request join
-exists; refresh and denial were observed in distinct earlier windows.
-Host Disconnect remains separately untested. Keep #41 Draft, #23 open,
-and notification/autonomy claims untested.
+full single-run nine-case host acceptance. At this inspection cutoff, no
+independent executable-script/Git-source byte comparison had been recorded;
+that follow-up is documented below. Exact SaaS build and shared
+host-to-Worker per-request joins remain unavailable; refresh and denial
+were observed in distinct earlier windows. Host Disconnect remains
+separately untested. Keep #41 Draft, #23 open, and notification/autonomy
+claims untested.
+
+### Archived executable Worker script against source — 2026-11-10 06:22–06:30 UTC
+
+- Independently queried Cloudflare's read-only [Worker deployment list](https://developers.cloudflare.com/api/resources/workers/subresources/scripts/subresources/deployments/methods/list/)
+  to identify the **100%-serving Worker version at each event time**. Queried
+  each immutable [Worker version's code modules](https://developers.cloudflare.com/api/typescript/resources/workers/subresources/beta/subresources/workers/subresources/versions/methods/get/)
+  with `include=modules`, decoded `index.js.content_base64` in memory,
+  and calculated SHA-256. No source contents, bindings, or API tokens were
+  printed or committed.
+- Independently checked out each source commit in a temporary detached Git
+  worktree. With the same unchanged package lock, installed Wrangler
+  **4.158.0**, and the staging-only `wrangler.staging.jsonc` configuration,
+  `wrangler deploy --dry-run --config wrangler.staging.jsonc --outdir
+  <temporary-directory> --var STAGING_EVIDENCE_MODE:off` generated a local
+  `index.js` without deploying anything. The mode is a runtime binding,
+  not embedded JavaScript. The staging config is a local operator-supplied
+  file, not itself Git-committed provenance.
+- In the two temporary worktrees, the shared `node_modules` symlink made
+  esbuild label 33 non-executable source-file comments as
+  `// ../../home/ubuntu/src/agent-table/node_modules/...` instead of the
+  deployment's `// node_modules/...`. Replacing **only that exact leading
+  comment prefix**, in memory, restored **byte-for-byte equality** with the
+  archived executable module. No runtime JavaScript was ignored or rewritten.
+  Building from the current original worktree required no normalization.
+
+| Actual staging interval/event | 100%-serving version | Git source reconstructed | Archived executable `index.js` SHA-256 | Exact comparison |
+| --- | --- | --- | --- | --- |
+| Host create/read at 04:52 UTC (04:47:24–04:54:55) | `390e171d-96f5-4b40-a3dc-1d06521c19c1` | `14f258d30ecd29efe96881f5d4c72a153e43c553` | `9b31fd8cd6a3d61a7b273e623db5d8efe83a3d92e453df5d839f233ad0055d9f` | **Equal after 33 comment-path normalizations** |
+| Independent creation readback at 04:55, browser revoke at 05:17, broker 400 at 05:19 (04:54:55–05:54) | `ddd0e763-ad29-4b38-82fe-9fbc1e511ba8`, then `a5eb0215-eb2e-4968-b840-a846f3c185da` | `756c21b9ee6e5eadf2089624721f79962e83b5f2` | `68cbc9ebbe5781be96c829ff4a3e552cf82d80ee9558597dc6652ed3074c56f5` | **Equal after 33 comment-path normalizations** |
+| Post-revocation SQLite readback and final disabled Worker at 05:54 | `c690bc0c-b3a3-4a6c-a3cf-dcc3f0412d63`, then `7fc7d091-614e-4c43-812d-d75ca2d42308` | `a560900dc9ebbbd108bb5c49e312512e1e626553` (same `src/` and lockfile as `2ea1e36`) | `f674eabff6883c99a5d3cc910d3832e7e471820b968e847e0711cefa8fac97f8` | **Raw executable module SHA-256 equal** |
+
+- The live script-content API also returned `index.js.map`, whose bytes
+  differed from the local dry-run source map. **Only the executable
+  `index.js` module was verified**; this is not an end-to-end signed build
+  or artifact provenance statement. Version metadata and the 100% deployment
+  intervals are Cloudflare API observations, not merely operator annotations.
+- This materially improves Git-source-to-runtime-code attribution for
+  each event window, but does **not** make the different windows a single
+  deployed-build/connection acceptance run or expose the exact ChatGPT Work
+  SaaS build. No shared per-request host-to-Worker/DO trace exists.
+  Keep #41 Draft and #23 open.
