@@ -126,8 +126,8 @@ claim, not a blanket provider label.
 | Host `get_table` | **HOST TOOL OBSERVED** | Host read after creation and after reauthorization; exact protected operation to persisted table still needs an independent join ([older client report](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6743908128), [latest corroboration](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6754828876)) |
 | Actual host refresh token | **PASSED ON SOURCE-LABELED STAGING** | Real ChatGPT host `refresh_token`/200 and binding fingerprint matched the owner's Active guest connection; scope arrays identical ([same-version receipt](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6754963099), [older audit](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6744941273)) |
 | Authenticated read after refresh | **PASSED ON SOURCE-LABELED STAGING** | Host `get_table` succeeded immediately after the independently bound active-connection refresh; edge `/mcp` 200 in the same short window, no shared request ID ([same-version receipt](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6754963099)) |
-| Same-guest browser revocation | **BROWSER/SERVER OBSERVED** | Old grant Revoked, fresh grant Active; `POST /guest/connections/revoke` 303 ([browser report](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6743908128), [edge receipt](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6744413982)) |
-| First host call refused after revocation | **HOST/SERVER OBSERVED** | Host showed reconnect without protected table; `POST /mcp` HTTP **401** at 15:22:55Z, before new Allow ([edge receipt](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6744413982)) |
+| Same-guest browser revocation | **PASSED ON SOURCE-LABELED STAGING** | Owner revoked the current Active grant; browser POST `/guest/connections/revoke` returned 303, which the implemented route sends only after a successful GuestDO transaction. Later `/oauth/token` 400; no independent DO export ([new receipt](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6756230954), [older browser report](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6743908128)) |
+| First host call refused after revocation | **OLDER 401 OBSERVED; NEW 400 DOES NOT CLOSE GATE** | Older host call: `POST /mcp` HTTP 401 before new Allow. New same-deployment host `get_table` was blocked by `oauth_token_invalid_grant` after `/oauth/token` HTTP 400; no protected `/mcp` 401 appeared in this window ([older 401](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6744413982), [new 400](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6756230954)) |
 | Host-side Disconnect | **NOT RUN** | Service-side Revoke and host-side Disconnect are distinct |
 | Notification receipt / idle autonomy | **UNTESTED** | Not part of #23 OAuth gate; separate #18–#24 |
 
@@ -136,11 +136,13 @@ for **new** test runs. The redacted, **incomplete** snapshots
 `evidence.chatgpt-work-2026-11-09.json`,
 `evidence.chatgpt-work-2026-11-10-pinned.json` and
 `evidence.chatgpt-work-2026-11-10-deny.json` and
-`evidence.chatgpt-work-2026-11-10-refresh.json` preserve **distinct**
-deployment/test or connection windows. The Deny case is `passed` in its own
-record after an owner-provided same-guest, DO-backed connection list; the
-real-host refresh and subsequent read are `passed` in a separate,
-source-labeled staging run. All overall records remain **incomplete**. Validation cannot authenticate
+`evidence.chatgpt-work-2026-11-10-refresh.json` and
+`evidence.chatgpt-work-2026-11-10-revocation.json` preserve **distinct**
+deployment/test or connection windows. The Deny case passes on the owner's
+same-guest DO-backed list; actual-host refresh and subsequent read pass in a
+separate staged run; browser revocation passes in its own later staged run.
+The new post-revocation token 400 does **not** pass the protected-MCP 401
+case. All overall records remain **incomplete**. Validation cannot authenticate
 external receipts or merge older observations into a newer version's result.
 
 ### Source-labeled staging smoke test — 2026-11-09 22:39–22:43 UTC
@@ -252,6 +254,33 @@ external receipts or merge older observations into a newer version's result.
   `evidence.chatgpt-work-2026-11-10-refresh.json` documents these two
   passed cases without combining Deny, table creation or revocation from
   different deployment windows.
+
+### Current-connection revocation and token refusal — 2026-11-10 00:58–01:22 UTC
+
+- The owner revoked the connection that had previously matched the successful
+  refresh audit. No subsequent Allow/reconnection was performed before the
+  protected `get_table` attempt. ChatGPT's private app returned
+  `UNAUTHORIZED` / `oauth_token_invalid_grant` and requested
+  reauthentication instead of returning table metadata.
+- Read-only Cloudflare Zone `httpRequestsAdaptive` returned the same
+  staging host's `/guest/connections` HTTP 200 at 00:58:35Z and 00:58:38Z,
+  `/guest/connections/revoke` HTTP **303** at 00:58:38Z, then
+  `/oauth/token` HTTP **400** at 00:59:43Z. The deployed staging Worker was
+  version `78faef17-37cb-42bf-a740-2946d097621f`, marked
+  `source_sha=e067bf2`, with metadata audit disabled. In the implemented
+  route, HTTP 303 is returned only after the authenticated GuestDO revocation
+  transaction completes; unknown/unauthorized targets return 404/401.
+- This is **actual server-side refusal** of post-revocation token exchange,
+  consistent with the host's invalid-grant error. It does **not** prove an
+  `/mcp` HTTP 401 for the freshly revoked connection: the ChatGPT broker
+  may stop before making a protected tool request. Neither an independent
+  GuestDO state export nor a shared trace ID was collected. The
+  `revokedInBrowser` case passes with these stated limits; the
+  `rejectedAfterRevocation` case remains **blocked**, preserving the
+  distinction between OAuth 400 and protected-resource 401.
+  [Redacted HTTP/client receipt](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6756230954).
+  The matching metadata snapshot is
+  `evidence.chatgpt-work-2026-11-10-revocation.json`.
 
 Before closing #23, independently review the paired host/Worker/DO grant and
 table receipts for all cases, and ensure

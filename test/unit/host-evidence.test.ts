@@ -4,6 +4,7 @@ import partialHostRecord from "../e2e/host/evidence.chatgpt-work-2026-11-09.json
 import deniedHostRecord from "../e2e/host/evidence.chatgpt-work-2026-11-10-deny.json";
 import pinnedHostRecord from "../e2e/host/evidence.chatgpt-work-2026-11-10-pinned.json";
 import refreshedHostRecord from "../e2e/host/evidence.chatgpt-work-2026-11-10-refresh.json";
+import revokedHostRecord from "../e2e/host/evidence.chatgpt-work-2026-11-10-revocation.json";
 import template from "../e2e/host/evidence.template.json";
 
 describe("actual host interoperability evidence gate", () => {
@@ -77,6 +78,22 @@ describe("actual host interoperability evidence gate", () => {
     expect(result.missing).toContain("exact host product/build identity");
     expect(result.missing).toContain(
       "actual client and server evidence for revokedInBrowser",
+    );
+  });
+
+  it("keeps a token-refresh 400 distinct from protected MCP 401", () => {
+    const result = evaluateHostEvidence(revokedHostRecord);
+    expect(result.structurallyValid).toBe(true);
+    expect(result.completeRecord).toBe(false);
+    expect(revokedHostRecord.cases.revokedInBrowser.status).toBe("passed");
+    expect(revokedHostRecord.cases.rejectedAfterRevocation.status).toBe(
+      "blocked",
+    );
+    expect(result.missing).not.toContain(
+      "actual client and server evidence for revokedInBrowser",
+    );
+    expect(result.missing).toContain(
+      "actual client and server evidence for rejectedAfterRevocation",
     );
   });
 
