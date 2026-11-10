@@ -591,10 +591,61 @@ export class TableDO extends DurableObject<Env> {
         : row.status === "expired" || (row.expires_at ?? 0) <= Date.now()
           ? "expired"
           : "active";
+    // A second connection belonging to the same guest must not observe this
+    // subscription's queue or outcome. Never query callback/secret columns.
+    if (!owned || !row?.subscription_id || status !== "active") {
+      return {
+        available: false as const,
+        reason: "delivery_not_ready" as const,
+        status,
+        pendingCount: 0,
+        lastAcceptedSeq: null,
+        lastErrorCategory: null,
+      };
+    }
+    const counts = this.ctx.storage.sql
+      .exec<{ pending_count: number; last_accepted_seq: number | null }>(
+        `SELECT COUNT(CASE WHEN status IN ('pending', 'in_flight') THEN 1 END) AS pending_count,
+                MAX(CASE WHEN status = 'accepted' THEN message_seq END) AS last_accepted_seq
+         FROM table_event_outbox
+         WHERE recipient_membership_id = ? AND subscription_id = ?`,
+        member.membership_id,
+        row.subscription_id,
+      )
+      .one();
+    const latestError = this.ctx.storage.sql
+      .exec<{ last_error_category: string }>(
+        `SELECT last_error_category FROM table_event_outbox
+         WHERE recipient_membership_id = ? AND subscription_id = ?
+           AND last_error_category IS NOT NULL
+         ORDER BY created_at DESC, message_seq DESC LIMIT 1`,
+        member.membership_id,
+        row.subscription_id,
+      )
+      .toArray()[0]?.last_error_category;
+    // Guard the public status boundary even if a future producer accidentally
+    // stores an exception string, HTTP body or destination as an error detail.
+    const safeErrors = new Set([
+      "transport-error",
+      "deadline",
+      "rate-limited",
+      "server-error",
+      "receiver-gone",
+      "payload-rejected",
+      "authorization-revoked",
+      "retry-exhausted",
+    ]);
     return {
       available: false as const,
       reason: "delivery_not_ready" as const,
       status,
+      pendingCount: counts.pending_count,
+      lastAcceptedSeq: counts.last_accepted_seq,
+      lastErrorCategory: latestError
+        ? safeErrors.has(latestError)
+          ? latestError
+          : "unknown"
+        : null,
     };
   }
 

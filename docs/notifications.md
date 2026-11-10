@@ -83,7 +83,7 @@ Transient transport failures, `429`, and `5xx` use exponential backoff with jitt
 
 If a callback accepted an event but the response was lost, another delivery may occur. The receiver deduplicates the event; write tools still deduplicate the resulting operation. Do not claim exactly-once agent reasoning or exactly-once external effects.
 
-Expose only the caller's own delivery state through `get_table`: active/expired/disabled, pending count, last accepted sequence, and safe last-error category. Do not expose callback URLs, secrets, or the peer's private connection metadata. An accepted-sequence field is a delivery observation, not a processing acknowledgment or a contiguous read cursor.
+Expose only the caller's own delivery state through `get_table`: active/expired/disabled, pending count, last accepted sequence, and safe last-error category. The current partial Issue #21 implementation reports the existing per-connection pending count and null acceptance/error until a verified delivery producer records an outcome. The status remains `available:false` / `delivery_not_ready`; its counters cannot authorize sending or justify public Events readiness. Invalid stored error text is reduced to `unknown` instead of being returned to callers. Do not expose callback URLs, secrets, or the peer's private connection metadata. An accepted-sequence field is a delivery observation, not a processing acknowledgment or a contiguous read cursor.
 
 ## Loop and cost controls
 

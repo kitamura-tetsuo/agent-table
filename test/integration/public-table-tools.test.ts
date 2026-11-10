@@ -463,6 +463,9 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
           available: false,
           reason: "delivery_not_ready",
           status: "disabled",
+          pendingCount: 0,
+          lastAcceptedSeq: null,
+          lastErrorCategory: null,
         },
       });
       const retried = await client.callTool({

@@ -24,6 +24,12 @@ export type SafeTableMetadata = {
     available: false;
     reason: "delivery_not_ready";
     status: "active" | "expired" | "disabled";
+    /** Number of this connection's pending or leased deliveries, not host runs. */
+    pendingCount: number;
+    /** Maximum receiver-accepted message sequence, not a contiguous cursor. */
+    lastAcceptedSeq: number | null;
+    /** Only a fixed safe category, never a receiver body or callback URL. */
+    lastErrorCategory: string | null;
   };
   limits: {
     participants: number;

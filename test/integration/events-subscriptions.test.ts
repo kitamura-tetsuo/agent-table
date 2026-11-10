@@ -322,6 +322,77 @@ describe("production MCP Events registration, OAuth and TableDO", () => {
       expect(eventRows[0].recipient_membership_id).not.toBe(
         beforeSubscription.sender_membership_id,
       );
+      const receiverStatus = toolOutput(
+        await peerClient.callTool({
+          name: "get_table",
+          arguments: { table_id: tableId },
+        }),
+      ).notifications;
+      expect(receiverStatus).toEqual({
+        available: false,
+        reason: "delivery_not_ready",
+        status: "active",
+        pendingCount: 1,
+        lastAcceptedSeq: null,
+        lastErrorCategory: null,
+      });
+      const senderStatus = toolOutput(
+        await ownerClient.callTool({
+          name: "get_table",
+          arguments: { table_id: tableId },
+        }),
+      ).notifications;
+      expect(senderStatus).toMatchObject({
+        status: "disabled",
+        pendingCount: 0,
+        lastAcceptedSeq: null,
+        lastErrorCategory: null,
+      });
+      // Synthetic delivery outcome: status projection must not conflate a
+      // receiver-accepted sequence with the transcript's contiguous read cursor.
+      await runInDurableObject(stub, (_instance, state) =>
+        state.storage.sql.exec(
+          "UPDATE table_event_outbox SET status = 'accepted' WHERE event_id = ?",
+          eventRows[0].event_id,
+        ),
+      );
+      const acceptedStatus = toolOutput(
+        await peerClient.callTool({
+          name: "get_table",
+          arguments: { table_id: tableId },
+        }),
+      ).notifications;
+      expect(acceptedStatus).toMatchObject({
+        pendingCount: 0,
+        lastAcceptedSeq: committed.seq,
+        lastErrorCategory: null,
+      });
+      // A future faulty transport must not leak its callback URL or raw error.
+      await runInDurableObject(stub, (_instance, state) =>
+        state.storage.sql.exec(
+          "UPDATE table_event_outbox SET status = 'pending', last_error_category = ? WHERE event_id = ?",
+          `unexpected receiver exception: ${CALLBACK}`,
+          eventRows[0].event_id,
+        ),
+      );
+      const sanitized = toolOutput(
+        await peerClient.callTool({
+          name: "get_table",
+          arguments: { table_id: tableId },
+        }),
+      ).notifications;
+      expect(sanitized).toMatchObject({
+        pendingCount: 1,
+        lastAcceptedSeq: null,
+        lastErrorCategory: "unknown",
+      });
+      expect(JSON.stringify(sanitized)).not.toContain(CALLBACK);
+      await runInDurableObject(stub, (_instance, state) =>
+        state.storage.sql.exec(
+          "UPDATE table_event_outbox SET last_error_category = NULL WHERE event_id = ?",
+          eventRows[0].event_id,
+        ),
+      );
       // Reconstruction must retain exactly the same immutable event identity.
       await evictDurableObject(stub);
       expect(await rows()).toEqual(eventRows);
@@ -363,6 +434,18 @@ describe("production MCP Events registration, OAuth and TableDO", () => {
       expect(cancelled[0]).toMatchObject({
         status: "cancelled",
         subscription_generation: 2,
+      });
+      const unsubscribedStatus = toolOutput(
+        await peerClient.callTool({
+          name: "get_table",
+          arguments: { table_id: tableId },
+        }),
+      ).notifications;
+      expect(unsubscribedStatus).toMatchObject({
+        status: "disabled",
+        pendingCount: 0,
+        lastAcceptedSeq: null,
+        lastErrorCategory: null,
       });
       await post(
         ownerClient,
@@ -484,6 +567,9 @@ describe("production MCP Events registration, OAuth and TableDO", () => {
         available: false,
         reason: "delivery_not_ready",
         status: "active",
+        pendingCount: 0,
+        lastAcceptedSeq: null,
+        lastErrorCategory: null,
       });
       expect(JSON.stringify(get)).not.toContain(CALLBACK);
       expect(JSON.stringify(get)).not.toContain(SECRET);
