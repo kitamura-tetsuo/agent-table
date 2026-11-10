@@ -1,5 +1,9 @@
 import { DurableObject } from "cloudflare:workers";
 import {
+  requestFingerprint,
+  stagingEvidenceEnabled,
+} from "../evidence/staging";
+import {
   type ConnectionDecision,
   type ConnectionScope,
   isConnectionScope,
@@ -153,6 +157,111 @@ export class GuestDO extends DurableObject<Env> {
 
   schemaVersion(): number {
     return readApplicationSchemaVersion(this.ctx.storage);
+  }
+
+  /**
+   * Internal DO-RPC only: independent read of the exact guest SQLite rows.
+   * No guest ID, connection ID, table ID, or request ID leaves this method.
+   */
+  async readStagingEvidence(
+    guestId: string,
+    tableId?: string,
+    connectionId?: string,
+  ) {
+    if (
+      !stagingEvidenceEnabled(this.env) ||
+      this.ctx.id.toString() !== this.env.GUESTS.idFromName(guestId).toString()
+    ) {
+      throw new Error("Staging evidence is disabled");
+    }
+    const identityMatches = this.guestId() === guestId;
+    const connection = connectionId
+      ? this.connectionRow(connectionId)
+      : undefined;
+    const ownedConnection =
+      identityMatches && connection?.guest_id === guestId
+        ? connection
+        : undefined;
+    const creation = tableId
+      ? this.ctx.storage.sql
+          .exec<CreationRow>(
+            `SELECT request_id, guest_id, request_digest, table_id, created_at,
+                  expires_at, retention_until, charged_at, outcome
+           FROM guest_creation_reservations WHERE table_id = ?`,
+            tableId,
+          )
+          .toArray()[0]
+      : undefined;
+    const ownedCreation =
+      identityMatches && creation?.guest_id === guestId ? creation : undefined;
+    const now = Date.now();
+    // Bound the read to eight newest grants; never export their raw IDs.
+    const recentRows = identityMatches
+      ? this.ctx.storage.sql
+          .exec<ConnectionRow>(
+            `SELECT connection_id, guest_id, scopes_json, created_at,
+                    expires_at, revoked_at
+             FROM guest_connections WHERE guest_id = ?
+             ORDER BY created_at DESC LIMIT 8`,
+            guestId,
+          )
+          .toArray()
+      : [];
+    const recentConnections = await Promise.all(
+      recentRows.map(async (row) => {
+        let scopes: ConnectionScope[] = [];
+        try {
+          const parsed: unknown = JSON.parse(row.scopes_json);
+          if (Array.isArray(parsed))
+            scopes = parsed.filter(isConnectionScope).sort();
+        } catch {
+          // Invalid legacy scope JSON must not leak or disrupt other rows.
+        }
+        return {
+          connectionFingerprint: await requestFingerprint(row.connection_id),
+          state:
+            row.revoked_at !== null
+              ? "revoked"
+              : row.expires_at <= now
+                ? "expired"
+                : "active",
+          scopes,
+          createdAt: row.created_at,
+          expiresAt: row.expires_at,
+          revokedAt: row.revoked_at,
+        };
+      }),
+    );
+    return {
+      identityMatches,
+      recentConnections,
+      connection: connectionId
+        ? {
+            exists: Boolean(ownedConnection),
+            state: !ownedConnection
+              ? "missing"
+              : ownedConnection.revoked_at !== null
+                ? "revoked"
+                : ownedConnection.expires_at <= now
+                  ? "expired"
+                  : "active",
+            createdAt: ownedConnection?.created_at ?? null,
+            expiresAt: ownedConnection?.expires_at ?? null,
+            revokedAt: ownedConnection?.revoked_at ?? null,
+          }
+        : null,
+      creationReservation: tableId
+        ? {
+            exists: Boolean(ownedCreation),
+            outcome: ownedCreation?.outcome ?? null,
+            createdAt: ownedCreation?.created_at ?? null,
+            expiresAt: ownedCreation?.expires_at ?? null,
+            requestFingerprint: ownedCreation
+              ? await requestFingerprint(ownedCreation.request_id)
+              : null,
+          }
+        : null,
+    };
   }
 
   private guestId(): string | null {
