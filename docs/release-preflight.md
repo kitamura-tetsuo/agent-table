@@ -1,6 +1,6 @@
 # Release configuration preflight (partial Issue #22)
 
-This is a fail-closed **offline structural preflight**, not a deployment workflow, an independent proof of evidence, or permission to expose private state. All production promotion, restore quarantine and rollback authority remains **unimplemented**. Until the complete Issue #22 runtime and deployment gates are proven, an operator must **not** use this script's output to deploy publicly or enable Events/autonomous functionality.
+This is a fail-closed **offline structural preflight**, not a deployment workflow, an independent proof of evidence, or permission to expose private state. Production promotion and reconciliation-based restore-quarantine **clearance** remain **unimplemented**; offline restore-candidate preparation is available but is not release authority. Until the complete Issue #22 runtime and deployment gates are proven, an operator must **not** use this script's output to deploy publicly or enable Events/autonomous functionality.
 
 ## Boundaries
 
@@ -30,6 +30,20 @@ node scripts/release-preflight.mjs \
 ```
 
 `PREFLIGHT_MANIFEST_VALID` reports only structural consistency with `deploymentApproved: false`. `PREFLIGHT_BLOCKED` exits nonzero and intentionally prints no input content. This tool never runs `wrangler deploy`, mutates Cloudflare resources, or handles secrets.
+
+## Prepare a fail-closed restore candidate (offline; not a clearance)
+
+Before a restored snapshot is attached to an accessible Worker, an operator may generate a **new** configuration with quarantine and every public/ingress/outbound capability switch forced off. This transformation does not consult potentially stale restored session/grant data, does not approve deployment, and has no operation to clear quarantine:
+
+```sh
+node scripts/release-preflight.mjs --prepare-restore \
+  --config /secure/operator/wrangler.staging.jsonc \
+  --output /secure/operator/wrangler.staging.restore-quarantined.json
+```
+
+The command validates the target's HTTPS origin, Worker entry/environment marker, DO bindings and immutable SQLite class-migration history, then writes the derived JSON exclusively (it refuses to overwrite any existing destination), with owner-only permissions on Unix. It prints **only** `RESTORE_QUARANTINED <config SHA-256>`, not the configuration or any secret. The output contains `RESTORE_QUARANTINE: "true"` and five disabled capability/intake switches regardless of stale snapshot values; it preserves the existing DO/KV namespace identifiers rather than renaming or deleting data. Review the generated file and validate it with new build/config-bound evidence before any separately authorized deployment.
+
+**Independent reconciliation remains unavailable.** The command does not know later revocations, deletions, expiries, Cloudflare namespace ownership, secret validity or the real deployed configuration. The structural preflight still reports `deploymentApproved:false`, and no script provided here can convert a restored Worker to non-quarantined serving mode. A snapshot's old successful tests, grants, session rows, or `RESTORE_QUARANTINE:false` cannot be accepted as clearance. This is a reproducible synthetic configuration transition, not Cloudflare restore/restart evidence or authenticated provenance. An operator must retain quarantine when independent post-snapshot authority is unavailable.
 
 ## Remaining Issue #22 release blockers
 
