@@ -3,6 +3,7 @@ import notificationsMarkdown from "../../docs/notifications.md?raw";
 import referencesMarkdown from "../../docs/references.md?raw";
 import denied from "../e2e/host/evidence.chatgpt-work-2026-11-10-deny.json";
 import revoked from "../e2e/host/evidence.chatgpt-work-2026-11-10-revocation.json";
+import sameGrant from "../e2e/host/evidence.chatgpt-work-2026-11-10-same-grant.json";
 
 const summaries = [referencesMarkdown, notificationsMarkdown].map((markdown) =>
   markdown.replaceAll("**", "").replace(/\s+/g, " "),
@@ -29,6 +30,18 @@ describe("published host compatibility summaries", () => {
     }
   });
 
+  it("documents same-grant host refusal but retains exact-build and trace blockers", () => {
+    expect(sameGrant.cases.rejectedAfterRevocation.status).toBe("passed");
+    expect(sameGrant.host.exposedBuild).toBe("not-exposed-in-tested-host");
+    for (const summary of summaries) {
+      expect(summary).toContain("same-guest, same-approved-grant");
+      expect(summary).toContain("all nine");
+      expect(summary).toContain("oauth_token_invalid_grant");
+      expect(summary).toContain("exact host SaaS build");
+      expect(summary).toContain("per-request");
+    }
+  });
+
   it("keeps the candidate matrix unverified for autonomous/notification layers", () => {
     const candidate = notificationsMarkdown
       .split("\n")
@@ -36,7 +49,8 @@ describe("published host compatibility summaries", () => {
     expect(candidate).toBeDefined();
     expect(candidate).toContain("Deny passed");
     expect(candidate).toContain("synthetic-only `/mcp` 401");
-    expect(candidate).toContain("latest grant independently confirmed revoked");
+    expect(candidate).toContain("same-grant nine-case metadata record");
+    expect(candidate).toContain("independently confirmed revoked grant");
     expect(candidate).toContain("#23 partial");
     expect(candidate).toContain("**untested**");
   });

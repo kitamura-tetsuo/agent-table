@@ -1,20 +1,63 @@
 # Guest OAuth interoperability — actual host evidence gate
 
-Status: **PARTIAL REAL-HOST EVIDENCE — ACCEPTANCE OPEN** as of 2026-11-10.
-An owner-authorized ChatGPT Work private MCP app (`Agent Table Test2`) was
-connected to an isolated staging Worker. Real host-origin create/read operations,
-a `refresh_token` exchange and a broker-level refusal after browser revocation
-have been observed. Separately, a standalone OAuth client confirmed that a
-revoked access token receives `/mcp` HTTP 401; **that 401 was not host-origin**.
-This is **not** a completed nine-case host acceptance result: a separate
-owner-origin Deny has matching Cloudflare HTTP observations and a same-guest,
-DO-backed connection-list readback with no new grant. Independent persisted
-create/read, newest-grant revocation and archived executable-script/Git-source
-comparisons have since been obtained. A coherent host-to-Worker per-request
-trace and exact host SaaS build identity remain outstanding. See
-Issue [#23](https://github.com/kitamura-tetsuo/agent-table/issues/23) and
-[PR #41](https://github.com/kitamura-tetsuo/agent-table/pull/41).
-The local MCP SDK/OAuth regression tests cannot replace real-host evidence.
+Status: **NINE METADATA-REFERENCED CASES OBSERVED ON ONE GUEST/GRANT SEQUENCE; STRICT ACCEPTANCE OPEN** as of 2026-11-10.
+The owner-authorized ChatGPT Work private MCP app (`Agent Table Test2`) completed
+an owner Deny → same-guest Allow → synthetic create/read → real host refresh →
+post-refresh read → same-grant browser revoke → broker-level host refusal sequence
+against an isolated staging Worker. An independent GuestDO/TableDO SQLite
+readback corroborated grant and table state, with sampled Cloudflare HTTP
+status receipts. The revoked table remained live during the final refusal.
+The source Git SHA was independently compared to the archived executable
+Worker `index.js`; deployment versions and runtime bindings differed across
+inspection steps, and this is not signed end-to-end provenance.
+
+The nine-case redacted metadata record is **structurally valid but NOT
+complete under the fail-closed acceptance gate**: this ChatGPT SaaS build was
+not exposed and no shared per-request host-to-Worker trace ID was available.
+Browser Deny was evidenced by owner UI + absence of a same-guest grant, not
+a raw `access_denied` callback. After browser revocation the actual host's
+broker refused the next protected `get_table` with
+`oauth_token_invalid_grant`; **no host-origin `/mcp` HTTP 401 is claimed**.
+A standalone synthetic client separately observed an `/mcp` 401.
+Host-side Disconnect, notifications and autonomous idle processing were not
+tested. The latest staging audit/diagnostic secret was removed, both modes
+restored to `off`, and unauthenticated diagnostic response verified 404.
+Do not merge [PR #41](https://github.com/kitamura-tetsuo/agent-table/pull/41)
+or close [Issue #23](https://github.com/kitamura-tetsuo/agent-table/issues/23)
+without an explicit review of these remaining evidence gaps.
+
+## Latest single-guest, same-new-grant sequence — 2026-11-10 08:15–09:19 UTC
+
+The redacted record
+[`evidence.chatgpt-work-2026-11-10-same-grant.json`](../../test/e2e/host/evidence.chatgpt-work-2026-11-10-same-grant.json)
+references **all nine** named host/browser cases in sequence for the same
+synthetic guest and the grant approved at **08:23:39.606 UTC**. Unlike the
+earlier snapshots below, create/read, host refresh, browser revocation and
+protected-tool refusal all concern that **same grant**. Deny occurred before
+that grant existed. `passed` refers to each redacted paired observation,
+**not** to a completed overall interoperability certification.
+
+| Window UTC | Real-host/browser observation | Independent or bounded Worker-side corroboration |
+| --- | --- | --- |
+| 08:15–08:23 | Owner selected Deny, reused the same guest, then explicitly selected Allow | Edge `/authorize` 200/302 sequences; owner list and independent GuestDO SQLite showed **no Deny-era grant** and exactly one new four-scope Active grant after Allow ([Deny](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6762531457), [Allow/SQL](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6762767961)) |
+| 08:25 | Actual ChatGPT Work MCP `create_table` and `get_table` returned matching synthetic waiting table/Seat 1 metadata | Independent initialized GuestDO reservation and live TableDO row matched creator, request fingerprint, timestamps and seat; sampled `/mcp` 200 ([cross-DO receipt](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6762767961)) |
+| 08:39–08:40 | Same authorized host connection read successfully when refresh was needed, and again afterward | Staging metadata audit identified `refresh_token` HTTP 200, guest+grant fingerprint and unchanged four-scope set; sampled `/oauth/token` 200 and `/mcp` 200; SQLite still Active ([refresh receipt](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6762934030)) |
+| 09:14–09:18 | Owner revoked that grant in the same-guest browser. The next actual-host protected `get_table` was refused with `UNAUTHORIZED` / `oauth_token_invalid_grant` and no table data | GuestDO SQLite matched the **same** grant fingerprint and persisted `revokedAt=09:14:59.588`; edge revoke 303 at 09:14:59 and `/oauth/token` 400 at 09:15:45; TableDO still retained the live waiting table ([revoke/refusal receipt](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6763655747)) |
+| 09:19 | Test instrumentation removed | Temporary SQL diagnostic and audit disabled; temporary secret removed; only three preexisting secret names; unauthenticated diagnostic 404; 100%-serving staging version `e3951afe-8f3c-4d53-9264-80e86d52882e`. No production deployment ([teardown receipt](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6763655747)) |
+
+Cloudflare's immutable archived executable `index.js` SHA-256
+`f674eabff6883c99a5d3cc910d3832e7e471820b968e847e0711cefa8fac97f8`
+matched the staging bundle reconstructed from source
+`a560900dc9ebbbd108bb5c49e312512e1e626553`; inspected deployment
+versions had different runtime bindings. There is **no signed chain of
+provenance**, no shared host/broker/Worker request trace, and the **exact
+ChatGPT Work SaaS build remains undisclosed**. A failed broker token exchange
+is evidence of host protected-operation denial; it is **not** a host `/mcp`
+401. The browser Deny lacked a captured raw `access_denied` callback.
+Host Disconnect remains `not-run`, and notifications/autonomous execution
+remain unverified. The evidence gate therefore returns
+`completeRecord=false` until external evidence or explicit acceptance
+criteria review resolves the missing host build and trace provenance.
 
 ## Scope and inputs
 

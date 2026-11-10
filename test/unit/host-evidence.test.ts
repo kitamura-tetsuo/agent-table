@@ -5,6 +5,7 @@ import deniedHostRecord from "../e2e/host/evidence.chatgpt-work-2026-11-10-deny.
 import pinnedHostRecord from "../e2e/host/evidence.chatgpt-work-2026-11-10-pinned.json";
 import refreshedHostRecord from "../e2e/host/evidence.chatgpt-work-2026-11-10-refresh.json";
 import revokedHostRecord from "../e2e/host/evidence.chatgpt-work-2026-11-10-revocation.json";
+import sameGrantHostRecord from "../e2e/host/evidence.chatgpt-work-2026-11-10-same-grant.json";
 import sqlRevokedHostRecord from "../e2e/host/evidence.chatgpt-work-2026-11-10-sql-revocation.json";
 import template from "../e2e/host/evidence.template.json";
 
@@ -125,6 +126,26 @@ describe("actual host interoperability evidence gate", () => {
     expect(result.missing).toContain(
       "actual client and server evidence for refreshedToken",
     );
+  });
+
+  it("records one guest/grant across nine real-host cases without waiving missing SaaS build", () => {
+    const result = evaluateHostEvidence(sameGrantHostRecord);
+    expect(result.structurallyValid).toBe(true);
+    expect(result.completeRecord).toBe(false);
+    expect(result.missing).toEqual(["exact host product/build identity"]);
+    expect(sameGrantHostRecord.deployment.buildSha).toBe(
+      "a560900dc9ebbbd108bb5c49e312512e1e626553",
+    );
+    expect(sameGrantHostRecord.disconnect).toBe("not-run");
+    for (const name of HOST_CASES) {
+      const observation = sameGrantHostRecord.cases[name];
+      expect(observation.status).toBe("passed");
+      expect(observation.clientObservationRef).not.toBeNull();
+      expect(observation.serverObservationRef).not.toBeNull();
+    }
+    expect(
+      sameGrantHostRecord.cases.rejectedAfterRevocation.serverObservationRef,
+    ).toBe("pr41_6763655747_oauth_token400");
   });
 
   it("cannot certify SDK-only observations or one missing denial", () => {
