@@ -776,3 +776,23 @@ construction. A supported external receiver/barrier harness remains needed for
 a full in-flight HTTP race and the remaining REQ-010 matrix. The public Events
 transport gate remains fail-closed and the tests do not establish #19 DNS/IP/TLS
 connection-time policy or actual autonomous host execution.
+
+### 2026-11-11: native alarm after committed authority termination
+
+An additional authenticated producer regression exercises two distinct
+post-commit boundaries: the intended callback recipient's **real GuestDO
+connection revocation** and an owner's **real MCP close_table** mutation.
+Each case first commits an eligible peer message through MCP, confirms the
+original pending durable outbox identity, advances only its scheduling due
+time and then makes the terminal decision through the public application
+entry point. The actual TableDO alarm is driven with private readiness
+overridden only inside the Workerd test; a controlled fetch observer asserts
+zero application requests after the termination, cancellation with zero
+charged attempts, and unchanged terminal state after Durable Object eviction.
+
+This tests the no-new-send rule for terminal authority *before* an attempt
+starts. It does not prove that an already-dispatched external request can be
+recalled; concurrent held-HTTP revocation/closure, credential rotation,
+receiver-controlled barriers and hosted network evidence remain outside this
+regression. The production Events gate stays fail-closed pending #19's
+independent transport security evidence.

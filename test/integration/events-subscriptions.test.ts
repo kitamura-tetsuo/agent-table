@@ -1737,6 +1737,143 @@ describe("authenticated event producer through native alarm and HTTPS sender (co
     }
   });
 
+  it("fences native alarm delivery after real grant revocation or table closure", async () => {
+    for (const intervention of ["revoke", "close"] as const) {
+      const owner = await newPrincipal();
+      const peer = await newPrincipal();
+      const ownerClient = await clientFor(owner.token);
+      const peerClient = await clientFor(peer.token);
+      const challengeReceiver = echoReceiver();
+      try {
+        const tableId = await createTable(ownerClient);
+        const invite = toolOutput(
+          await ownerClient.callTool({
+            name: "create_invite",
+            arguments: { table_id: tableId, request_id: crypto.randomUUID() },
+          }),
+        );
+        expect(
+          (
+            await peerClient.callTool({
+              name: "join_table",
+              arguments: {
+                invitation: invite.invitation,
+                request_id: crypto.randomUUID(),
+              },
+            })
+          ).isError,
+        ).not.toBe(true);
+        await callEvent(
+          peerClient,
+          "events/subscribe",
+          subscriptionParams(tableId),
+        );
+        expect(challengeReceiver).toHaveBeenCalledTimes(1);
+        const post = toolOutput(
+          await ownerClient.callTool({
+            name: "post_message",
+            arguments: {
+              table_id: tableId,
+              request_id: crypto.randomUUID(),
+              body: "SYNTHETIC TERMINAL AUTHORITY TEST",
+            },
+          }),
+        );
+        const stub = env.TABLES.get(env.TABLES.idFromName(tableId));
+        type Row = {
+          event_id: string;
+          message_id: string;
+          attempt_count: number;
+          status: string;
+          lease_token: string | null;
+          next_attempt_at: number | null;
+        };
+        const rows = () =>
+          runInDurableObject(stub, (_instance, state) =>
+            state.storage.sql
+              .exec<Row>("SELECT * FROM table_event_outbox")
+              .toArray(),
+          );
+        const initial = (await rows())[0];
+        expect(initial).toMatchObject({
+          message_id: post.message_id,
+          status: "pending",
+          attempt_count: 0,
+        });
+        await runInDurableObject(stub, (_instance, state) =>
+          state.storage.sql.exec(
+            "UPDATE table_event_outbox SET next_attempt_at = ? WHERE event_id = ?",
+            Date.now() - 1,
+            initial.event_id,
+          ),
+        );
+
+        // Exercise the actual authority mutation, not a fabricated SQL verdict.
+        if (intervention === "revoke") {
+          const parts = peer.cookie.split("=")[1]?.split(".") ?? [];
+          expect(
+            (
+              await peer.guest.revokeConnection(
+                parts[2] ?? "",
+                parts[3] ?? "",
+                peer.connectionId,
+              )
+            ).status,
+          ).toBe("revoked");
+        } else {
+          const close = await ownerClient.callTool({
+            name: "close_table",
+            arguments: { table_id: tableId, request_id: crypto.randomUUID() },
+          });
+          expect(close.isError).not.toBe(true);
+        }
+
+        // No application callback may start after the terminal decision.
+        challengeReceiver.mockRestore();
+        const applications: string[] = [];
+        vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+          applications.push(String(url));
+          return new Response(null, { status: 204 });
+        });
+        const alarm = () =>
+          runInDurableObject(stub, async (instance) => {
+            const harness = instance as unknown as {
+              env: Env;
+              outboxDispatchEnabled(): boolean;
+            };
+            harness.env = {
+              ...harness.env,
+              EVENTS_REVIEWED_CALLBACK_TARGETS: REVIEWED,
+            };
+            harness.outboxDispatchEnabled = () => true;
+            await instance.alarm();
+          });
+        await alarm();
+        expect(applications).toHaveLength(0);
+        expect((await rows())[0]).toMatchObject({
+          event_id: initial.event_id,
+          message_id: post.message_id,
+          status: "cancelled",
+          attempt_count: 0,
+          lease_token: null,
+          next_attempt_at: null,
+        });
+        await evictDurableObject(stub);
+        await alarm();
+        expect(applications).toHaveLength(0);
+        expect((await rows())[0]).toMatchObject({
+          event_id: initial.event_id,
+          status: "cancelled",
+          attempt_count: 0,
+        });
+      } finally {
+        await peerClient.close();
+        await ownerClient.close();
+        vi.restoreAllMocks();
+      }
+    }
+  });
+
   it("charges eight real alarm transports across eviction and never starts a ninth", async () => {
     const owner = await newPrincipal();
     const peer = await newPrincipal();
