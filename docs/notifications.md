@@ -837,3 +837,26 @@ acceleration, and test-local callback readiness are substituted. No external
 hosted HTTPS endpoint, real Cloudflare restart, simultaneous in-flight lifecycle
 race, or DNS/TLS/IP boundary was measured. #21/REQ-010 is therefore still
 partial and the public Events readiness gate remains disabled.
+
+### 2026-11-11: authenticated outbound pause, retry horizon and table expiry
+
+A native TableDO-alarm regression starts with real OAuth/MCP guest creation,
+join, verified Events registration and a committed peer message. With the
+operator outbound predicate false, two alarm executions separated by Durable
+Object eviction issue **zero** callback requests and leave the original
+pending row, uncharged retry count and null first-attempt time unchanged.
+After the predicate resumes, the actual native HTTPS request is captured
+by a controlled in-process receiver, whose 503 response charges one attempt.
+The regression backdates only the original attempt timestamp past the one-hour
+retry horizon and verifies that a reconstructed alarm marks the same event
+retry-exhausted without another request or resetting its charged count.
+A subsequent authenticated post is then subjected to an expired stored table
+deadline; alarm cleanup purges the outbox, retains an expired tombstone and
+starts no new callback.
+
+This covers serial operator-pause/restart, retry-budget expiry and table
+expiry boundaries, not held in-flight HTTP races, real external receiver
+reachability or proof of platform DNS/IP/TLS behavior. Only the private
+public-readiness gate is bypassed within the controlled test; the actual
+operator outbound-control predicate remains active. Public Events remain
+disabled, and #21/REQ-010 has unfinished concurrent lifecycle coverage.
