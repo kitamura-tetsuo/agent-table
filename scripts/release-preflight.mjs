@@ -16,6 +16,24 @@ const EXPECTED_SQLITE_MIGRATIONS = [
   { tag: "v3", new_sqlite_classes: ["AdmissionDO"] },
 ];
 
+// Wrangler can replace root-level bindings when --env is selected, and custom
+// build/unsafe configuration can change the deployed entry or its bindings.
+// The offline checker only evaluates this one explicit Worker configuration;
+// refuse unexamined alternatives rather than validating a different runtime.
+function validateUnambiguousWorkerConfig(config) {
+  requireCondition(
+    config && typeof config === "object" && !Array.isArray(config),
+    "invalid-worker-config",
+  );
+  for (const [key, code] of [
+    ["env", "unsupported-wrangler-environments"],
+    ["build", "unsupported-wrangler-build"],
+    ["unsafe", "unsupported-wrangler-unsafe"],
+  ]) {
+    requireCondition(!Object.hasOwn(config, key), code);
+  }
+}
+
 function validateSqliteMigrationHistory(config) {
   const actual = config?.migrations;
   requireCondition(
@@ -218,6 +236,7 @@ function verifyEvidence(
 }
 
 function validatePeerIsolation(config, peer, environment) {
+  validateUnambiguousWorkerConfig(peer);
   const vars = config.vars;
   requireCondition(
     peer?.vars?.RELEASE_ENVIRONMENT ===
@@ -300,6 +319,7 @@ export function validateRelease({
   } catch {
     throw new PreflightError("invalid-config-json");
   }
+  validateUnambiguousWorkerConfig(config);
   const vars = config?.vars ?? {};
   requireCondition(
     vars.RELEASE_ENVIRONMENT === environment,
@@ -373,6 +393,7 @@ export function prepareQuarantinedRestoreConfig(configText, peerText) {
   } catch {
     throw new PreflightError("invalid-config-json");
   }
+  validateUnambiguousWorkerConfig(source);
   const environment = source?.vars?.RELEASE_ENVIRONMENT;
   requireCondition(
     environment === "staging" || environment === "production",

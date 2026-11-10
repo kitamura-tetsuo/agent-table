@@ -248,6 +248,57 @@ test("the peer must also have a complete fail-closed deployment profile", () => 
   assert.equal(validateRelease(args).deploymentApproved, false);
 });
 
+test("rejects unexamined Wrangler environments, build hooks and unsafe bindings in both release configurations", () => {
+  const args = fixture();
+  const unreviewed = [
+    [
+      "env",
+      {
+        production: {
+          vars: { RESTORE_QUARANTINE: "false", ENABLE_OPENAI_EVENTS: "true" },
+        },
+      },
+      "unsupported-wrangler-environments",
+    ],
+    ["build", { command: "node override.js" }, "unsupported-wrangler-build"],
+    [
+      "unsafe",
+      {
+        bindings: [
+          {
+            name: "TABLES",
+            type: "durable_object_namespace",
+            class_name: "OtherDO",
+          },
+        ],
+      },
+      "unsupported-wrangler-unsafe",
+    ],
+  ];
+  for (const [key, value, code] of unreviewed) {
+    const target = JSON.parse(args.configText);
+    target[key] = value;
+    blocked({ ...args, configText: JSON.stringify(target) }, code);
+    const peer = JSON.parse(args.peerText);
+    peer[key] = value;
+    blocked({ ...args, peerText: JSON.stringify(peer) }, code);
+    blockedRestore(target, code);
+    blockedRestore(JSON.parse(args.configText), code, peer);
+  }
+  assert.equal(validateRelease(args).deploymentApproved, false);
+});
+
+test("rejects even an empty named environment that may later override quarantine", () => {
+  const args = fixture();
+  const target = JSON.parse(args.configText);
+  target.env = {};
+  blocked(
+    { ...args, configText: JSON.stringify(target) },
+    "unsupported-wrangler-environments",
+  );
+  blockedRestore(target, "unsupported-wrangler-environments");
+});
+
 test("requires an explicit independent restore-quarantine binding for a release", () => {
   const args = fixture();
   const config = JSON.parse(args.configText);
@@ -506,6 +557,46 @@ test("restore CLI refuses missing or mixed counterpart before writing anything",
       { encoding: "utf8" },
     );
     assert.notEqual(absent.status, 0);
+    assert.equal(existsSync(outputPath), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("restore CLI refuses an environment override before creating any output", () => {
+  const dir = mkdtempSync(join(tmpdir(), "agent-table-restore-env-"));
+  try {
+    const configPath = join(dir, "staging.json");
+    const peerPath = join(dir, "production.json");
+    const outputPath = join(dir, "restore.json");
+    const staging = makeConfig("staging");
+    staging.env = {
+      production: {
+        vars: { RESTORE_QUARANTINE: "false", ENABLE_OPENAI_EVENTS: "true" },
+      },
+    };
+    writeFileSync(configPath, JSON.stringify(staging));
+    writeFileSync(peerPath, JSON.stringify(makeConfig("production")));
+    const child = spawnSync(
+      process.execPath,
+      [
+        "scripts/release-preflight.mjs",
+        "--prepare-restore",
+        "--config",
+        configPath,
+        "--peer-config",
+        peerPath,
+        "--output",
+        outputPath,
+      ],
+      { encoding: "utf8" },
+    );
+    assert.notEqual(child.status, 0);
+    assert.equal(child.stdout, "");
+    assert.match(
+      child.stderr,
+      /^PREFLIGHT_BLOCKED unsupported-wrangler-environments\n$/,
+    );
     assert.equal(existsSync(outputPath), false);
   } finally {
     rmSync(dir, { recursive: true, force: true });
