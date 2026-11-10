@@ -249,8 +249,13 @@ Verification: `npm run probe:subscriptions:sdk` tests the official SDK wire;
 distinct native Workerd Worker entries sharing the same SQLite TableDO and
 OAuth/guest authority. The latter covers committed peer hints, filtering,
 reconnect, replacement, bounded slow consumption and terminal/revoked grants.
-All three are included in CI. They are local runs, **not hosted Cloudflare
-multi-edge, external host interoperability, long-lived billing or production
-acceptance evidence**. Cloudflare staging stream CPU/duration/request/cost
-measurement: **NOT RUN**. See the
-[current Issue #18 verification and release gates](notifications.md#current-issue-18-public-mcp-live-inbox-status-2026-11-10-jst).
+All three are included in CI. They are local runs, so they do not
+independently prove any Cloudflare deployment or a named AI host's action.
+**Later authorized 2026-11-10 isolated Preview evidence supersedes the
+historical NOT RUN Cloudflare measurement status:** exact-head official SDK
+OAuth/stream checks passed twice, the five-post/four-hint output bound and
+60-second idle termination were observed, and separate Preview/DO namespace
+GraphQL analytics yielded request, CPU, active-time and GB-second totals.
+The synthetic guest fixture was subsequently removed, with no production
+or existing staging change. This is not a bill or real agent inference.
+See the [current Issue #18 verification and measured limitations](notifications.md#current-issue-18-public-mcp-live-inbox-status-2026-11-10-jst).

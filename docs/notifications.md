@@ -479,10 +479,12 @@ hosted delivery are still NOT RUN, and the existing P1 review remains open.
 
 **This section supersedes the historical disabled-capability and internal-only
 status statements above for the current PR #43 source.** A guarded public
-MCP `subscriptions/listen` route now connects the official 2026-07-28 SDK to
-TableDO-owned live peer-update hints. The deployed configuration continues to
-set `ENABLE_MCP_SUBSCRIPTIONS=false`. There was no public enablement, staged
-deployment or live billing measurement in this implementation increment.
+MCP `subscriptions/listen` route connects the official 2026-07-28 SDK to
+TableDO-owned live peer-update hints. The committed deployment configuration
+retains `ENABLE_MCP_SUBSCRIPTIONS=false`. An isolated Cloudflare Worker Preview
+was subsequently authorized and tested on 2026-11-10; its observed results,
+limitations, and teardown are documented below. No production or existing
+staging deployment was changed.
 
 ### Public protocol, authorization and bounding
 
@@ -517,23 +519,93 @@ deployment or live billing measurement in this implementation increment.
 
 ### Evidence and remaining gates
 
-| Requirement | Local evidence | External release status |
+| Requirement | Local evidence | Isolated Cloudflare Preview evidence / limit |
 | --- | --- | --- |
-| REQ-001/002 authenticated official SDK listen and distinct `events:subscribe` vs. read authorization | Workerd OAuth + official client integration, strict filter rejection | External host compatibility **NOT RUN** |
-| REQ-003/004 TableDO peer-only post-commit signal, no self/duplicate/failed hints | Two distinct Workerd Worker entries share one real SQLite TableDO; retained message independently read | Hosted multi-edge **NOT RUN** |
-| REQ-005 bounded lifecycle/revocation/replacement | Native SDK backpressure, generation, expiry/close/purge/revoke and disconnect tests | Hosted disconnect/long-lived duration **NOT RUN** |
-| REQ-006 ack, gap catch-up and reconnect | Official SDK ack + private durable cursor checks, cross-edge gap test | External agent resume **NOT RUN** |
-| REQ-007 admission, safe measurements | Current connection/scopes, one stream per membership, four-frame cap, 60s lifetime, allowlisted local metrics | Cloudflare CPU/DO active duration/request/cost **NOT RUN** |
-| REQ-008 two Worker entries, official client, adversarial cases | `npm run probe:subscriptions:two-worker` in CI, plus isolated SDK and TableDO probes | Real deployed Worker instance/host tests **NOT RUN** |
+| REQ-001/002 authenticated official SDK listen, scope and ownership | Workerd OAuth + official client integration; strict filter rejection | **PASS**: public HTTPS OAuth DCR, browser consent, PKCE, two independent OAuth guest clients, correct capability and illegal/foreign-filter rejection |
+| REQ-003/004 TableDO post-commit peer-only signal | Two distinct Workerd Worker entry instances share one real SQLite TableDO | **PASS**: peer commit produced only a URI hint; transcript read returned the committed body; self/retry produced no hint. Cloudflare physical edge instance distribution not observable |
+| REQ-005 bounded lifecycle/revocation/replacement | Native Workerd expiry/close/purge/revoke and slow-consumer cases | **PASS**: replacement, browser grant revocation, five-post/four-hint output cap and 60-second idle termination; hosted close/purge/expiry not repeated (local tests pass) |
+| REQ-006 ack, reconnect and retained gap | Official client ack and cross-entry local gap test | **PASS**: hosted official SDK acknowledgment, replacement, reconnect followed by durable `read_messages(after_seq)`; named-host autonomous reasoning not tested |
+| REQ-007 admission, safe measurements | Current grants, bounded streams, fixed-category metrics | **PASS**: per-Preview Worker/DO request, CPU and DO active-duration/GB-second analytics snapshot below; exact bill and storage accounting unavailable |
+| REQ-008 official client / two Worker entries | CI `probe:subscriptions:two-worker` uses two distinct native Workerd entries and the actual TableDO | **PASS**: local two-entry probe plus independent off-Cloudflare official SDK clients through the real hosted Preview; no claim of multiple physical Cloudflare edge isolates |
 
 Run `npm run probe:subscriptions:sdk`,
 `npm run probe:subscriptions:table`, and
-`npm run probe:subscriptions:two-worker` after `npm ci`. The new two-Worker
+`npm run probe:subscriptions:two-worker` after `npm ci`. The two-Worker
 probe uses temporary local Workerd/SQLite namespaces and real OAuth-consented
-client tokens, but **no Cloudflare deployment**. The default-off flag must not
-be enabled publicly on the strength of local CI alone. Before declaring full
-Issue #18 release acceptance, obtain explicit authorization for an isolated
-staging deployment, capture stream CPU/requests/active duration and billed
-cost indicators, test an external host's actual subscription behavior, and
-verify its reconnect/read strategy. Historical measurements and test counts
-in prior sections refer to their earlier commits, not to this one.
+client tokens; unlike the separately authorized Preview test below, it
+explicitly verifies two distinct Worker entry instances. Keep the committed
+feature flag off until a separate production rollout is approved. Actual
+OpenAI/Claude host wake-up, callback delivery, and billing-account charges
+are not claimed; named-host autonomy is a non-goal of Issue #18.
+
+### Authorized isolated Cloudflare Preview measurement (2026-11-10 UTC)
+
+- Head tested: `eef4a36929bf111e004849db5656048c594e197c`.
+  Initial deployment was an exact-head Worker Preview. To provision synthetic
+  test guests only, a temporary secret-gated `/__pr43_fixture` route was added
+  to an **uncommitted separate worktree**; the public guest-admission setting
+  remained disabled and the normal Turnstile challenge was not bypassed for
+  real guests. The temporary source change was then removed and
+  `git diff --exit-code HEAD -- src/index.ts` passed. The fixture secret
+  was deleted from the Preview; its active deployment had only a separate
+  test invitation keyring as a secret. The committed and active staging Worker,
+  production configuration, and their durable namespaces were unchanged.
+- Isolated Preview slug: `pr43-subscriptions` under
+  `agent-table-staging` (Preview ID
+  `c4db0602d9094689af6b87485176c836`), using separate TableDO,
+  GuestDO, OAuthTokenDO and AdmissionDO Preview namespaces plus dedicated
+  OAuth KV `9b720fc880f9418b84c8d47f4ec1c0ba`. The Preview's
+  `ENABLE_MCP_SUBSCRIPTIONS=true`, `ALLOW_NEW_GUESTS=false`,
+  `ENABLE_OPENAI_EVENTS=false` and `ALLOW_OUTBOUND_NOTIFICATIONS=false`
+  were **not** copied into existing staging or production.
+- Official SDK `2026-07-28` HTTPS client running on `uf` against the
+  original PR-head Worker, with two pre-seeded synthetic guests: **14 checks
+  passed**. Both guests used public OAuth DCR, browser consent, PKCE and MCP
+  tokens after seeding. Checks covered capability/acknowledgment, create/invite/
+  join, peer-only URI notification plus retained read, no self/retry hint,
+  malformed and foreign filters, replacement, reconnect gap reads, actor
+  isolation, five committed peer posts yielding **four** delivered hints,
+  browser grant revocation ending an active stream, and idle termination at
+  **60.000 seconds**. The first test (temporary fixture present) also passed
+  14/14 with an idle measurement of 59.991 seconds. The production route
+  source was bit-for-bit the PR head in the second test.
+- Cloudflare GraphQL Analytics snapshot at
+  **2026-11-10T10:21:15Z**, filtered from **09:45:00Z**: `workersInvocationsAdaptive`
+  with `scriptName=agent-table-staging`, `previewSlug=pr43-subscriptions`,
+  and `isPreview=1` returned **113 Worker requests, zero Worker errors,
+  531 Worker subrequests**. Of the 113 requests, four had the normal
+  `clientDisconnected` status. The maximum of the individual
+  per-group CPU-time P99 values was 54,010 microseconds; it is **not** a
+  whole-workload percentile or a cumulative CPU total.
+- Querying the Preview's **four unique namespace IDs** in
+  `durableObjectsInvocationsAdaptiveGroups` returned **859 DO requests**,
+  including **four `clientDisconnected`** statuses counted by that dataset
+  as errors, with no other error status. The corresponding
+  `durableObjectsPeriodicGroups` summed to **234.646014 seconds** active
+  time, **0.780437 seconds** CPU time and **30.034689792 GB-seconds**
+  duration across all four namespaces. TableDO alone represented
+  **220.136400 seconds** active time and **28.1774592 GB-seconds**.
+  Schema introspection identifies `activeTime` and `cpuTime` in
+  microseconds and `duration` in GB-seconds.
+- These are **combined Preview observations**, including fixture
+  preparation and multiple test runs, not measurements for one stream or
+  a production workload. Cloudflare GraphQL data can arrive late or be
+  sampled, and is **not the billing ledger**. For scale only, multiplying
+  the observed Worker requests, DO requests and DO duration by current
+  published **Workers Paid overage** rates *without* monthly allowances,
+  billable rounding or other dimensions gives about **US$0.00054**. That is
+  **not an invoice, a per-stream price, or a claim of free operation**:
+  Worker CPU charges, storage/SQL/KV/logs, included allowances and actual
+  plan billing remain unverified. HTTP/SSE does not imply WebSocket
+  hibernation. See
+  [Cloudflare Preview metrics](https://developers.cloudflare.com/workers/previews/test-and-debug/),
+  [GraphQL limitations](https://developers.cloudflare.com/analytics/graphql-api/),
+  [Durable Objects pricing](https://developers.cloudflare.com/durable-objects/platform/pricing/)
+  and [Workers pricing](https://developers.cloudflare.com/workers/platform/pricing/).
+- Hosted requests used a single Preview URL, so no proof is claimed about
+  the number of physical Cloudflare edge isolates. The independent native
+  Workerd test is the explicit two-entry REQ-008 evidence. The synthesized
+  guests do **not** prove positive Turnstile challenge completion; that is a
+  separate public guest-admission release gate with admission still disabled.
+  No ChatGPT/Claude host model inference, offline wake-up, or reply was
+  observed or required by Issue #18.
