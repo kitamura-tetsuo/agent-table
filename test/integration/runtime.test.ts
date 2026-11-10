@@ -16,7 +16,8 @@ describe("actual SQLite-backed Durable Object bindings", () => {
       state.storage.sql.exec(
         "INSERT INTO table_upgrade_sentinel (data) VALUES ('retained')",
       );
-      // The historical v4 fixture cannot retain tables introduced in schema v7–v10.
+      // The historical v4 fixture cannot retain tables introduced in schema v7–v11.
+      state.storage.sql.exec("DROP TABLE table_event_outbox");
       state.storage.sql.exec("DROP TABLE table_event_candidates");
       state.storage.sql.exec("DROP TABLE table_event_subscriptions");
       state.storage.sql.exec("DROP TABLE table_tombstone_delete_receipts");

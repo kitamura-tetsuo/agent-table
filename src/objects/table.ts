@@ -390,6 +390,7 @@ export class TableDO extends DurableObject<Env> {
       );
     }
     this.ctx.storage.sql.exec("DELETE FROM table_delete_confirmations");
+    this.ctx.storage.sql.exec("DELETE FROM table_event_outbox");
     this.ctx.storage.sql.exec("DELETE FROM table_event_candidates");
     this.ctx.storage.sql.exec("DELETE FROM table_event_subscriptions");
     this.ctx.storage.sql.exec("DELETE FROM table_post_receipts");
@@ -513,6 +514,11 @@ export class TableDO extends DurableObject<Env> {
            expires_at = NULL
        WHERE membership_id = ?`,
       status,
+      membershipId,
+    );
+    // Terminal subscription authority also fences any undelivered work.
+    this.ctx.storage.sql.exec(
+      "UPDATE table_event_outbox SET status = 'cancelled', next_attempt_at = NULL, lease_token = NULL, lease_deadline = NULL WHERE recipient_membership_id = ? AND status IN ('pending', 'in_flight')",
       membershipId,
     );
   }
@@ -893,6 +899,15 @@ export class TableDO extends DurableObject<Env> {
             rotationUntil,
             expiresAt,
             currentMember.membership_id,
+          );
+          // Refresh retains the original event identity and retry budget.
+          // The generation change fences any pre-refresh completion.
+          this.ctx.storage.sql.exec(
+            "UPDATE table_event_outbox SET subscription_generation = ?, expires_at = ? WHERE recipient_membership_id = ? AND subscription_id = ? AND status IN ('pending', 'in_flight')",
+            generation,
+            expiresAt,
+            currentMember.membership_id,
+            pending.subscription_id,
           );
           this.ctx.storage.sql.exec(
             "DELETE FROM table_event_candidates WHERE membership_id = ?",
@@ -1749,6 +1764,7 @@ export class TableDO extends DurableObject<Env> {
     const digest = await postDigest(input);
     const bytes = new TextEncoder().encode(input.body).byteLength;
     const messageId = crypto.randomUUID();
+    const eventId = crypto.randomUUID();
     if (this.transcriptCommitBarrierEnabledForTest) {
       this.transcriptCommitBarrierArrivalsForTest++;
       if (this.transcriptCommitBarrierArrivalsForTest === 1) {
@@ -1772,7 +1788,7 @@ export class TableDO extends DurableObject<Env> {
       }
     }
     let newlyCommitted = false;
-    const result = this.ctx.storage.transactionSync(() => {
+    const mutation = () => {
       const table = this.metadataRow();
       const member = this.memberFor(actor.guestId);
       const now = Date.now();
@@ -1882,6 +1898,32 @@ export class TableDO extends DurableObject<Env> {
         digest,
         seq,
       );
+      if (peer) {
+        const subscription = this.eventSubscription(peer.membership_id);
+        if (
+          subscription?.status === "active" &&
+          subscription.subscription_id &&
+          subscription.expires_at !== null &&
+          subscription.expires_at > now
+        ) {
+          this.ctx.storage.sql.exec(
+            `INSERT INTO table_event_outbox
+              (event_id, message_id, message_seq, recipient_membership_id,
+               subscription_id, subscription_generation, next_attempt_at,
+               created_at, expires_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            eventId,
+            messageId,
+            seq,
+            peer.membership_id,
+            subscription.subscription_id,
+            subscription.generation,
+            now + 1_000,
+            now,
+            Math.min(subscription.expires_at, table.expires_at),
+          );
+        }
+      }
       newlyCommitted = true;
       return {
         ok: true,
@@ -1905,7 +1947,12 @@ export class TableDO extends DurableObject<Env> {
             }
           : {}),
       } as const;
-    });
+    };
+    // A failed alarm arm cannot commit a transcript row without its event.
+    const { value: result } = await this.deadlines.commitWithWakeup(
+      Date.now() + 1_000,
+      mutation,
+    );
     if (result.ok && newlyCommitted) {
       if (result.peerUpdateHint) {
         // The SQLite transaction has committed. Dispatch stays at the table

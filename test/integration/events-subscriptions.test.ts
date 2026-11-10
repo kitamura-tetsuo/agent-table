@@ -248,6 +248,157 @@ function echoReceiver() {
 afterEach(() => vi.restoreAllMocks());
 
 describe("production MCP Events registration, OAuth and TableDO", () => {
+  it("atomically records eligible peer events without replay, duplicates, or self events", async () => {
+    const owner = await newPrincipal();
+    const peer = await newPrincipal();
+    const ownerClient = await clientFor(owner.token);
+    const peerClient = await clientFor(peer.token);
+    const receiver = echoReceiver();
+    try {
+      const tableId = await createTable(ownerClient);
+      const invite = toolOutput(
+        await ownerClient.callTool({
+          name: "create_invite",
+          arguments: { table_id: tableId, request_id: crypto.randomUUID() },
+        }),
+      );
+      const joined = await peerClient.callTool({
+        name: "join_table",
+        arguments: {
+          invitation: invite.invitation,
+          request_id: crypto.randomUUID(),
+        },
+      });
+      expect(joined.isError).not.toBe(true);
+      const post = (client: Client, requestId: string, body: string) =>
+        client.callTool({
+          name: "post_message",
+          arguments: { table_id: tableId, request_id: requestId, body },
+        });
+      const stub = env.TABLES.get(env.TABLES.idFromName(tableId));
+      const rows = () =>
+        runInDurableObject(stub, (_instance, state) =>
+          state.storage.sql
+            .exec<{
+              event_id: string;
+              message_id: string;
+              message_seq: number;
+              recipient_membership_id: string;
+              subscription_id: string;
+              subscription_generation: number;
+              status: string;
+              attempt_count: number;
+            }>(
+              "SELECT event_id, message_id, message_seq, recipient_membership_id, subscription_id, subscription_generation, status, attempt_count FROM table_event_outbox ORDER BY message_seq",
+            )
+            .toArray(),
+        );
+
+      const beforeSubscription = toolOutput(
+        await post(ownerClient, crypto.randomUUID(), "No history replay"),
+      );
+      expect(await rows()).toEqual([]);
+      const subscribed = (await callEvent(
+        peerClient,
+        "events/subscribe",
+        subscriptionParams(tableId),
+      )) as { id: string };
+      const key = crypto.randomUUID();
+      const committed = toolOutput(
+        await post(ownerClient, key, "Committed peer event"),
+      );
+      expect(committed.seq).toBe(2);
+      const eventRows = await rows();
+      expect(eventRows).toHaveLength(1);
+      expect(eventRows[0]).toMatchObject({
+        message_id: committed.message_id,
+        message_seq: committed.seq,
+        subscription_id: subscribed.id,
+        subscription_generation: 1,
+        status: "pending",
+        attempt_count: 0,
+      });
+      expect(eventRows[0].event_id).toMatch(/^[0-9a-f-]{36}$/);
+      expect(eventRows[0].recipient_membership_id).not.toBe(
+        beforeSubscription.sender_membership_id,
+      );
+      // Reconstruction must retain exactly the same immutable event identity.
+      await evictDurableObject(stub);
+      expect(await rows()).toEqual(eventRows);
+      expect(
+        toolOutput(await post(ownerClient, key, "Committed peer event")),
+      ).toEqual(committed);
+      const conflicting = await post(
+        ownerClient,
+        key,
+        "Conflicting retry body",
+      );
+      expect(conflicting.isError).toBe(true);
+      expect((await rows()).map((row) => row.event_id)).toEqual([
+        eventRows[0].event_id,
+      ]);
+
+      await post(peerClient, crypto.randomUUID(), "Peer self message");
+      expect(await rows()).toHaveLength(1);
+      const refreshed = (await callEvent(
+        peerClient,
+        "events/subscribe",
+        subscriptionParams(tableId, CALLBACK, REPLACEMENT_SECRET),
+      )) as { id: string };
+      expect(refreshed.id).toBe(subscribed.id);
+      const refreshedRows = await rows();
+      expect(refreshedRows).toHaveLength(1);
+      expect(refreshedRows[0]).toMatchObject({
+        event_id: eventRows[0].event_id,
+        subscription_generation: 2,
+        attempt_count: 0,
+      });
+
+      await callEvent(
+        peerClient,
+        "events/unsubscribe",
+        unsubscribeParams(tableId),
+      );
+      const cancelled = await rows();
+      expect(cancelled[0]).toMatchObject({
+        status: "cancelled",
+        subscription_generation: 2,
+      });
+      await post(
+        ownerClient,
+        crypto.randomUUID(),
+        "No event after unsubscribe",
+      );
+      expect(await rows()).toHaveLength(1);
+      await callEvent(
+        peerClient,
+        "events/subscribe",
+        subscriptionParams(tableId),
+      );
+      await post(ownerClient, crypto.randomUUID(), "Pending at table closure");
+      const beforeClose = await rows();
+      expect(beforeClose).toHaveLength(2);
+      expect(beforeClose[0].status).toBe("cancelled");
+      expect(beforeClose[1].status).toBe("pending");
+      const closed = await ownerClient.callTool({
+        name: "close_table",
+        arguments: { table_id: tableId, request_id: crypto.randomUUID() },
+      });
+      expect(closed.isError).not.toBe(true);
+      expect((await rows()).map((row) => row.status)).toEqual([
+        "cancelled",
+        "cancelled",
+      ]);
+      // These captured requests are subscription-control challenges, never
+      // application-message deliveries.
+      expect(receiver).toHaveBeenCalledTimes(3);
+    } finally {
+      await peerClient.close();
+      await ownerClient.close();
+      vi.restoreAllMocks();
+    }
+  });
+
   it("registers, encrypts, refreshes, reconstructs and unsubscribes an owned subscription", async () => {
     const principal = await newPrincipal();
     const client = await clientFor(principal.token);

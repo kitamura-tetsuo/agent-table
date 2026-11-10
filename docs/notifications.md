@@ -618,3 +618,24 @@ are not claimed; named-host autonomy is a non-goal of Issue #18.
   separate public guest-admission release gate with admission still disabled.
   No ChatGPT/Claude host model inference, offline wake-up, or reply was
   observed or required by Issue #18.
+
+## Durable peer-event outbox — implementation status
+
+Issue #21 now has an **unreleased, incomplete** TableDO outbox scaffold
+(application schema v11). A successful authenticated post atomically commits
+a message/receipt and an event for each currently active peer subscription,
+using an alarm prearmed in the same storage transaction. Duplicate post keys,
+self-posts, and subscriptions created after an earlier post cannot create
+historical events. The persistent event ID, original message/sequence,
+recipient membership, canonical subscription/generation and initial retry
+budget are stored without the message body or callback secret. A verified
+same-identity refresh preserves event identity; unsubscribe/expiry invalidates
+outstanding work.
+
+**This scaffold does not dispatch a webhook.** The lease/retry engine,
+dispatch-time authority, bounded retries and deadlines, terminal handling,
+safe status/telemetry and production-path receiver/restart tests required by
+#21 remain to be implemented before this draft is eligible for merge.
+The currently disabled public Events/readiness controls must stay off;
+an atomic outbox row or subscription challenge cannot prove delivery or
+host execution.
