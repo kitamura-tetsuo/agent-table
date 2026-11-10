@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
+import { isIP } from "node:net";
 import { pathToFileURL } from "node:url";
 
 const EXPECTED_DOS = new Map([
@@ -29,6 +30,12 @@ function validateUnambiguousWorkerConfig(config) {
     ["env", "unsupported-wrangler-environments"],
     ["build", "unsupported-wrangler-build"],
     ["unsafe", "unsupported-wrangler-unsafe"],
+    // Additional entry points are outside the reviewed single-origin profile.
+    ["route", "unreviewed-wrangler-exposure"],
+    ["routes", "unreviewed-wrangler-exposure"],
+    ["assets", "unreviewed-wrangler-exposure"],
+    ["site", "unreviewed-wrangler-exposure"],
+    ["triggers", "unreviewed-wrangler-exposure"],
   ]) {
     requireCondition(!Object.hasOwn(config, key), code);
   }
@@ -125,10 +132,13 @@ function parseOrigin(origin, environment) {
       !url.search &&
       !url.hash &&
       !url.port &&
-      !["localhost", "127.0.0.1", "::1"].includes(url.hostname) &&
-      !url.hostname.endsWith(".localhost") &&
-      !url.hostname.endsWith(".example") &&
-      !url.hostname.endsWith(".invalid"),
+      // Release origins require public DNS names, not IP or intranet aliases.
+      isIP(url.hostname.replace(/^\[|\]$/g, "")) === 0 &&
+      url.hostname.includes(".") &&
+      !url.hostname.endsWith(".") &&
+      ![".localhost", ".example", ".invalid", ".local", ".internal"].some(
+        (suffix) => url.hostname.endsWith(suffix),
+      ),
     "invalid-public-origin",
   );
   requireCondition(

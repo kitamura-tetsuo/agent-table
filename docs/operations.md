@@ -78,6 +78,15 @@ Tests should run in Cloudflare's workerd-based harness for storage, bindings, al
 
 ## Cloudflare resources
 
+The offline release preflight and restore generator require a canonical
+HTTPS DNS origin; IP literals, single-label/internal hostnames and trailing-dot
+origins are rejected. They also refuse alternate Wrangler entry points
+(routes, static site/assets and cron triggers) for both target and peer
+configurations. These structural checks cannot prove DNS ownership, TLS
+validity, the live Cloudflare route or the absence of an implicit workers.dev
+endpoint. Independently reviewed authenticated deployment evidence remains
+mandatory, and this offline preflight never grants publication approval.
+
 Use separate staging and production Workers, DO namespaces, KV namespaces, secrets, and origins. A test environment must never deliver to production callbacks. Reserve one stable production HTTPS origin before configuring public OAuth clients; no domain has been selected or deployed by these documents.
 
 Initial bindings:

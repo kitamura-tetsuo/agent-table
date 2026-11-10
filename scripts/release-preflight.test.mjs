@@ -155,6 +155,63 @@ test("rejects placeholders, non-HTTPS, missing secrets, and cross-environment na
   );
 });
 
+test("release and restore reject private or noncanonical origin authorities", () => {
+  const target = makeConfig("staging");
+  const invalidOrigins = [
+    "https://192.168.1.22",
+    "https://10.0.0.1",
+    "https://169.254.169.254",
+    "https://[::1]",
+    "https://[fd00::9]",
+    "https://intranet",
+    "https://service.internal",
+    "https://service.local",
+    "https://staging.service.test.",
+  ];
+  for (const origin of invalidOrigins) {
+    target.vars.PUBLIC_ORIGIN = origin;
+    blocked(
+      { ...fixture(), configText: JSON.stringify(target) },
+      "invalid-public-origin",
+    );
+    blockedRestore(target, "invalid-public-origin");
+    const peer = makeConfig("production");
+    peer.vars.PUBLIC_ORIGIN = origin;
+    blocked(
+      { ...fixture(), peerText: JSON.stringify(peer) },
+      "invalid-public-origin",
+    );
+    blockedRestore(makeConfig("staging"), "invalid-public-origin", peer);
+  }
+});
+
+test("release and restore reject unreviewed secondary Worker entry surfaces", () => {
+  const variants = [
+    ["route", "staging.service.test/*"],
+    [
+      "routes",
+      [{ pattern: "staging.service.test/*", zone_name: "service.test" }],
+    ],
+    ["assets", { directory: "./public" }],
+    ["site", { bucket: "./public" }],
+    ["triggers", { crons: ["* * * * *"] }],
+  ];
+  for (const [key, value] of variants) {
+    const target = makeConfig("staging", { [key]: value });
+    blocked(
+      { ...fixture(), configText: JSON.stringify(target) },
+      "unreviewed-wrangler-exposure",
+    );
+    blockedRestore(target, "unreviewed-wrangler-exposure");
+    const peer = makeConfig("production", { [key]: value });
+    blocked(
+      { ...fixture(), peerText: JSON.stringify(peer) },
+      "unreviewed-wrangler-exposure",
+    );
+    blockedRestore(makeConfig("staging"), "unreviewed-wrangler-exposure", peer);
+  }
+});
+
 test("rejects runtime capability switches without evidence for their distinct profile", () => {
   const args = fixture();
   const config = JSON.parse(args.configText);
