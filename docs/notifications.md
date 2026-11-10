@@ -748,3 +748,31 @@ test, or #19 REQ-002/006 evidence. It narrows #21/REQ-010's disconnected
 producer/consumer gap but does **not** satisfy its complete crash, revocation,
 rotation and real-host campaign. Production Events readiness remains disabled;
 do not merge or close #21 on this regression alone.
+
+### 2026-11-11: persistent retry-budget and cancellation regressions
+
+The authenticated Workerd producer-to-native-sender test now covers both HTTP
+410 and 413 terminal responses from a controlled fetch receiver: each new
+MCP-committed peer event is independently signed, captured, charged once and
+left terminal across a Durable Object eviction, with no repeat outbound call.
+
+A second producer-to-alarm scenario returns HTTP 503 with Retry-After for
+eight consecutive captured delivery attempts, evicting the Durable Object
+between attempts. It checks that all eight requests reuse the exact event ID,
+that the original first-attempt timestamp and charged count survive each
+reconstruction, that the eighth attempt terminalizes the SQL row and that a
+ninth alarm sends nothing. The fixture changes only persisted scheduling due
+times to exercise the complete bounded retry budget without real-time waiting;
+it does not simulate eight hours of operation or prove network delivery.
+
+An independent OAuth-authenticated post/subscribe/unsubscribe regression
+reserves a real SQLite attempt lease, commits an actual MCP unsubscribe, then
+applies an intentionally stale receiver-success verdict using the production
+lease settlement function. The stale result cannot resurrect cancelled work,
+including after DO eviction. This is a deterministic serialized lease race,
+not simultaneous external HTTP acceptance and unsubscribe: the native Workerd
+test harness rejects concurrent cross-Durable-Object I/O in that synthetic
+construction. A supported external receiver/barrier harness remains needed for
+a full in-flight HTTP race and the remaining REQ-010 matrix. The public Events
+transport gate remains fail-closed and the tests do not establish #19 DNS/IP/TLS
+connection-time policy or actual autonomous host execution.

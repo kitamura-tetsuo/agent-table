@@ -1460,7 +1460,8 @@ describe("authenticated event producer through native alarm and HTTPS sender (co
           throw new Error("Synthetic response lost after receiver acceptance");
         }
         return new Response(null, {
-          status: captured.length === 3 ? 410 : 204,
+          status:
+            captured.length === 3 ? 410 : captured.length === 4 ? 413 : 204,
         });
       });
       const alarm = () =>
@@ -1578,6 +1579,281 @@ describe("authenticated event producer through native alarm and HTTPS sender (co
       ).toMatchObject({ status: "failed", attempt_count: 1 });
       await alarm();
       expect(captured).toHaveLength(3);
+
+      // A third authenticated post exercises 413 without synthesizing a ledger verdict.
+      const tooLargePost = toolOutput(
+        await ownerClient.callTool({
+          name: "post_message",
+          arguments: {
+            table_id: tableId,
+            request_id: crypto.randomUUID(),
+            body: "SYNTHETIC TERMINAL PAYLOAD REJECTION",
+          },
+        }),
+      );
+      const tooLarge = (await rows()).find(
+        (row) => row.message_id === tooLargePost.message_id,
+      );
+      if (!tooLarge) throw new Error("Missing third committed event");
+      await runInDurableObject(stub, (_instance, state) =>
+        state.storage.sql.exec(
+          "UPDATE table_event_outbox SET next_attempt_at = ? WHERE event_id = ?",
+          Date.now() - 1,
+          tooLarge.event_id,
+        ),
+      );
+      await alarm();
+      expect(captured).toHaveLength(4);
+      expect(
+        new Webhook(SECRET).verify(captured[3].body, captured[3].headers),
+      ).toMatchObject({
+        eventId: tooLarge.event_id,
+        data: { message_id: tooLargePost.message_id },
+      });
+      expect(
+        (await rows()).find((row) => row.event_id === tooLarge.event_id),
+      ).toMatchObject({ status: "failed", attempt_count: 1 });
+      await evictDurableObject(stub);
+      await alarm();
+      expect(captured).toHaveLength(4);
+    } finally {
+      await peerClient.close();
+      await ownerClient.close();
+    }
+  });
+
+  it("fences a reserved lease after authenticated unsubscribe without reviving work", async () => {
+    const owner = await newPrincipal();
+    const peer = await newPrincipal();
+    const ownerClient = await clientFor(owner.token);
+    const peerClient = await clientFor(peer.token);
+    const receiver = echoReceiver();
+    try {
+      const tableId = await createTable(ownerClient);
+      const invite = toolOutput(
+        await ownerClient.callTool({
+          name: "create_invite",
+          arguments: { table_id: tableId, request_id: crypto.randomUUID() },
+        }),
+      );
+      expect(
+        (
+          await peerClient.callTool({
+            name: "join_table",
+            arguments: {
+              invitation: invite.invitation,
+              request_id: crypto.randomUUID(),
+            },
+          })
+        ).isError,
+      ).not.toBe(true);
+      await callEvent(
+        peerClient,
+        "events/subscribe",
+        subscriptionParams(tableId),
+      );
+      const post = toolOutput(
+        await ownerClient.callTool({
+          name: "post_message",
+          arguments: {
+            table_id: tableId,
+            request_id: crypto.randomUUID(),
+            body: "SYNTHETIC CANCELLED LEASE",
+          },
+        }),
+      );
+      const stub = env.TABLES.get(env.TABLES.idFromName(tableId));
+      type Row = {
+        event_id: string;
+        message_id: string;
+        subscription_generation: number;
+        status: string;
+        attempt_count: number;
+        lease_token: string | null;
+      };
+      const rows = () =>
+        runInDurableObject(stub, (_instance, state) =>
+          state.storage.sql
+            .exec<Row>("SELECT * FROM table_event_outbox")
+            .toArray(),
+        );
+      const initial = (await rows())[0];
+      expect(initial).toMatchObject({
+        message_id: post.message_id,
+        status: "pending",
+        attempt_count: 0,
+      });
+      const lease = await runInDurableObject(stub, (_instance, state) => {
+        const now = Date.now();
+        state.storage.sql.exec(
+          "UPDATE table_event_outbox SET next_attempt_at = ? WHERE event_id = ?",
+          now - 1,
+          initial.event_id,
+        );
+        return reserveOutboxAttempt(
+          state.storage.sql,
+          initial.event_id,
+          initial.subscription_generation,
+          now,
+        );
+      });
+      expect(lease).not.toBeNull();
+      if (!lease) throw new Error("Expected reserved delivery lease");
+      expect((await rows())[0]).toMatchObject({
+        status: "in_flight",
+        attempt_count: 1,
+        lease_token: lease.leaseToken,
+      });
+      await callEvent(
+        peerClient,
+        "events/unsubscribe",
+        unsubscribeParams(tableId),
+      );
+      const cancelled = (await rows())[0];
+      expect(cancelled).toMatchObject({
+        event_id: initial.event_id,
+        status: "cancelled",
+        attempt_count: 1,
+        lease_token: null,
+      });
+      // A previously dispatched HTTP result has no authority to upsert rows.
+      const staleResult = await runInDurableObject(stub, (_instance, state) =>
+        settleOutboxAttempt(state.storage.sql, lease, Date.now(), {
+          kind: "accepted",
+        }),
+      );
+      expect(staleResult).toBeNull();
+      await evictDurableObject(stub);
+      expect((await rows())[0]).toMatchObject({
+        event_id: initial.event_id,
+        status: "cancelled",
+        attempt_count: 1,
+        lease_token: null,
+      });
+      expect(receiver).toHaveBeenCalledTimes(1);
+    } finally {
+      await peerClient.close();
+      await ownerClient.close();
+    }
+  });
+
+  it("charges eight real alarm transports across eviction and never starts a ninth", async () => {
+    const owner = await newPrincipal();
+    const peer = await newPrincipal();
+    const ownerClient = await clientFor(owner.token);
+    const peerClient = await clientFor(peer.token);
+    const challengeReceiver = echoReceiver();
+    try {
+      const tableId = await createTable(ownerClient);
+      const invite = toolOutput(
+        await ownerClient.callTool({
+          name: "create_invite",
+          arguments: { table_id: tableId, request_id: crypto.randomUUID() },
+        }),
+      );
+      expect(
+        (
+          await peerClient.callTool({
+            name: "join_table",
+            arguments: {
+              invitation: invite.invitation,
+              request_id: crypto.randomUUID(),
+            },
+          })
+        ).isError,
+      ).not.toBe(true);
+      await callEvent(
+        peerClient,
+        "events/subscribe",
+        subscriptionParams(tableId),
+      );
+      const post = toolOutput(
+        await ownerClient.callTool({
+          name: "post_message",
+          arguments: {
+            table_id: tableId,
+            request_id: crypto.randomUUID(),
+            body: "SYNTHETIC REPEATED TRANSIENT ERROR",
+          },
+        }),
+      );
+      const stub = env.TABLES.get(env.TABLES.idFromName(tableId));
+      type Row = {
+        event_id: string;
+        message_id: string;
+        status: string;
+        attempt_count: number;
+        first_attempt_at: number | null;
+        next_attempt_at: number | null;
+        last_error_category: string | null;
+      };
+      const rows = () =>
+        runInDurableObject(stub, (_instance, state) =>
+          state.storage.sql
+            .exec<Row>("SELECT * FROM table_event_outbox")
+            .toArray(),
+        );
+      const initial = (await rows())[0];
+      expect(initial.message_id).toBe(post.message_id);
+      challengeReceiver.mockRestore();
+      const deliveredIds: string[] = [];
+      vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+        expect(String(url)).toBe(CALLBACK);
+        const headers = Object.fromEntries(new Headers(init?.headers));
+        const body = new TextDecoder().decode(init?.body as ArrayBuffer);
+        const event = new Webhook(SECRET).verify(body, headers) as {
+          eventId: string;
+        };
+        deliveredIds.push(event.eventId);
+        return new Response(null, {
+          status: 503,
+          headers: { "Retry-After": "1" },
+        });
+      });
+      const alarm = () =>
+        runInDurableObject(stub, async (instance) => {
+          const harness = instance as unknown as {
+            env: Env;
+            outboxDispatchEnabled(): boolean;
+          };
+          harness.env = {
+            ...harness.env,
+            EVENTS_REVIEWED_CALLBACK_TARGETS: REVIEWED,
+          };
+          harness.outboxDispatchEnabled = () => true;
+          await instance.alarm();
+        });
+      let firstAttemptAt: number | null = null;
+      for (let attempt = 1; attempt <= 8; attempt++) {
+        // Change only the scheduling deadline: never reset persisted identity or budget.
+        await runInDurableObject(stub, (_instance, state) =>
+          state.storage.sql.exec(
+            "UPDATE table_event_outbox SET next_attempt_at = ? WHERE event_id = ?",
+            Date.now() - 1,
+            initial.event_id,
+          ),
+        );
+        await evictDurableObject(stub);
+        await alarm();
+        const row = (await rows())[0];
+        expect(row.event_id).toBe(initial.event_id);
+        expect(row.attempt_count).toBe(attempt);
+        firstAttemptAt ??= row.first_attempt_at;
+        expect(row.first_attempt_at).toBe(firstAttemptAt);
+        expect(row.status).toBe(attempt === 8 ? "failed" : "pending");
+        expect(deliveredIds).toHaveLength(attempt);
+        if (attempt === 8) {
+          expect(row.last_error_category).toBe("retry-exhausted");
+          expect(row.next_attempt_at).toBeNull();
+        }
+      }
+      await evictDurableObject(stub);
+      await alarm();
+      expect(deliveredIds).toEqual(Array(8).fill(initial.event_id));
+      expect((await rows())[0]).toMatchObject({
+        status: "failed",
+        attempt_count: 8,
+      });
     } finally {
       await peerClient.close();
       await ownerClient.close();
