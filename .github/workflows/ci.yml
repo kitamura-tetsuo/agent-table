@@ -29,6 +29,7 @@ jobs:
       - run: python -m pytest -q test/unit/test_egress_experiments.py
       - run: npm test
       - run: npm run test:integration
+      - run: npm run test:restore-runtime
       - run: node scripts/verify-oauth-redemption-mutant.mjs
       - run: npm run build
       - run: npx wrangler deploy --dry-run --config test/egress/wrangler.jsonc --outdir ../../dist/egress-probe
