@@ -898,3 +898,24 @@ These assertions exercise the actual public MCP projection rather than
 injecting synthetic status rows. They remain local Workerd/controlled-fetch
 evidence, not real-host callback reachability, connection-time SSRF/TLS
 proof or completion of the remaining #21/REQ-010 concurrent race matrix.
+
+### 2026-11-11: in-flight native delivery versus authenticated unsubscribe
+
+The existing OAuth/MCP producer and rotated-subscription integration scenario
+now makes a second real authenticated post after an accepted first event. The
+actual TableDO alarm reserves its SQLite delivery lease and sends the second
+signed callback to the controlled receiver. Before that receiver returns HTTP
+204, the fixture invokes the real TableDO `unsubscribeEvent` authorization and
+invalidation method using the recipient's previously verified connection
+actor; that method revalidates the connection itself. The callback response then
+arrives after the subscription and its lease have been cancelled. The test
+asserts the original signed event/message identity, one captured HTTP request,
+one charged attempt, terminal cancellation and no resurrection/retry after DO
+eviction. The delivered bytes cannot be recalled after dispatch.
+
+This is a deterministic, in-object, controlled-fetch response interleaving; it
+is **not** a second concurrent external OAuth/MCP HTTP request, independently
+hosted HTTPS receipt or proof of Cloudflare DNS/IP/TLS properties. This new
+case does not resolve the remaining held-credential-refresh, deletion,
+revocation and independent-host race evidence required by #21/REQ-010; the
+public Events readiness gate remains disabled.

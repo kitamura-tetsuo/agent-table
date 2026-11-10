@@ -1953,6 +1953,7 @@ describe("authenticated event producer through native alarm and HTTPS sender (co
 
       // Let the actual alarm/native signer choose the refreshed credential.
       challengeReceiver.mockRestore();
+      let unsubscribeDuringSend: (() => Promise<void>) | undefined;
       const applications: Array<{
         body: string;
         headers: Record<string, string>;
@@ -1962,6 +1963,7 @@ describe("authenticated event producer through native alarm and HTTPS sender (co
           body: new TextDecoder().decode(init?.body as ArrayBuffer),
           headers: Object.fromEntries(new Headers(init?.headers)),
         });
+        if (applications.length === 2) await unsubscribeDuringSend?.();
         return new Response(null, { status: 204 });
       });
       await runInDurableObject(stub, (_instance, state) =>
@@ -2009,6 +2011,83 @@ describe("authenticated event producer through native alarm and HTTPS sender (co
       await evictDurableObject(stub);
       await alarm();
       expect(applications).toHaveLength(1);
+
+      // An HTTP 204 arriving after a real authenticated unsubscribe must not
+      // turn an already-dispatched, generation-fenced lease into acceptance.
+      const contestedPost = toolOutput(
+        await ownerClient.callTool({
+          name: "post_message",
+          arguments: {
+            table_id: tableId,
+            request_id: crypto.randomUUID(),
+            body: "SYNTHETIC UNSUBSCRIBE AFTER DISPATCH",
+          },
+        }),
+      );
+      const contested = (await rows()).find(
+        (row) => row.message_id === contestedPost.message_id,
+      );
+      if (!contested) throw new Error("Missing contested authenticated event");
+      await runInDurableObject(stub, (_instance, state) =>
+        state.storage.sql.exec(
+          "UPDATE table_event_outbox SET next_attempt_at = ? WHERE event_id = ?",
+          Date.now() - 1,
+          contested.event_id,
+        ),
+      );
+      const grant = await authorizeGuestConnection(
+        env,
+        peer.guestId,
+        peer.connectionId,
+        "events:subscribe",
+      );
+      expect(grant.allowed).toBe(true);
+      if (!grant.allowed) throw new Error("Missing verified peer connection");
+      await runInDurableObject(stub, async (instance) => {
+        const harness = instance as unknown as {
+          env: Env;
+          outboxDispatchEnabled(): boolean;
+          unsubscribeEvent(
+            actor: Extract<typeof grant, { allowed: true }>["actor"],
+            input: unknown,
+          ): Promise<{ ok: boolean }>;
+        };
+        harness.env = {
+          ...harness.env,
+          EVENTS_REVIEWED_CALLBACK_TARGETS: REVIEWED,
+        };
+        harness.outboxDispatchEnabled = () => true;
+        unsubscribeDuringSend = async () => {
+          const result = await harness.unsubscribeEvent(
+            grant.actor,
+            unsubscribeParams(tableId),
+          );
+          expect(result.ok).toBe(true);
+        };
+        await instance.alarm();
+      });
+      expect(applications).toHaveLength(2);
+      expect(
+        new Webhook(REPLACEMENT_SECRET).verify(
+          applications[1].body,
+          applications[1].headers,
+        ),
+      ).toMatchObject({
+        eventId: contested.event_id,
+        data: { message_id: contestedPost.message_id },
+      });
+      expect(
+        (await rows()).find((row) => row.event_id === contested.event_id),
+      ).toMatchObject({
+        status: "cancelled",
+        attempt_count: 1,
+      });
+      await evictDurableObject(stub);
+      await alarm();
+      expect(applications).toHaveLength(2);
+      expect(
+        (await rows()).find((row) => row.event_id === contested.event_id),
+      ).toMatchObject({ status: "cancelled", attempt_count: 1 });
     } finally {
       await peerClient.close();
       await ownerClient.close();
