@@ -84,4 +84,28 @@ describe("allowlisted Worker operational telemetry", () => {
       reply: "unknown",
     });
   });
+
+  it("records only fixed-category stream termination and duration", () => {
+    const captured: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((value) => {
+      captured.push(JSON.stringify(value));
+    });
+    emitOperationalEvent({
+      kind: "stream",
+      reason: "private-actor-name" as "transport",
+      durationMs: 4,
+    });
+    expect(captured).toEqual([]);
+    emitOperationalEvent({
+      kind: "stream",
+      reason: "slow_consumer",
+      durationMs: 5,
+    });
+    expect(JSON.parse(captured[0])).toEqual({
+      schema: "agent-table.telemetry.v1",
+      kind: "stream",
+      reason: "slow_consumer",
+      durationMs: 5,
+    });
+  });
 });

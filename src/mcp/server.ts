@@ -15,11 +15,19 @@ import {
 import { authorizeGuestConnection, type ConnectionScope } from "../shared/auth";
 import { validTableId } from "../shared/invitations";
 import { CREATION_LIMITS, TABLE_LIMITS } from "../shared/limits";
+import {
+  handleOwnedInboxListen,
+  isListenRequest,
+  MAX_MCP_HINTS_PER_STREAM,
+} from "./live-listen";
 
 export type AuthenticatedMcpIdentity = {
   readonly guestId: string;
   readonly connectionId: string;
   readonly scopes: readonly ConnectionScope[];
+  // Null must fail closed at any future listen boundary. Populated exclusively
+  // from the OAuth host context, not token claims decoded by this application.
+  readonly tokenExpiresAtMs: number | null;
 };
 
 const TABLE_ID =
@@ -76,7 +84,7 @@ function toolResult(value: unknown, isError = false) {
   };
 }
 
-function appResult(result: PublicTableResult) {
+function appResult(result: PublicTableResult, liveSubscriptions = false) {
   if (!result.ok) {
     return toolResult(
       {
@@ -96,7 +104,14 @@ function appResult(result: PublicTableResult) {
   }
   return toolResult({
     ...result.value,
-    notifications: { available: false, reason: "not_implemented" },
+    notifications: liveSubscriptions
+      ? {
+          available: true,
+          transport: "mcp_subscriptions_listen",
+          maxHintsPerStream: MAX_MCP_HINTS_PER_STREAM,
+          reconnect: "listen_again_then_read_after_last_seq",
+        }
+      : { available: false, reason: "not_implemented" },
   });
 }
 
@@ -104,10 +119,22 @@ function appResult(result: PublicTableResult) {
  * A server is built for each authenticated request. This identity came from
  * validated OAuth properties, never from tool arguments or request headers.
  */
-function newServer(env: Env, identity: AuthenticatedMcpIdentity) {
+function newServer(
+  env: Env,
+  identity: AuthenticatedMcpIdentity,
+  liveSubscriptions: boolean,
+) {
   const server = new McpServer(
     { name: "agent-table", version: "0.1.0" },
-    { maxToolInputElements: 32 },
+    {
+      maxToolInputElements: 32,
+      // SDK defaults enable list-change streams when tools/resources register.
+      // Advertise only the guarded, authenticated listen profile.
+      capabilities: {
+        tools: { listChanged: false },
+        resources: { listChanged: false, subscribe: liveSubscriptions },
+      },
+    },
   );
   const scopedActor = async (scope: ConnectionScope) => {
     if (!identity.scopes.includes(scope)) return null;
@@ -137,7 +164,7 @@ function newServer(env: Env, identity: AuthenticatedMcpIdentity) {
       const actor = await scopedActor("tables:write");
       if (!actor)
         return toolResult({ error: { code: "NOT_AUTHORIZED" } }, true);
-      return appResult(await createTable(env, actor, input));
+      return appResult(await createTable(env, actor, input), liveSubscriptions);
     },
   );
   server.registerTool(
@@ -157,7 +184,7 @@ function newServer(env: Env, identity: AuthenticatedMcpIdentity) {
       const actor = await scopedActor("tables:read");
       if (!actor)
         return toolResult({ error: { code: "NOT_AUTHORIZED" } }, true);
-      return appResult(await getTable(env, actor, table_id));
+      return appResult(await getTable(env, actor, table_id), liveSubscriptions);
     },
   );
   server.registerTool(
@@ -213,7 +240,10 @@ function newServer(env: Env, identity: AuthenticatedMcpIdentity) {
       const actor = await scopedActor("tables:write");
       if (!actor)
         return toolResult({ error: { code: "NOT_AUTHORIZED" } }, true);
-      return appResult(await joinTable(env, actor, invitation, request_id));
+      return appResult(
+        await joinTable(env, actor, invitation, request_id),
+        liveSubscriptions,
+      );
     },
   );
 
@@ -356,7 +386,7 @@ function newServer(env: Env, identity: AuthenticatedMcpIdentity) {
   return server;
 }
 
-export function handleMcp(
+export async function handleMcp(
   request: Request,
   env: Env,
   ctx: ExecutionContext,
@@ -368,12 +398,44 @@ export function handleMcp(
     allowedHostnames.push("localhost", "127.0.0.1", "[::1]");
   }
 
-  const handler = createMcpHandler(() => newServer(env, identity), {
-    route: "/mcp",
-    legacy: "reject",
-    corsOptions: false,
-    allowedHostnames,
-    allowedOriginHostnames: allowedHostnames,
-  });
+  const configuredSubscriptions =
+    env.ENABLE_MCP_SUBSCRIPTIONS === "true" &&
+    identity.scopes.includes("events:subscribe") &&
+    identity.tokenExpiresAtMs !== null &&
+    identity.tokenExpiresAtMs > Date.now();
+  const liveSubscriptions =
+    configuredSubscriptions &&
+    (
+      await authorizeGuestConnection(
+        env,
+        identity.guestId,
+        identity.connectionId,
+        "events:subscribe",
+      )
+    ).allowed;
+  if (liveSubscriptions && (await isListenRequest(request))) {
+    return handleOwnedInboxListen(
+      request,
+      env,
+      ctx,
+      identity,
+      allowedHostnames,
+      () => newServer(env, identity, true),
+    );
+  }
+
+  const handler = createMcpHandler(
+    () => newServer(env, identity, liveSubscriptions),
+    {
+      route: "/mcp",
+      legacy: "reject",
+      // The guarded listen route is handled above. Other requests, including
+      // unauthorized listens, must not open a generic SDK in-memory bus.
+      maxSubscriptions: 0,
+      corsOptions: false,
+      allowedHostnames,
+      allowedOriginHostnames: allowedHostnames,
+    },
+  );
   return handler(request, env, ctx);
 }

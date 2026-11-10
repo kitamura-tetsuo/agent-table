@@ -162,7 +162,7 @@ test("official SDK negotiates against the authenticated live Wrangler HTTP serve
     expect(client.getProtocolEra()).toBe("modern");
     // Table tools are now advertised only after authorized MCP setup.
     expect(client.getServerCapabilities()?.tools).toMatchObject({
-      listChanged: true,
+      listChanged: false,
     });
     const listed = await client.listTools();
     expect(listed.tools.map((tool) => tool.name).sort()).toEqual([
