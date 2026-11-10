@@ -3,6 +3,7 @@ import { evaluateHostEvidence, HOST_CASES } from "../e2e/host/evidence";
 import partialHostRecord from "../e2e/host/evidence.chatgpt-work-2026-11-09.json";
 import deniedHostRecord from "../e2e/host/evidence.chatgpt-work-2026-11-10-deny.json";
 import pinnedHostRecord from "../e2e/host/evidence.chatgpt-work-2026-11-10-pinned.json";
+import refreshedHostRecord from "../e2e/host/evidence.chatgpt-work-2026-11-10-refresh.json";
 import template from "../e2e/host/evidence.template.json";
 
 describe("actual host interoperability evidence gate", () => {
@@ -58,6 +59,24 @@ describe("actual host interoperability evidence gate", () => {
     expect(result.missing).toContain("exact host product/build identity");
     expect(result.missing).toContain(
       "actual client and server evidence for refreshedToken",
+    );
+  });
+
+  it("accepts an independently bound host refresh/read but not the full run", () => {
+    const result = evaluateHostEvidence(refreshedHostRecord);
+    expect(result.structurallyValid).toBe(true);
+    expect(result.completeRecord).toBe(false);
+    expect(refreshedHostRecord.cases.refreshedToken.status).toBe("passed");
+    expect(refreshedHostRecord.cases.readAfterRefresh.status).toBe("passed");
+    expect(result.missing).not.toContain(
+      "actual client and server evidence for refreshedToken",
+    );
+    expect(result.missing).not.toContain(
+      "actual client and server evidence for readAfterRefresh",
+    );
+    expect(result.missing).toContain("exact host product/build identity");
+    expect(result.missing).toContain(
+      "actual client and server evidence for revokedInBrowser",
     );
   });
 

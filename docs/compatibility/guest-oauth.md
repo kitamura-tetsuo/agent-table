@@ -124,8 +124,8 @@ claim, not a blanket provider label.
 | Approved consent | **OBSERVED** | Actual reconnect Allow and `/authorize` 200/302 followed by token 200; [client report](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6743908128), [server status](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6744413982) |
 | Host `create_table` | **HOST TOOL OBSERVED** | Actual private-app tool results on older and source-labeled staging versions; direct independent DO table persistence audit still needed ([older client report](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6743636141), [latest corroboration](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6754828876)) |
 | Host `get_table` | **HOST TOOL OBSERVED** | Host read after creation and after reauthorization; exact protected operation to persisted table still needs an independent join ([older client report](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6743908128), [latest corroboration](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6754828876)) |
-| Actual host refresh token | **SERVER OBSERVED** | Live redacted `refresh_token`/200; active connection digest and equal four-scope arrays ([audit receipt](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6744941273)) |
-| Authenticated read after refresh | **HOST/SERVER OBSERVED** | Host `get_table` succeeded; matching-window `/mcp` 200, no shared request ID ([audit receipt](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6744941273)) |
+| Actual host refresh token | **PASSED ON SOURCE-LABELED STAGING** | Real ChatGPT host `refresh_token`/200 and binding fingerprint matched the owner's Active guest connection; scope arrays identical ([same-version receipt](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6754963099), [older audit](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6744941273)) |
+| Authenticated read after refresh | **PASSED ON SOURCE-LABELED STAGING** | Host `get_table` succeeded immediately after the independently bound active-connection refresh; edge `/mcp` 200 in the same short window, no shared request ID ([same-version receipt](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6754963099)) |
 | Same-guest browser revocation | **BROWSER/SERVER OBSERVED** | Old grant Revoked, fresh grant Active; `POST /guest/connections/revoke` 303 ([browser report](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6743908128), [edge receipt](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6744413982)) |
 | First host call refused after revocation | **HOST/SERVER OBSERVED** | Host showed reconnect without protected table; `POST /mcp` HTTP **401** at 15:22:55Z, before new Allow ([edge receipt](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6744413982)) |
 | Host-side Disconnect | **NOT RUN** | Service-side Revoke and host-side Disconnect are distinct |
@@ -135,10 +135,12 @@ The default `evidence.template.json` intentionally remains entirely blocked
 for **new** test runs. The redacted, **incomplete** snapshots
 `evidence.chatgpt-work-2026-11-09.json`,
 `evidence.chatgpt-work-2026-11-10-pinned.json` and
-`evidence.chatgpt-work-2026-11-10-deny.json` preserve **distinct**
-deployment/test or connection windows. Only the Deny case in its own record
-is `passed` after the owner supplied a same-guest, DO-backed connection list;
-the overall record remains **incomplete**. Validation cannot authenticate
+`evidence.chatgpt-work-2026-11-10-deny.json` and
+`evidence.chatgpt-work-2026-11-10-refresh.json` preserve **distinct**
+deployment/test or connection windows. The Deny case is `passed` in its own
+record after an owner-provided same-guest, DO-backed connection list; the
+real-host refresh and subsequent read are `passed` in a separate,
+source-labeled staging run. All overall records remain **incomplete**. Validation cannot authenticate
 external receipts or merge older observations into a newer version's result.
 
 ### Source-labeled staging smoke test — 2026-11-09 22:39–22:43 UTC
@@ -217,6 +219,39 @@ external receipts or merge older observations into a newer version's result.
   owner**, not an independent raw DO export or captured OAuth callback.
   The case is marked `passed` with those evidence limitations.
   [Redacted review](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6754667287).
+
+### Same-connection real-host refresh — 2026-11-10 00:04 UTC
+
+- Temporarily enabled the existing **metadata-only** OAuth audit on isolated
+  staging Worker version `c30937eb-7fe9-4730-8dc6-0f049a2929eb`,
+  deployed at 00:04:08Z with operator annotation `source_sha=e067bf2`.
+  The handler records only fixed grant categories, HTTP status, an opaque
+  12-byte SHA-256 guest/connection binding fingerprint, and scope names.
+  It does not record token values, OAuth request bodies, cookies or IPs.
+- The existing real ChatGPT Work private connector invoked `get_table`
+  on the short-lived synthetic table from 23:56. Live `wrangler tail`
+  reported `grant_type=refresh_token`, HTTP **200**, and a successfully
+  validated binding whose approved and issued scopes contained the same
+  four expected scopes. The fingerprint recomputed from the owner's
+  post-Deny guest/connection list matched the **Active connection** exactly
+  and did not match the Revoked connection. Raw IDs and fingerprint are
+  omitted from public evidence.
+- Cloudflare Zone HTTP Analytics separately returned `/oauth/token`
+  HTTP **200** at 00:04:37Z and `/mcp` HTTP **200** at 00:04:40Z.
+  The real host `get_table` result succeeded on the existing table.
+  This is a same-deployment, narrow-window causal sequence, though it
+  lacks a shared per-request trace ID or independent TableDO storage export.
+  The refresh and post-refresh read cases therefore pass for this
+  owner-authorized active connection, not for all hosts or versions.
+- Afterward the metadata-only tail was stopped; staging config and live
+  Worker were restored to `OAUTH_AUDIT_MODE=off`, with confirmed version
+  `78faef17-37cb-42bf-a740-2946d097621f` deployed at 00:07:23Z.
+  Source and audit-on annotations are operator claims, not cryptographic
+  bundle attestations. [Redacted host/server receipt](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6754963099).
+  The separate
+  `evidence.chatgpt-work-2026-11-10-refresh.json` documents these two
+  passed cases without combining Deny, table creation or revocation from
+  different deployment windows.
 
 Before closing #23, independently review the paired host/Worker/DO grant and
 table receipts for all cases, and ensure
