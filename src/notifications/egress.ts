@@ -27,6 +27,49 @@ export interface ReviewedCallbackTarget {
   pathPrefix: string;
 }
 
+/**
+ * Only an operator-provided, exact HTTPS origin/path allowlist authorizes
+ * outbound challenges. An absent or malformed binding denies all candidates.
+ */
+export function reviewedCallbackTargets(
+  encoded: string | undefined,
+): readonly ReviewedCallbackTarget[] {
+  if (typeof encoded !== "string" || encoded.length > 4096) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(encoded);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed) || parsed.length < 1 || parsed.length > 8)
+    return [];
+  const targets: ReviewedCallbackTarget[] = [];
+  for (const entry of parsed) {
+    if (
+      !entry ||
+      typeof entry !== "object" ||
+      Array.isArray(entry) ||
+      Object.keys(entry).length !== 2 ||
+      typeof entry.origin !== "string" ||
+      typeof entry.pathPrefix !== "string"
+    )
+      return [];
+    const target: ReviewedCallbackTarget = {
+      origin: entry.origin,
+      pathPrefix: entry.pathPrefix,
+    };
+    if (
+      !validateReviewedCallbackDestination(
+        `${target.origin}${target.pathPrefix}`,
+        [target],
+      ).ok
+    )
+      return [];
+    targets.push(target);
+  }
+  return targets;
+}
+
 export type CallbackDestinationDecision =
   | { ok: true; url: URL }
   | { ok: false; reason: "destination-rejected" };
@@ -170,6 +213,7 @@ const ALLOWED_HEADER_NAMES = new Set([
   "webhook-timestamp",
   "webhook-signature",
   "x-mcp-signature",
+  "x-mcp-subscription-id",
 ]);
 const HEADER_VALUE = /^[\x20-\x7e]{1,2048}$/;
 

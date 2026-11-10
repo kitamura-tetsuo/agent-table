@@ -19,6 +19,12 @@ export type SafeTableMetadata = {
   memberships: SafeMembership[];
   ownMembershipId: string;
   ownInboxUri: string;
+  /** Only present on the authenticated get_table MCP read. */
+  notifications?: {
+    available: false;
+    reason: "delivery_not_ready";
+    status: "active" | "expired" | "disabled";
+  };
   limits: {
     participants: number;
     ttlDefaultSeconds: number;

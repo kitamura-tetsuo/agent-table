@@ -3,6 +3,7 @@ import {
   callbackTransportReadiness,
   extractSafeCloudflareErrorCode,
   MAX_CALLBACK_REQUEST_BYTES,
+  reviewedCallbackTargets,
   sendVerifiedHttps,
   validateReviewedCallbackDestination,
 } from "../../src/notifications/egress";
@@ -15,6 +16,34 @@ const reviewed = [
 ] as const;
 
 describe("callback egress preflight", () => {
+  it("loads only a fully reviewed fail-closed Workers binding", () => {
+    const valid = JSON.stringify(reviewed);
+    expect(reviewedCallbackTargets(valid)).toEqual(reviewed);
+    expect(reviewedCallbackTargets(undefined)).toEqual([]);
+    for (const invalid of [
+      "",
+      "not JSON",
+      "{}",
+      "[]",
+      JSON.stringify([
+        ...reviewed,
+        { origin: "https://localhost", pathPrefix: "/" },
+      ]),
+      JSON.stringify([
+        { origin: "http://events.provider.example.org", pathPrefix: "/" },
+      ]),
+      JSON.stringify([
+        {
+          origin: "https://events.provider.example.org",
+          pathPrefix: "/callback/../other",
+        },
+      ]),
+      JSON.stringify(Array.from({ length: 9 }, () => reviewed[0])),
+    ]) {
+      expect(reviewedCallbackTargets(invalid)).toEqual([]);
+    }
+  });
+
   it("recognizes an exact reviewed origin with an opaque callback path", () => {
     const decision = validateReviewedCallbackDestination(
       "https://events.provider.example.org/callback/sub-opaque-123?challenge=synthetic",

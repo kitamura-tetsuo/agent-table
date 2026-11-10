@@ -9,6 +9,13 @@ import {
   MAX_INBOX_STREAM_LIFETIME_MS,
   parseCanonicalInboxFilter,
 } from "../mcp/subscriptions";
+import { callbackTransportReadiness } from "../notifications/egress";
+import {
+  grantedSubscriptionTtlMs,
+  parseEventSubscriptionParams,
+  subscriptionIdentity,
+} from "../notifications/openai-events";
+import { allowOutboundNotifications } from "../shared/admission";
 import {
   authorizeGuestConnection,
   type ConnectionScope,
@@ -134,6 +141,49 @@ type JoinReceiptRow = {
   secret_digest: string;
   membership_id: string;
 };
+
+type EventSubscriptionRow = {
+  membership_id: string;
+  generation: number;
+  fence: number;
+  status: "inactive" | "active" | "expired";
+  guest_id: string | null;
+  connection_id: string | null;
+  subscription_id: string | null;
+  callback_url: string | null;
+  secret_envelope: string | null;
+  previous_secret_envelope: string | null;
+  rotation_until: number | null;
+  expires_at: number | null;
+};
+
+type EventCandidateRow = {
+  membership_id: string;
+  candidate_id: string;
+  subscription_id: string;
+  guest_id: string;
+  connection_id: string;
+  callback_url: string;
+  secret_envelope: string;
+  requested_ttl_ms: number | null;
+  fence: number;
+  expires_at: number;
+};
+
+type EventFailure =
+  | "INVALID_REQUEST"
+  | "TABLE_NOT_FOUND"
+  | "TABLE_TERMINAL"
+  | "CONFLICT"
+  | "STALE"
+  | "TEMPORARILY_UNAVAILABLE";
+
+type EventResult<T> =
+  | { ok: true; value: T }
+  | { ok: false; code: EventFailure };
+
+const EVENT_CANDIDATE_WINDOW_MS = 15_000;
+const EVENT_ROTATION_WINDOW_MS = 5 * 60_000;
 
 export type InvitationResult =
   | {
@@ -287,9 +337,28 @@ export class TableDO extends DurableObject<Env> {
           "SELECT MIN(expires_at) AS deadline FROM table_delete_confirmations WHERE state = 'pending'",
         )
         .one().deadline;
-      return pending === null
-        ? table.expires_at
-        : Math.min(pending, table.expires_at);
+      const candidate = this.ctx.storage.sql
+        .exec<{ deadline: number | null }>(
+          "SELECT MIN(expires_at) AS deadline FROM table_event_candidates",
+        )
+        .one().deadline;
+      const subscription = this.ctx.storage.sql
+        .exec<{ deadline: number | null }>(
+          "SELECT MIN(expires_at) AS deadline FROM table_event_subscriptions WHERE status = 'active'",
+        )
+        .one().deadline;
+      const rotation = this.ctx.storage.sql
+        .exec<{ deadline: number | null }>(
+          "SELECT MIN(rotation_until) AS deadline FROM table_event_subscriptions WHERE previous_secret_envelope IS NOT NULL",
+        )
+        .one().deadline;
+      return Math.min(
+        table.expires_at,
+        pending ?? table.expires_at,
+        candidate ?? table.expires_at,
+        subscription ?? table.expires_at,
+        rotation ?? table.expires_at,
+      );
     }
     return this.tombstoneRow()?.retain_until ?? null;
   }
@@ -321,6 +390,8 @@ export class TableDO extends DurableObject<Env> {
       );
     }
     this.ctx.storage.sql.exec("DELETE FROM table_delete_confirmations");
+    this.ctx.storage.sql.exec("DELETE FROM table_event_candidates");
+    this.ctx.storage.sql.exec("DELETE FROM table_event_subscriptions");
     this.ctx.storage.sql.exec("DELETE FROM table_post_receipts");
     this.ctx.storage.sql.exec("DELETE FROM table_messages");
     this.ctx.storage.sql.exec("DELETE FROM table_transcript_usage");
@@ -346,6 +417,8 @@ export class TableDO extends DurableObject<Env> {
       return 1;
     }
     if (table) {
+      const eventsProcessed = this.cleanupExpiredEvents(now, budget);
+      if (eventsProcessed > 0) return eventsProcessed;
       this.ctx.storage.sql.exec(
         `UPDATE table_delete_confirmations SET state = 'expired'
          WHERE rowid IN (
@@ -407,6 +480,118 @@ export class TableDO extends DurableObject<Env> {
       .toArray()[0];
   }
 
+  private eventSubscription(
+    membershipId: string,
+  ): EventSubscriptionRow | undefined {
+    return this.ctx.storage.sql
+      .exec<EventSubscriptionRow>(
+        "SELECT * FROM table_event_subscriptions WHERE membership_id = ?",
+        membershipId,
+      )
+      .toArray()[0];
+  }
+
+  private eventCandidate(membershipId: string): EventCandidateRow | undefined {
+    return this.ctx.storage.sql
+      .exec<EventCandidateRow>(
+        "SELECT * FROM table_event_candidates WHERE membership_id = ?",
+        membershipId,
+      )
+      .toArray()[0];
+  }
+
+  /** Keep the generation ledger while erasing all credentials and destinations. */
+  private invalidateEventSubscription(
+    membershipId: string,
+    status: "inactive" | "expired",
+  ): void {
+    this.ctx.storage.sql.exec(
+      `UPDATE table_event_subscriptions
+       SET generation = generation + 1, fence = fence + 1, status = ?,
+           callback_url = NULL, secret_envelope = NULL,
+           previous_secret_envelope = NULL, rotation_until = NULL,
+           expires_at = NULL
+       WHERE membership_id = ?`,
+      status,
+      membershipId,
+    );
+  }
+
+  private cleanupExpiredEvents(now: number, budget: number): number {
+    if (budget <= 0) return 0;
+    let processed = 0;
+    const candidates = this.ctx.storage.sql
+      .exec<{ membership_id: string }>(
+        "SELECT membership_id FROM table_event_candidates WHERE expires_at <= ? LIMIT ?",
+        now,
+        budget,
+      )
+      .toArray();
+    for (const candidate of candidates) {
+      this.ctx.storage.sql.exec(
+        "DELETE FROM table_event_candidates WHERE membership_id = ?",
+        candidate.membership_id,
+      );
+      this.ctx.storage.sql.exec(
+        "UPDATE table_event_subscriptions SET fence = fence + 1 WHERE membership_id = ?",
+        candidate.membership_id,
+      );
+      processed++;
+    }
+    if (processed >= budget) return processed;
+    const expired = this.ctx.storage.sql
+      .exec<{ membership_id: string }>(
+        `SELECT membership_id FROM table_event_subscriptions
+         WHERE status = 'active' AND expires_at <= ? LIMIT ?`,
+        now,
+        budget - processed,
+      )
+      .toArray();
+    for (const subscription of expired) {
+      this.ctx.storage.sql.exec(
+        "DELETE FROM table_event_candidates WHERE membership_id = ?",
+        subscription.membership_id,
+      );
+      this.invalidateEventSubscription(subscription.membership_id, "expired");
+      processed++;
+    }
+    if (processed >= budget) return processed;
+    const rotations = this.ctx.storage.sql
+      .exec<{ membership_id: string }>(
+        "SELECT membership_id FROM table_event_subscriptions WHERE previous_secret_envelope IS NOT NULL AND rotation_until <= ? LIMIT ?",
+        now,
+        budget - processed,
+      )
+      .toArray();
+    for (const rotation of rotations) {
+      // Removing the old key is itself a dispatch-generation invalidation.
+      this.ctx.storage.sql.exec(
+        "UPDATE table_event_subscriptions SET previous_secret_envelope = NULL, rotation_until = NULL, generation = generation + 1, fence = fence + 1 WHERE membership_id = ?",
+        rotation.membership_id,
+      );
+      processed++;
+    }
+    return processed;
+  }
+
+  /** A safe connection-local status; neither peer nor callback data leaves TableDO. */
+  private ownEventStatus(member: MembershipRow, connectionId: string) {
+    const row = this.eventSubscription(member.membership_id);
+    const owned =
+      row?.guest_id === member.guest_id && row.connection_id === connectionId;
+    const status: "disabled" | "expired" | "active" =
+      !owned || !row || row.status === "inactive"
+        ? "disabled"
+        : row.status === "expired" || (row.expires_at ?? 0) <= Date.now()
+          ? "expired"
+          : "active";
+    return {
+      available: false as const,
+      reason: "delivery_not_ready" as const,
+      status,
+    };
+  }
+
   private publicMetadata(
     table: MetadataRow,
     own: MembershipRow,
@@ -449,6 +634,397 @@ export class TableDO extends DurableObject<Env> {
       requiredScope,
     );
     return decision.allowed;
+  }
+
+  private async freshEventActor(
+    actor: VerifiedConnectionActor,
+  ): Promise<VerifiedConnectionActor | null> {
+    if (
+      actor?.kind !== "verified-connection" ||
+      actor.scope !== "events:subscribe" ||
+      typeof actor.guestId !== "string" ||
+      typeof actor.connectionId !== "string"
+    )
+      return null;
+    const decision = await authorizeGuestConnection(
+      this.env,
+      actor.guestId,
+      actor.connectionId,
+      "events:subscribe",
+    );
+    // Never trust the expiry from an earlier RPC or caller-provided actor.
+    return decision.allowed ? decision.actor : null;
+  }
+
+  /**
+   * Reserve a fenced, encrypted candidate without changing an existing active
+   * subscription. Network verification is deliberately outside this method.
+   */
+  async beginEventSubscription(
+    actor: VerifiedConnectionActor,
+    input: unknown,
+  ): Promise<EventResult<{ candidateId: string; subscriptionId: string }>> {
+    const parsed = parseEventSubscriptionParams(input, "subscribe");
+    if (!parsed) return { ok: false, code: "INVALID_REQUEST" };
+    const fresh = await this.freshEventActor(actor);
+    if (!fresh) return { ok: false, code: "TABLE_NOT_FOUND" };
+    const table = this.metadataRow();
+    const member = this.memberFor(fresh.guestId);
+    if (!table || !member || table.table_id !== parsed.arguments.table_id)
+      return { ok: false, code: "TABLE_NOT_FOUND" };
+    if (
+      table.expires_at <= Date.now() ||
+      (table.state !== "waiting" && table.state !== "open")
+    )
+      return { ok: false, code: "TABLE_TERMINAL" };
+    const subscriptionId = await subscriptionIdentity(fresh, parsed);
+    const candidateId = crypto.randomUUID();
+    let envelope: string;
+    try {
+      envelope = await sealSecret(
+        "callback-credential",
+        parsed.delivery.secret as string,
+        { recordId: `event:${subscriptionId}` },
+        this.env,
+      );
+    } catch {
+      return { ok: false, code: "TEMPORARILY_UNAVAILABLE" };
+    }
+    const deadline = Math.min(
+      Date.now() + EVENT_CANDIDATE_WINDOW_MS,
+      table.expires_at,
+      fresh.expiresAt,
+    );
+    if (deadline <= Date.now()) return { ok: false, code: "STALE" };
+    try {
+      const committed = await this.deadlines.commitWithWakeup(deadline, () =>
+        this.ctx.storage.transactionSync(() => {
+          const now = Date.now();
+          const currentTable = this.metadataRow();
+          const currentMember = this.memberFor(fresh.guestId);
+          if (
+            !currentTable ||
+            !currentMember ||
+            currentTable.table_id !== parsed.arguments.table_id
+          )
+            return { ok: false, code: "TABLE_NOT_FOUND" } as const;
+          if (
+            currentTable.expires_at <= now ||
+            fresh.expiresAt <= now ||
+            deadline <= now ||
+            (currentTable.state !== "waiting" && currentTable.state !== "open")
+          )
+            return { ok: false, code: "TABLE_TERMINAL" } as const;
+          let row = this.eventSubscription(currentMember.membership_id);
+          if (row?.status === "active" && (row.expires_at ?? 0) <= now) {
+            this.invalidateEventSubscription(
+              currentMember.membership_id,
+              "expired",
+            );
+            row = this.eventSubscription(currentMember.membership_id);
+          }
+          if (
+            row?.status === "active" &&
+            (row.subscription_id !== subscriptionId ||
+              row.guest_id !== fresh.guestId ||
+              row.connection_id !== fresh.connectionId ||
+              row.callback_url !== parsed.delivery.url)
+          )
+            return { ok: false, code: "CONFLICT" } as const;
+          const pending = this.eventCandidate(currentMember.membership_id);
+          if (
+            pending &&
+            pending.expires_at > now &&
+            (pending.guest_id !== fresh.guestId ||
+              pending.connection_id !== fresh.connectionId)
+          )
+            return { ok: false, code: "CONFLICT" } as const;
+          const nextFence = (row?.fence ?? 0) + 1;
+          if (row) {
+            this.ctx.storage.sql.exec(
+              "UPDATE table_event_subscriptions SET fence = ? WHERE membership_id = ?",
+              nextFence,
+              currentMember.membership_id,
+            );
+          } else {
+            this.ctx.storage.sql.exec(
+              "INSERT INTO table_event_subscriptions (membership_id, generation, fence, status) VALUES (?, 0, ?, 'inactive')",
+              currentMember.membership_id,
+              nextFence,
+            );
+          }
+          this.ctx.storage.sql.exec(
+            "DELETE FROM table_event_candidates WHERE membership_id = ?",
+            currentMember.membership_id,
+          );
+          this.ctx.storage.sql.exec(
+            "INSERT INTO table_event_candidates (membership_id, candidate_id, subscription_id, guest_id, connection_id, callback_url, secret_envelope, requested_ttl_ms, fence, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            currentMember.membership_id,
+            candidateId,
+            subscriptionId,
+            fresh.guestId,
+            fresh.connectionId,
+            parsed.delivery.url,
+            envelope,
+            parsed.ttlMs,
+            nextFence,
+            deadline,
+          );
+          return { ok: true, value: { candidateId, subscriptionId } } as const;
+        }),
+      );
+      return committed.value;
+    } catch {
+      return { ok: false, code: "TEMPORARILY_UNAVAILABLE" };
+    }
+  }
+
+  /**
+   * The challenge was observed outside TableDO. The final commit rechecks
+   * the actual GuestDO grant, current membership, expiry and candidate fence.
+   * No remote I/O occurs inside the SQLite transaction.
+   */
+  async commitVerifiedEventSubscription(
+    actor: VerifiedConnectionActor,
+    candidateId: string,
+  ): Promise<
+    EventResult<{ id: string; expiresAt: number; generation: number }>
+  > {
+    if (typeof candidateId !== "string" || !validTableId(candidateId))
+      return { ok: false, code: "INVALID_REQUEST" };
+    const fresh = await this.freshEventActor(actor);
+    if (!fresh) return { ok: false, code: "TABLE_NOT_FOUND" };
+    const member = this.memberFor(fresh.guestId);
+    const table = this.metadataRow();
+    if (!member || !table) return { ok: false, code: "TABLE_NOT_FOUND" };
+    const candidate = this.eventCandidate(member.membership_id);
+    if (
+      !candidate ||
+      candidate.candidate_id !== candidateId ||
+      candidate.guest_id !== fresh.guestId ||
+      candidate.connection_id !== fresh.connectionId
+    )
+      return { ok: false, code: "STALE" };
+    const granted = grantedSubscriptionTtlMs(
+      candidate.requested_ttl_ms,
+      table.expires_at - Date.now(),
+      fresh.expiresAt - Date.now(),
+    );
+    if (granted < 1000) return { ok: false, code: "STALE" };
+    const deadline = Math.min(
+      table.expires_at,
+      fresh.expiresAt,
+      Date.now() + granted,
+    );
+    try {
+      const committed = await this.deadlines.commitWithWakeup(deadline, () =>
+        this.ctx.storage.transactionSync(() => {
+          const now = Date.now();
+          const currentTable = this.metadataRow();
+          const currentMember = this.memberFor(fresh.guestId);
+          if (
+            !currentTable ||
+            !currentMember ||
+            currentTable.table_id !== table.table_id ||
+            currentTable.expires_at <= now ||
+            fresh.expiresAt <= now ||
+            (currentTable.state !== "waiting" && currentTable.state !== "open")
+          )
+            return { ok: false, code: "TABLE_TERMINAL" } as const;
+          const pending = this.eventCandidate(currentMember.membership_id);
+          const current = this.eventSubscription(currentMember.membership_id);
+          if (
+            !pending ||
+            !current ||
+            pending.candidate_id !== candidateId ||
+            pending.fence !== current.fence ||
+            pending.expires_at <= now ||
+            pending.guest_id !== fresh.guestId ||
+            pending.connection_id !== fresh.connectionId
+          )
+            return { ok: false, code: "STALE" } as const;
+          // A pending refresh cannot resurrect an active subscription that expired
+          // before the external verification returned, even before alarm cleanup.
+          if (current.status === "active" && (current.expires_at ?? 0) <= now) {
+            this.ctx.storage.sql.exec(
+              "DELETE FROM table_event_candidates WHERE membership_id = ?",
+              currentMember.membership_id,
+            );
+            this.invalidateEventSubscription(
+              currentMember.membership_id,
+              "expired",
+            );
+            return { ok: false, code: "STALE" } as const;
+          }
+          if (
+            current.status === "active" &&
+            (current.expires_at ?? 0) > now &&
+            (current.subscription_id !== pending.subscription_id ||
+              current.connection_id !== fresh.connectionId ||
+              current.callback_url !== pending.callback_url)
+          )
+            return { ok: false, code: "CONFLICT" } as const;
+          const actualTtl = grantedSubscriptionTtlMs(
+            pending.requested_ttl_ms,
+            currentTable.expires_at - now,
+            fresh.expiresAt - now,
+          );
+          if (actualTtl < 1000) return { ok: false, code: "STALE" } as const;
+          const expiresAt = now + actualTtl;
+          const rotate =
+            current.status === "active" &&
+            current.subscription_id === pending.subscription_id &&
+            (current.expires_at ?? 0) > now &&
+            current.secret_envelope !== null;
+          const previous = rotate ? current.secret_envelope : null;
+          const rotationUntil = rotate
+            ? Math.min(now + EVENT_ROTATION_WINDOW_MS, expiresAt)
+            : null;
+          const generation = current.generation + 1;
+          this.ctx.storage.sql.exec(
+            "UPDATE table_event_subscriptions SET generation = ?, status = 'active', guest_id = ?, connection_id = ?, subscription_id = ?, callback_url = ?, secret_envelope = ?, previous_secret_envelope = ?, rotation_until = ?, expires_at = ? WHERE membership_id = ?",
+            generation,
+            fresh.guestId,
+            fresh.connectionId,
+            pending.subscription_id,
+            pending.callback_url,
+            pending.secret_envelope,
+            previous,
+            rotationUntil,
+            expiresAt,
+            currentMember.membership_id,
+          );
+          this.ctx.storage.sql.exec(
+            "DELETE FROM table_event_candidates WHERE membership_id = ?",
+            currentMember.membership_id,
+          );
+          return {
+            ok: true,
+            value: { id: pending.subscription_id, expiresAt, generation },
+          } as const;
+        }),
+      );
+      return committed.value;
+    } catch {
+      return { ok: false, code: "TEMPORARILY_UNAVAILABLE" };
+    }
+  }
+
+  /** Failed verification cannot invalidate a previous committed subscription. */
+  async discardEventCandidate(
+    actor: VerifiedConnectionActor,
+    candidateId: string,
+  ): Promise<void> {
+    if (
+      actor?.kind !== "verified-connection" ||
+      typeof candidateId !== "string" ||
+      !validTableId(candidateId)
+    )
+      return;
+    this.ctx.storage.transactionSync(() => {
+      const member = this.memberFor(actor.guestId);
+      if (!member) return;
+      const candidate = this.eventCandidate(member.membership_id);
+      if (
+        candidate?.candidate_id !== candidateId ||
+        candidate.guest_id !== actor.guestId ||
+        candidate.connection_id !== actor.connectionId
+      )
+        return;
+      this.ctx.storage.sql.exec(
+        "DELETE FROM table_event_candidates WHERE membership_id = ?",
+        member.membership_id,
+      );
+      this.ctx.storage.sql.exec(
+        "UPDATE table_event_subscriptions SET fence = fence + 1 WHERE membership_id = ?",
+        member.membership_id,
+      );
+    });
+  }
+
+  /** The provider's original compound identity, never a caller-supplied ID. */
+  async unsubscribeEvent(
+    actor: VerifiedConnectionActor,
+    input: unknown,
+  ): Promise<EventResult<Record<string, never>>> {
+    const parsed = parseEventSubscriptionParams(input, "unsubscribe");
+    if (!parsed) return { ok: false, code: "INVALID_REQUEST" };
+    const fresh = await this.freshEventActor(actor);
+    if (!fresh) return { ok: false, code: "TABLE_NOT_FOUND" };
+    const table = this.metadataRow();
+    const member = this.memberFor(fresh.guestId);
+    if (!table || !member || table.table_id !== parsed.arguments.table_id)
+      return { ok: false, code: "TABLE_NOT_FOUND" };
+    const identity = await subscriptionIdentity(fresh, parsed);
+    return this.ctx.storage.transactionSync(() => {
+      const currentMember = this.memberFor(fresh.guestId);
+      if (!currentMember || !this.metadataRow())
+        return { ok: false, code: "TABLE_NOT_FOUND" } as const;
+      const current = this.eventSubscription(currentMember.membership_id);
+      if (
+        current?.status === "active" &&
+        current.subscription_id === identity &&
+        current.guest_id === fresh.guestId &&
+        current.connection_id === fresh.connectionId
+      )
+        this.invalidateEventSubscription(
+          currentMember.membership_id,
+          "inactive",
+        );
+      const pending = this.eventCandidate(currentMember.membership_id);
+      if (
+        pending?.subscription_id === identity &&
+        pending.guest_id === fresh.guestId &&
+        pending.connection_id === fresh.connectionId
+      ) {
+        this.ctx.storage.sql.exec(
+          "DELETE FROM table_event_candidates WHERE membership_id = ?",
+          currentMember.membership_id,
+        );
+        this.ctx.storage.sql.exec(
+          "UPDATE table_event_subscriptions SET fence = fence + 1 WHERE membership_id = ?",
+          currentMember.membership_id,
+        );
+      }
+      return { ok: true, value: {} } as const;
+    });
+  }
+
+  /**
+   * A downstream dispatcher must recheck this boundary per attempt. This is
+   * not itself a delivery authorization while public transport is disabled.
+   */
+  async authorizeEventAttempt(
+    actor: VerifiedConnectionActor,
+    subscriptionId: string,
+    generation: number,
+  ): Promise<boolean> {
+    if (
+      !allowOutboundNotifications(this.env) ||
+      !callbackTransportReadiness().enabled
+    )
+      return false;
+    const fresh = await this.freshEventActor(actor);
+    if (!fresh || fresh.expiresAt <= Date.now()) return false;
+    const table = this.metadataRow();
+    const member = this.memberFor(fresh.guestId);
+    if (
+      !table ||
+      !member ||
+      table.expires_at <= Date.now() ||
+      (table.state !== "waiting" && table.state !== "open")
+    )
+      return false;
+    const row = this.eventSubscription(member.membership_id);
+    return (
+      !!row &&
+      row.status === "active" &&
+      row.guest_id === fresh.guestId &&
+      row.connection_id === fresh.connectionId &&
+      row.subscription_id === subscriptionId &&
+      row.generation === generation &&
+      (row.expires_at ?? 0) > Date.now()
+    );
   }
 
   /**
@@ -1091,6 +1667,22 @@ export class TableDO extends DurableObject<Env> {
       : access;
   }
 
+  /** Only the MCP get_table read exposes this sanitized subscription state. */
+  async getMetadataForMcp(
+    actor: VerifiedConnectionActor,
+  ): Promise<TableResult<SafeTableMetadata>> {
+    const access = await this.readMembership(actor);
+    if (!access.ok) return access;
+    const { table, member } = access.value;
+    return {
+      ok: true,
+      value: {
+        ...this.publicMetadata(table, member),
+        notifications: this.ownEventStatus(member, actor.connectionId),
+      },
+    };
+  }
+
   /** Browser reads check the independently held session, never an OAuth grant. */
   async getBrowserMetadata(
     credential: BrowserDeletionCredential,
@@ -1503,6 +2095,15 @@ export class TableDO extends DurableObject<Env> {
           this.ctx.storage.sql.exec(
             "UPDATE table_invitations SET state = 'revoked', response_envelope = NULL WHERE state = 'active'",
           );
+          // Closed tables cannot acquire or retain event dispatch authority.
+          this.ctx.storage.sql.exec("DELETE FROM table_event_candidates");
+          for (const row of this.ctx.storage.sql
+            .exec<{ membership_id: string }>(
+              "SELECT membership_id FROM table_event_subscriptions",
+            )
+            .toArray()) {
+            this.invalidateEventSubscription(row.membership_id, "inactive");
+          }
           return {
             ok: true,
             value: {
