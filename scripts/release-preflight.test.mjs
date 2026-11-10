@@ -200,6 +200,39 @@ test("rejects mismatched environment markers and worker names", () => {
   );
 });
 
+test("the peer must also have a complete fail-closed deployment profile", () => {
+  const args = fixture();
+  for (const [mutate, expected] of [
+    [(peer) => (peer.name = "agent-table-other"), "peer-worker-name-mismatch"],
+    [(peer) => (peer.main = "src/legacy.ts"), "peer-unexpected-worker-entry"],
+    [
+      (peer) => (peer.compatibility_flags = ["nodejs_compat"]),
+      "peer-missing-strict-public-fetch",
+    ],
+    [
+      (peer) => delete peer.vars.RESTORE_QUARANTINE,
+      "peer-restore-quarantine-mode-missing",
+    ],
+    [
+      (peer) => (peer.vars.RESTORE_QUARANTINE = "maybe"),
+      "peer-restore-quarantine-mode-missing",
+    ],
+    [
+      (peer) => delete peer.vars.ENABLE_OPENAI_EVENTS,
+      "peer-invalid-capability-switch",
+    ],
+    [
+      (peer) => (peer.vars.ALLOW_NEW_TABLES = "maybe"),
+      "peer-invalid-capability-switch",
+    ],
+  ]) {
+    const peer = JSON.parse(args.peerText);
+    mutate(peer);
+    blocked({ ...args, peerText: JSON.stringify(peer) }, expected);
+  }
+  assert.equal(validateRelease(args).deploymentApproved, false);
+});
+
 test("requires an explicit independent restore-quarantine binding for a release", () => {
   const args = fixture();
   const config = JSON.parse(args.configText);

@@ -285,6 +285,38 @@ export function validateRelease({
     typeof peer.name === "string" && peer.name !== config.name,
     "shared-worker-name",
   );
+  // The counterpart is part of the isolation decision, not just a namespace
+  // comparison. A partial or weakened peer configuration must fail closed.
+  const peerEnvironment = environment === "staging" ? "production" : "staging";
+  requireCondition(
+    peer.name.endsWith(`-${peerEnvironment}`),
+    "peer-worker-name-mismatch",
+  );
+  requireCondition(
+    peer.main === "src/index.ts",
+    "peer-unexpected-worker-entry",
+  );
+  requireCondition(
+    peer?.compatibility_flags?.includes("global_fetch_strictly_public"),
+    "peer-missing-strict-public-fetch",
+  );
+  requireCondition(
+    peer?.vars?.RESTORE_QUARANTINE === "true" ||
+      peer?.vars?.RESTORE_QUARANTINE === "false",
+    "peer-restore-quarantine-mode-missing",
+  );
+  requireCondition(
+    [
+      "ENABLE_MCP_SUBSCRIPTIONS",
+      "ENABLE_OPENAI_EVENTS",
+      "ALLOW_OUTBOUND_NOTIFICATIONS",
+      "ALLOW_NEW_GUESTS",
+      "ALLOW_NEW_TABLES",
+    ].every(
+      (name) => peer?.vars?.[name] === "true" || peer?.vars?.[name] === "false",
+    ),
+    "peer-invalid-capability-switch",
+  );
   const peerKv = kvId(peer);
   requireCondition(peerKv !== oauthKvId, "shared-oauth-kv");
   const peerOrigin = parseOrigin(
