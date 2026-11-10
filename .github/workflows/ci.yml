@@ -20,7 +20,7 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm run lint
-      - run: npx biome check scripts/manage-ingress-waf.mjs scripts/manage-ingress-waf.test.mjs scripts/wrangler-sqlite.test.mjs scripts/release-preflight.mjs scripts/release-preflight.test.mjs scripts/require-release-approval.mjs scripts/require-release-approval.test.mjs scripts/inbox-streams-workerd.test.mjs scripts/two-worker-subscriptions.mjs
+      - run: npx biome check scripts/manage-ingress-waf.mjs scripts/manage-ingress-waf.test.mjs scripts/wrangler-sqlite.test.mjs scripts/release-preflight.mjs scripts/release-preflight.test.mjs scripts/require-release-approval.mjs scripts/require-release-approval.test.mjs scripts/inbox-streams-workerd.test.mjs scripts/two-worker-subscriptions.mjs scripts/restore-transition-workerd.test.mjs
       - run: node --test scripts/*.test.mjs
       - uses: actions/setup-python@v5
         with:
