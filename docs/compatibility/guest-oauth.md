@@ -339,7 +339,8 @@ secret may use the probe.
 
 A bounded JSON POST accepts exactly a UUID-v4 `guestId`, and optionally
 `tableId` and `connectionId`. The Worker uses exact-name DO stubs, and the
-DOs query their own SQLite rows (not the normal HTTP response):
+DOs query their own SQLite rows (not the normal HTTP response), including up
+to eight newest grants with randomized-ID fingerprints and bounded scope lists:
 `guest_identity`, `guest_connections`,
 `guest_creation_reservations`, `table_metadata`,
 `table_memberships`, and a terminal tombstone if present. Responses have

@@ -11,6 +11,13 @@ const SECRET = "a".repeat(64);
 const STAGING = "https://agent-table-test.outliner-online.com";
 const guestRead = vi.fn(async () => ({
   identityMatches: true,
+  recentConnections: [
+    {
+      connectionFingerprint: "f".repeat(24),
+      state: "active",
+      scopes: ["tables:read"],
+    },
+  ],
   connection: { exists: true, state: "revoked" },
   creationReservation: { exists: true, outcome: "initialized" },
 }));
@@ -105,7 +112,11 @@ describe("staging-only SQLite evidence inspection", () => {
     }
     expect(JSON.parse(raw)).toMatchObject({
       evidence: "staging-durable-object-sqlite",
-      guestSqlite: { identityMatches: true, connection: { state: "revoked" } },
+      guestSqlite: {
+        identityMatches: true,
+        recentConnections: [{ state: "active", scopes: ["tables:read"] }],
+        connection: { state: "revoked" },
+      },
       tableSqlite: { metadataExists: true, creatorMatchesGuest: true },
     });
   });

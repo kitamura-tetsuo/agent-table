@@ -195,8 +195,46 @@ export class GuestDO extends DurableObject<Env> {
     const ownedCreation =
       identityMatches && creation?.guest_id === guestId ? creation : undefined;
     const now = Date.now();
+    // Bound the read to eight newest grants; never export their raw IDs.
+    const recentRows = identityMatches
+      ? this.ctx.storage.sql
+          .exec<ConnectionRow>(
+            `SELECT connection_id, guest_id, scopes_json, created_at,
+                    expires_at, revoked_at
+             FROM guest_connections WHERE guest_id = ?
+             ORDER BY created_at DESC LIMIT 8`,
+            guestId,
+          )
+          .toArray()
+      : [];
+    const recentConnections = await Promise.all(
+      recentRows.map(async (row) => {
+        let scopes: ConnectionScope[] = [];
+        try {
+          const parsed: unknown = JSON.parse(row.scopes_json);
+          if (Array.isArray(parsed))
+            scopes = parsed.filter(isConnectionScope).sort();
+        } catch {
+          // Invalid legacy scope JSON must not leak or disrupt other rows.
+        }
+        return {
+          connectionFingerprint: await requestFingerprint(row.connection_id),
+          state:
+            row.revoked_at !== null
+              ? "revoked"
+              : row.expires_at <= now
+                ? "expired"
+                : "active",
+          scopes,
+          createdAt: row.created_at,
+          expiresAt: row.expires_at,
+          revokedAt: row.revoked_at,
+        };
+      }),
+    );
     return {
       identityMatches,
+      recentConnections,
       connection: connectionId
         ? {
             exists: Boolean(ownedConnection),
