@@ -11,6 +11,10 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as z from "zod/v4";
 import worker from "../../src/index";
+import {
+  reserveOutboxAttempt,
+  settleOutboxAttempt,
+} from "../../src/notifications/outbox";
 import { authorizeGuestConnection } from "../../src/shared/auth";
 import { openSecret } from "../../src/shared/secret-envelope";
 
@@ -425,6 +429,151 @@ describe("production MCP Events registration, OAuth and TableDO", () => {
         attempt_count: 0,
       });
 
+      // Exercise the durable lease/retry ledger on the actual committed SQL
+      // row. This deliberately does NOT send HTTP or enable public Events:
+      // fresh external grant and connection-time egress proofs are separate.
+      const reservedAt = Date.now() + 2_000;
+      const firstLease = await runInDurableObject(stub, (_instance, state) =>
+        state.storage.transactionSync(() =>
+          reserveOutboxAttempt(
+            state.storage.sql,
+            eventRows[0].event_id,
+            2,
+            reservedAt,
+          ),
+        ),
+      );
+      expect(firstLease).toMatchObject({
+        eventId: eventRows[0].event_id,
+        generation: 2,
+        attemptCount: 1,
+      });
+      if (!firstLease) throw new Error("Expected first durable lease");
+      expect(
+        await runInDurableObject(stub, (_instance, state) =>
+          state.storage.transactionSync(() =>
+            reserveOutboxAttempt(
+              state.storage.sql,
+              eventRows[0].event_id,
+              2,
+              reservedAt + 1,
+            ),
+          ),
+        ),
+      ).toBeNull();
+      expect(
+        await runInDurableObject(stub, (_instance, state) =>
+          state.storage.transactionSync(() =>
+            settleOutboxAttempt(state.storage.sql, firstLease, reservedAt + 1, {
+              kind: "transient",
+              category: "server-error",
+            }),
+          ),
+        ),
+      ).toBe("pending");
+      const retryDue = await runInDurableObject(stub, (_instance, state) =>
+        state.storage.sql
+          .exec<{ next_attempt_at: number; first_attempt_at: number }>(
+            "SELECT next_attempt_at, first_attempt_at FROM table_event_outbox WHERE event_id = ?",
+            eventRows[0].event_id,
+          )
+          .one(),
+      );
+      expect(retryDue.first_attempt_at).toBe(firstLease.firstAttemptAt);
+      expect(retryDue.next_attempt_at).toBeGreaterThan(reservedAt + 1);
+      await evictDurableObject(stub);
+      const recoveredLease = await runInDurableObject(
+        stub,
+        (_instance, state) =>
+          state.storage.transactionSync(() =>
+            reserveOutboxAttempt(
+              state.storage.sql,
+              eventRows[0].event_id,
+              2,
+              retryDue.next_attempt_at,
+            ),
+          ),
+      );
+      expect(recoveredLease).toMatchObject({
+        attemptCount: 2,
+        firstAttemptAt: firstLease.firstAttemptAt,
+      });
+      if (!recoveredLease) throw new Error("Expected reconstructed retry");
+      expect(recoveredLease.leaseToken).not.toBe(firstLease.leaseToken);
+      expect(
+        await runInDurableObject(stub, (_instance, state) =>
+          state.storage.transactionSync(() =>
+            settleOutboxAttempt(
+              state.storage.sql,
+              firstLease,
+              retryDue.next_attempt_at + 1,
+              { kind: "accepted" },
+            ),
+          ),
+        ),
+      ).toBeNull();
+
+      // Refresh the same canonical subscription while an attempt is leased.
+      // The original event, first-attempt deadline and reserved budget survive;
+      // the old generation must not settle a post-refresh response.
+      const secondRefresh = (await callEvent(
+        peerClient,
+        "events/subscribe",
+        subscriptionParams(tableId, CALLBACK, SECRET),
+      )) as { id: string };
+      expect(secondRefresh.id).toBe(subscribed.id);
+      const migrated = await runInDurableObject(stub, (_instance, state) =>
+        state.storage.sql
+          .exec<{
+            event_id: string;
+            subscription_generation: number;
+            attempt_count: number;
+            first_attempt_at: number;
+          }>(
+            "SELECT event_id, subscription_generation, attempt_count, first_attempt_at FROM table_event_outbox WHERE event_id = ?",
+            eventRows[0].event_id,
+          )
+          .one(),
+      );
+      expect(migrated).toEqual({
+        event_id: firstLease.eventId,
+        subscription_generation: 3,
+        attempt_count: 2,
+        first_attempt_at: firstLease.firstAttemptAt,
+      });
+      expect(
+        await runInDurableObject(stub, (_instance, state) =>
+          state.storage.transactionSync(() =>
+            settleOutboxAttempt(
+              state.storage.sql,
+              recoveredLease,
+              retryDue.next_attempt_at + 2,
+              { kind: "accepted" },
+            ),
+          ),
+        ),
+      ).toBeNull();
+      const freshGenerationLease = await runInDurableObject(
+        stub,
+        (_instance, state) =>
+          state.storage.transactionSync(() =>
+            reserveOutboxAttempt(
+              state.storage.sql,
+              eventRows[0].event_id,
+              3,
+              recoveredLease.leaseDeadline + 1,
+            ),
+          ),
+      );
+      expect(freshGenerationLease).toMatchObject({
+        eventId: firstLease.eventId,
+        generation: 3,
+        attemptCount: 3,
+        firstAttemptAt: firstLease.firstAttemptAt,
+      });
+      if (!freshGenerationLease)
+        throw new Error("Expected fenced post-refresh retry");
+
       await callEvent(
         peerClient,
         "events/unsubscribe",
@@ -433,8 +582,22 @@ describe("production MCP Events registration, OAuth and TableDO", () => {
       const cancelled = await rows();
       expect(cancelled[0]).toMatchObject({
         status: "cancelled",
-        subscription_generation: 2,
+        subscription_generation: 3,
       });
+      // An in-flight HTTP result cannot resurrect a cancelled incarnation.
+      expect(
+        await runInDurableObject(stub, (_instance, state) =>
+          state.storage.transactionSync(() =>
+            settleOutboxAttempt(
+              state.storage.sql,
+              freshGenerationLease,
+              freshGenerationLease.leaseDeadline - 1,
+              { kind: "accepted" },
+            ),
+          ),
+        ),
+      ).toBeNull();
+      expect((await rows())[0].status).toBe("cancelled");
       const unsubscribedStatus = toolOutput(
         await peerClient.callTool({
           name: "get_table",
@@ -474,7 +637,7 @@ describe("production MCP Events registration, OAuth and TableDO", () => {
       ]);
       // These captured requests are subscription-control challenges, never
       // application-message deliveries.
-      expect(receiver).toHaveBeenCalledTimes(3);
+      expect(receiver).toHaveBeenCalledTimes(4);
     } finally {
       await peerClient.close();
       await ownerClient.close();

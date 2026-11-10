@@ -639,3 +639,41 @@ safe status/telemetry and production-path receiver/restart tests required by
 The currently disabled public Events/readiness controls must stay off;
 an atomic outbox row or subscription challenge cannot prove delivery or
 host execution.
+
+### Issue #21: retained outbox lease ledger (Draft, not a delivery implementation)
+
+The Issue #21 branch now includes a SQL-only attempt ledger in
+`src/notifications/outbox.ts`. It conditionally reserves a due outbox event
+with its stable event ID, subscription generation and random lease token; it
+records the first attempt and consumes one of eight lifetime reservations
+**before** any future network await. The original one-hour horizon,
+subscription/table expiry, generation and cancelled/terminal state fence stale
+completions. A transient failure uses bounded backoff and capped Retry-After;
+HTTP 410/413 and permanent failures terminate without retry. Only a 2xx
+response could become `accepted`, which means receiver acceptance, not host
+execution or transcript acknowledgment. The ledger contains no callback
+credentials. A rotation updates pending/in-flight generations without resetting
+the original event ID or attempt budget.
+
+The existing TableDO alarm performs a safe, *network-free* terminal sweep for
+expired or exhausted work, retaining message rows and terminal outcomes. Workerd
+SQLite tests exercise an actual authenticated MCP post/subscribe/refresh and
+stored outbox row, reconstruction, reservation/retry, generation rollover,
+stale-result fencing, unsubscribe cancellation, eight-attempt exhaustion and
+the alarm terminal sweep. Classifier tests explicitly refuse unsafe redirects
+and unverified connection boundaries.
+
+**This is partial #21 implementation.** The SQL operations are not yet called
+by a production HTTPS dispatcher. A future integration still needs a bounded
+alarm batch with prearmed lease recovery, fresh GuestDO
+`events:subscribe` grant/membership/connection authority before every send,
+provider signing with decrypted credentials, actual controlled-receiver
+captures, cancellation and pause races, telemetry, and an end-to-end
+restart/retry oracle. In particular, `reserveOutboxAttempt` by itself is not
+an outbound authorization and must be invoked only after a durable wakeup has
+been armed. The public Events gate remains fail-closed because Issue #19's
+connection-time DNS/IP rebinding and original-host TLS evidence is missing.
+Synthetic Workerd tests are not Cloudflare production delivery, a receiver
+receipt, or a real idle-host run. Do not merge/close #21 or enable Events from
+these results. Issue #24 real-host evidence and Issue #22 recovery clearance
+remain distinct release gates.

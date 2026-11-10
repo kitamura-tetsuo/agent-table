@@ -15,6 +15,10 @@ import {
   parseEventSubscriptionParams,
   subscriptionIdentity,
 } from "../notifications/openai-events";
+import {
+  expireOutboxWork,
+  OUTBOX_RETRY_HORIZON_MS,
+} from "../notifications/outbox";
 import { allowOutboundNotifications } from "../shared/admission";
 import {
   authorizeGuestConnection,
@@ -352,12 +356,34 @@ export class TableDO extends DurableObject<Env> {
           "SELECT MIN(rotation_until) AS deadline FROM table_event_subscriptions WHERE previous_secret_envelope IS NOT NULL",
         )
         .one().deadline;
+      // Public dispatch is disabled. Even so, retained work must reach its
+      // original expiry without requiring a new post or reauthorization.
+      const outbox = this.ctx.storage.sql
+        .exec<{ deadline: number | null }>(
+          `SELECT MIN(next_cleanup_at) AS deadline FROM (
+            SELECT expires_at AS next_cleanup_at
+            FROM table_event_outbox WHERE status IN ('pending', 'in_flight')
+            UNION ALL
+            SELECT first_attempt_at + ? AS next_cleanup_at
+            FROM table_event_outbox
+            WHERE status IN ('pending', 'in_flight')
+              AND first_attempt_at IS NOT NULL
+            UNION ALL
+            SELECT lease_deadline AS next_cleanup_at
+            FROM table_event_outbox
+            WHERE status = 'in_flight' AND attempt_count >= 8
+              AND lease_deadline IS NOT NULL
+          )`,
+          OUTBOX_RETRY_HORIZON_MS,
+        )
+        .one().deadline;
       return Math.min(
         table.expires_at,
         pending ?? table.expires_at,
         candidate ?? table.expires_at,
         subscription ?? table.expires_at,
         rotation ?? table.expires_at,
+        outbox ?? table.expires_at,
       );
     }
     return this.tombstoneRow()?.retain_until ?? null;
@@ -420,6 +446,8 @@ export class TableDO extends DurableObject<Env> {
     if (table) {
       const eventsProcessed = this.cleanupExpiredEvents(now, budget);
       if (eventsProcessed > 0) return eventsProcessed;
+      const expiredOutbox = expireOutboxWork(this.ctx.storage.sql, now, budget);
+      if (expiredOutbox > 0) return expiredOutbox;
       this.ctx.storage.sql.exec(
         `UPDATE table_delete_confirmations SET state = 'expired'
          WHERE rowid IN (
@@ -573,6 +601,18 @@ export class TableDO extends DurableObject<Env> {
       // Removing the old key is itself a dispatch-generation invalidation.
       this.ctx.storage.sql.exec(
         "UPDATE table_event_subscriptions SET previous_secret_envelope = NULL, rotation_until = NULL, generation = generation + 1, fence = fence + 1 WHERE membership_id = ?",
+        rotation.membership_id,
+      );
+      // Keep pending identity and original attempt budgets while fencing
+      // in-flight results signed with an obsolete generation.
+      this.ctx.storage.sql.exec(
+        `UPDATE table_event_outbox
+         SET subscription_generation = (
+           SELECT generation FROM table_event_subscriptions
+           WHERE membership_id = ?
+         )
+         WHERE recipient_membership_id = ? AND status IN ('pending', 'in_flight')`,
+        rotation.membership_id,
         rotation.membership_id,
       );
       processed++;
