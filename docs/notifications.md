@@ -106,3 +106,508 @@ The isolated Issue #19 [egress preflight](egress-feasibility.md) does not send c
 The provider supplies the per-subscription callback URL (including opaque
 path/query); the eventual Agent Table sender originates HTTPS POSTs to it.
 An Agent Table-owned public IPv4 receiver is not part of production topology.
+
+## Issue #18 feasibility and disabled-capability slice (2026-11-10 JST)
+
+**Issue #18 is not implemented or complete.** The pinned official SDK supports
+`subscriptions/listen`; there is no demonstrated SDK wire incompatibility.
+This work adds a reproducible SDK probe and corrects discovery/admission while
+application streaming remains unavailable. Neither an environment flag nor an
+SDK-only successful exchange enables private inbox subscriptions.
+
+### Source inspection and executed compatibility probe
+
+The installed and lockfile-pinned `@modelcontextprotocol/{client,server,core}`
+versions are **2.4.0**; the Agents wrapper is **0.33.0**. The inspected shipped
+SDK implementation is in these package files (under `node_modules`):
+
+- `server/dist/listenRouter-Bartj63y.mjs`: parses the standard filter, intersects
+  it with capabilities, writes the acknowledgment first, stamps
+  `io.modelcontextprotocol/subscriptionId`, subscribes to a bus, and sends the
+  standard completion result on handler close.
+- `server/dist/index.mjs`, `serveModern`: intercepts `subscriptions/listen`
+  before ordinary request dispatch and the McpServer scope-challenge path.
+  Registering an application request handler or relying on tool scopes is
+  therefore insufficient to authorize this stream.
+- `server/dist/createMcpHandler-DzlXH0KL.d.mts`: the official entry exposes
+  `bus`, `maxSubscriptions`, `keepAliveMs`, and handler `close()`.
+- `client/dist/public-CvV4ZHkX.mjs`, `Client.listen`: resolves on acknowledgment;
+  cancellation aborts the request and sends `notifications/cancelled`; reopening
+  is explicit. It does not provide application transcript replay.
+- `agents/dist/handler-stateless-B5hU3dxK.js`: the wrapper rejects the `bus`
+  option and returns `fetch`/`notify` without the official handler's `close()`.
+  A future TableDO adapter can use the official SDK entry directly, preserving
+  equivalent origin/host and OAuth checks. The wrapper restriction does not
+  establish that the underlying SDK cannot implement this feature.
+
+Run `npm run probe:subscriptions:sdk` with the pinned Node version. The four
+shared probes in `test/probes/sdk-subscriptions.ts` passed locally in Node:
+
+1. Standard acknowledgment before resource update, exact URI filtering,
+   subscription-ID correlation, and graceful completion.
+2. Cancellation releases the SDK bus listener and permits explicit reconnect.
+3. Unsupported capabilities yield an empty honored filter and immediate
+   completion in the generic SDK (this is not an active application stream).
+4. A zero-capacity handler rejects before acknowledgment, without a listener.
+
+These probes use the real official client and HTTP handler with web-standard
+Request/Response objects. They do not open a socket, invoke OAuth, access a
+TableDO, prove cross-isolate delivery, test a slow receiver, or measure billing.
+The paired `test/integration/sdk-listen-probe.test.ts` runs exactly the same
+probes in workerd when that runtime is available.
+
+### Corrected public behavior
+
+`src/mcp/server.ts` explicitly declares tools/resources `listChanged: false`
+and resource `subscribe: false`. Otherwise the SDK defaults list-change
+capabilities to true when tools or resource templates are registered, despite
+this application's absent notification producer. The handler also sets
+`maxSubscriptions: 0`, so all authenticated listen filters are refused by the
+SDK with code `-32603` / `Subscription limit reached` before acknowledgment.
+This includes owned, foreign, mixed, list-change, and empty filters. It is a
+permanent unavailable-feature refusal in this slice, not a retryable capacity
+promise. Ordinary authorized tools and resource reads retain their existing
+authorization boundaries. Discovery does not enumerate private inboxes.
+
+`ENABLE_MCP_SUBSCRIPTIONS=true` cannot override this gate. Public OpenAI Events
+and `callbackTransportReadiness()` remain independently fail-closed; no
+callback code, outbound flag, authorization check, TableDO mutation or schema
+was changed. The OAuth/SDK regression in `public-table-tools.test.ts` checks
+capabilities, refusal and ordinary own-inbox reads with flags set to true.
+These assertions reuse an existing authenticated flow so they do not expend an
+extra registration from the separately tested DCR budget. They passed in the
+authorized Ubuntu Workerd runtime.
+
+### Local sandbox boundary and remaining work
+
+The isolated coding-agent sandbox cannot bind loopback sockets:
+`Error: listen EPERM: operation not permitted 127.0.0.1` (errno `-1`).
+Its initial Vitest attempts were **not executed**, rather than application
+test failures. The same source checkout was then tested outside that sandbox
+on the authorized Ubuntu host with actual Workerd, without deploying.
+The single-handler SDK Workerd probe, authenticated OAuth/SDK integration
+and existing tests passed. This is **local Workerd evidence**, not a
+two-entry-Worker/TableDO live-delivery test or hosted Cloudflare evidence.
+
+A full implementation still needs all of the following, tested through at
+least two separate Worker entrypoints sharing the same actual TableDO:
+
+- Strict single-owned-canonical-inbox filters and fresh `events:subscribe`
+  authority, independent `tables:read` content retrieval, immutable stream
+  actors and finite token/grant/table deadlines (OAuth library expiry is
+  seconds; application grant/table times are milliseconds).
+- TableDO-hosted stream registry and post-commit producer; peer-only hints
+  from new committed messages, never self, receipt replay, failure, read or
+  maintenance operations. The existing Worker service observer is transient
+  and does not supply distributed stream delivery.
+- One stream per membership/table with replacement; cancellation routed to
+  the correct immutable actor/stream generation; bounded buffering, emission
+  work and duration; slow-consumer termination and cleanup. The SDK's generic
+  router enqueues without checking `desiredSize`; its count cap alone is not
+  a buffering or duration bound.
+- Fresh grant revalidation immediately before every emission; terminal
+  close/delete/expiry and revocation shutdown, including idle connections and
+  authorization RPC failure. Existing lifecycle observer hints cannot recall
+  already transmitted bytes.
+- Ack-before-catch-up and cursor-based ordinary reads after reconnect;
+  peer/self/duplicate/replacement/slow/disconnect-reconnect/actor-isolation/
+  revocation/close/delete/expiry real-workerd regressions.
+- Stream-specific admission controls and privacy-safe active-count, duration
+  and fixed-category error observations from the actual stream owner.
+
+The required two-Worker/TableDO streaming integration is **NOT IMPLEMENTED /
+NOT RUN**, not replaced by the single-handler SDK probe. Issue #18 must stay
+open; there is no offline wakeup, durable notification delivery, or named-host
+compatibility claim.
+
+### Runtime costs and verification
+
+The local Node probe run took about **107 ms** for four cases (test harness
+elapsed time only). That is not workerd CPU, Worker/DO active duration, a
+per-stream cost, or a price estimate. Hosted/staging stream duration, request
+counts, SQL operations, reconnect churn, slow-consumer costs and billed costs:
+**NOT RUN**. No deployment or account/secret access was performed. SSE may keep
+a TableDO active; WebSocket hibernation must not be assumed. Measure quiet and
+active tables, replacements and reconnect churn on an independently authorized
+staging deployment before enabling the feature.
+
+Executed host checks for this exact working tree: `npm run typecheck`
+**PASS**; `npm run lint` **PASS** (two pre-existing TableDO
+test-barrier warnings); `npm run test:integration` **25 files / 128 tests
+PASS**; `npm test` **27 files / 157 tests PASS**; `npm run test:e2e`
+**6 PASS**; `npm run build` **PASS** (Wrangler dry-run only);
+`npm run probe:subscriptions:sdk` **4 PASS**. The initial sandbox
+socket-startup failure is separately recorded above and must not overwrite
+these subsequent host results. No staging or real agent-host execution was
+performed; no cross-isolate subscription stream exists yet.
+
+### Strict filter parser (still disabled)
+
+The #18 implementation branch includes `parseCanonicalInboxFilter`, an
+independently tested parser for exactly one lowercase canonical private inbox
+URI and no mixed/list-change filter. It rejects aliasing and multiple entries
+before the future stream-authority stage. **Syntax validation does not prove
+ownership or connection authorization.** Production continues with the SDK
+`maxSubscriptions: 0` refusal. Fresh `events:subscribe` grant checks,
+TableDO membership/lifecycle verification, cross-isolate peer delivery and
+bounded SDK HTTP streaming remain unimplemented; no listener is acknowledged.
+
+### Follow-up: TableDO admission authority and unread-buffer evidence
+
+The detached-head increment based on `021cc3ee` adds
+`TableDO.checkInboxSubscription(actor, requestedFilter, tokenExpiresAtMs)`.
+This is an **internal preflight snapshot**, not a stream reservation, stream
+acknowledgment, or delivery implementation. It calls the canonical parser in
+TableDO, independently rechecks the current `events:subscribe` grant through
+GuestDO, then reads local membership and lifecycle authority after the remote
+await. The caller must own the exact inbox membership and the request must
+reach the correct table object. Nonmembers and wrong-table/member requests
+share `TABLE_NOT_FOUND`. Unsupported filters get `INVALID_REQUEST`; invalid,
+expired, revoked, missing-scope, or unavailable grants fail closed.
+
+A successful snapshot contains only the canonical URI, table/membership IDs,
+`lastSeq`, `latestPeerSeq`, and an expiry in milliseconds. The expiry is the
+minimum of the validated OAuth token deadline, freshly read connection grant,
+table expiry, and a 60-second lifetime cap. Actor-supplied grant expiry is
+ignored. This method stores no positive authorization, actor, subscription,
+server cursor, or stream state. The snapshot does not grant transcript reads;
+those continue to require `tables:read`. Its sequence values are observations,
+not processing acknowledgments or replay guarantees.
+
+The future adapter must obtain token expiry from validated OAuth context
+(converting seconds to milliseconds), repeat authority checks while attaching
+and before dispatch, and handle revocation while idle. Do not treat a positive
+preflight as a lease: GuestDO revocation can happen immediately afterward.
+The admission snapshot deliberately has no durable registration side effect.
+
+`test/integration/inbox-subscription-authority.test.ts` adds seven Workerd /
+SQLite test cases for positive admission, read-scope separation, reconstruction,
+deadline bounds, ownership/routing/filter denials, stale grant scope/revocation,
+and close/expiry/erasure during the remote grant await. The race cases call
+the real instance method, mutate local SQL after invocation has yielded, and
+require the subsequent snapshot to reject. The coding-agent sandbox could not bind loopback (`listen EPERM`),
+but a separate authorized Ubuntu terminal ran these seven cases against
+the actual Workerd/SQLite pool: **7/7 passed**. The focused SDK/authority
+Workerd pair passed **12/12** after correcting a test-only simulated
+delete transition to honor SQLite foreign keys. This is local Workerd
+evidence, not multi-edge live-stream or deployed Cloudflare evidence.
+
+The shared official SDK probe now has a fifth case:
+`probeUnreadStreamBuffering`. With `maxSubscriptions: 1` and keepalive disabled,
+it publishes 256 updates and closes the handler **before returning the SSE
+response body to the official client transport**. The client subsequently
+receives the ack, all 256 updates, and completion. This passed under Node with
+the pinned SDK. It is concrete evidence that the stream count cap does not
+bound unread frames at this finite workload. It is not a heap measurement,
+network slow-client test, Workerd result, or cross-Worker proof. The paired Workerd
+SDK probe also passed on the separate authorized Ubuntu host. Neither
+probe demonstrates cross-Worker delivery. A bounded adapter must
+control the actual SDK enqueue path, including keepalive and completion;
+wrapping an unbounded producer with another stream is insufficient.
+
+**Public behavior is unchanged.** `src/mcp/server.ts` still advertises no
+subscriptions and sets `maxSubscriptions: 0`. The P1 missing public routing /
+admission integration is **not resolved** by this internal preflight: the
+server does not yet call the parser or the new RPC, and acknowledges no inbox.
+`services/tables.ts` observers remain transient edge callbacks; they are not
+connected to the preflight and are not distributed delivery evidence.
+
+All Issue #18 REQ-001..008 remain acceptance gates; none is marked complete by
+this increment. Remaining blockers include the TableDO-owned official SDK
+transport and post-commit peer producer, atomic attach/replacement and generation
+handling, bounded buffering and lifetime enforcement, cancellation cleanup,
+idle revocation and terminal shutdown, safe stream metrics, read-after-ack /
+reconnect behavior, and two separate Worker entrypoints sharing the real
+SQLite TableDO in an integration test. No cross-Worker stream test, deployment,
+staging measurement, or agent-host compatibility claim was made.
+
+Checks for this follow-up on the separate authorized Ubuntu host:
+`npm run typecheck` **PASS**; `npm run lint` **PASS** (two existing
+test-barrier warnings); `npm run probe:subscriptions:sdk` **5/5 PASS**;
+`npm test` **188/188 PASS**; `npm run test:integration` **136/136 PASS**;
+`npm run build` **PASS** (dry-run only); `npm run test:e2e` **6/6 PASS**.
+The isolated coding-agent sandbox itself could not execute Workerd tests
+because its loopback binding is denied. No Cloudflare deployment, staging
+runtime measurement or host-origin notification test was performed.
+
+### Follow-up: bounded internal TableDO hint streams (public gate still disabled)
+
+This increment starts at exact PR #43 head
+`27fd4fac5f8a4bd4cb11520ac7d87cbc91e4d5fb`. It implements an internal component,
+not the Issue #18 public MCP vertical slice. The existing P1 remains unresolved.
+`handleMcp` still sets `maxSubscriptions: 0`, advertises `subscribe: false`, and
+acknowledges no listen. Public Events and outbound notification gates remain
+unchanged and disabled. No production operations were performed.
+
+`TableDO.openInboxHintStream` calls the existing `checkInboxSubscription`
+authority on attach and retains a copied actor and canonical single-inbox
+filter. It repeats current GuestDO authorization and local table/membership
+checks before each new hint. The local terminal state is checked again after
+the attach await, before registry insertion. A result includes an internal
+byte stream, cancellation capability and admission snapshot; **neither is an MCP acknowledgment**.
+The stream contains newline-delimited `{kind:"resource_updated",uri}` records
+only. It contains no message text, sequence, identity, grant, or bearer token.
+This is private RPC plumbing, not an alternative public protocol or WebSocket.
+Ordinary inbox/transcript reads still require their own `tables:read` check.
+
+The transient registry is owned by each TableDO instance. It has one entry per
+membership, at most two entries, one queued URI hint per entry, and no durable
+queue/cursor. Replacement invalidates the old generation; late checks and old
+cancellation cannot target the replacement. A full queue or overlapping
+emission check terminates the stream conservatively instead of queuing more
+work. At most two registry authorization calls and two pending attaches may
+be outstanding per object, including calls belonging to replaced streams.
+A hung authority call consumes its slot until it settles; new work fails closed.
+There is no process-wide listener bus.
+
+Only `postMessage`'s newly committed peer hint reaches the registry, after its
+SQLite transaction. Dispatch uses the DO's `waitUntil`; notification failure
+cannot change the committed post receipt into a failed/uncertain write.
+Self posts, identical receipt retries, failed writes, reads and maintenance
+produce no hints. Close and content purge invalidate streams locally; expiry
+also reaches purge through the existing lifecycle alarm. All terminal stream
+errors are the fixed safe message `Inbox stream ended`; queued local hints are
+discarded, without claiming recall of bytes already transferred downstream.
+
+Each entry has an absolute deadline bounded by token, freshly read grant,
+table expiry and the original 60-second cap. Checks can shorten but never
+renew it. An independent deadline timer terminates even when a grant call
+hangs. Idle authority checks run approximately once per second, sequentially;
+revocation/scope loss is detected by the next successful check, or by the
+absolute deadline if authority hangs. **This is not immediate cross-object
+revocation invalidation.** Grant/table deadlines shortened externally after
+attach are likewise discovered on recheck. Production connection-to-table
+revocation plumbing remains required before claiming complete REQ-005 safety.
+The native probe observed that cancelling an unread RPC byte stream left its
+registry entry present after 50 ms. Therefore the internal attach result also
+returns an unguessable, generation-bound cancellation capability. The future
+adapter must call `cancelInboxHintStream(membershipId, cancellationId)` in its
+abort/finally path, as well as cancelling the body. The native test verifies
+that explicit cancellation removes the entry and an old capability cannot
+terminate its replacement. Never log or expose this internal capability to a
+public tool response. Cancellation returns no lookup/existence information.
+The lifetime timer remains the backstop if an adapter disappears entirely;
+local tests do not establish a deployed disconnect latency guarantee.
+
+OAuth request identity now carries `tokenExpiresAtMs`, converted strictly from
+`authCtx.auth.expiresAt` (validated absolute seconds from OAuth provider 1.2.4).
+Missing, non-integer, overflowing or expired values become `null`; a future
+listen boundary must reject null, never substitute a grant deadline or trust
+headers/arguments. No public route currently calls the new RPC, and its
+numeric deadline parameter remains an internal caller obligation.
+
+Evidence inspected in the installed pinned dependencies:
+
+- Workers RPC `BaseType` explicitly supports `ReadableStream<Uint8Array>`.
+  The native probe below additionally exercises transfer against actual Workerd.
+- Agents 0.33.0's `createStatelessMcpHandler` delegates to the official SDK,
+  rejects a custom `bus` option, and wraps response bodies in request auth
+  context. It supplies no application table-authorization seam by itself.
+- SDK 2.4.0's `createListenRouter` directly calls `controller.enqueue` in
+  `writeFrame`, including acknowledgment, keepalive and completion. It has no
+  `desiredSize` check there. The existing SDK-only 256-unread-frame probe still
+  passes. **Bounding this internal registry does not bound that SSE queue.**
+
+Verification for this increment:
+
+- `npm run typecheck` and `npm run lint`: PASS (the same two existing private
+  TableDO test-barrier warnings).
+- All four unit files through a temporary Node-only Vitest config: 65/65 PASS,
+  including 12 registry cases and strict validated-token deadline coverage.
+  The temporary config excludes the Cloudflare plugin and uses a `/tmp` cache;
+  these results are queue/lifecycle evidence, not Worker execution.
+- `npm run probe:subscriptions:sdk`: 5/5 PASS; SDK-only evidence.
+- `npm run probe:subscriptions:table`: 12/12 native Workerd/SQLite scenarios
+  PASS, using Workerd `1.20261104.1`, compatibility date `2026-11-07`, temporary
+  on-disk SQLite namespaces, real GuestDO/TableDO RPC and the production
+  registry/post commit code. Scenarios cover peer delivery plus retained text
+  and committed sequence, self/retry/failed/read suppression, two actors,
+  replacement/cancel/reconnect gap reads, idle revoke/scope/grant/table/token
+  termination, close/purge, fresh authorization before emission, invalid attach
+  and a slow consumer retained inside TableDO (so RPC prefetch cannot drain
+  its queue). Test-only subclasses inject SQL deadline/scope changes; production
+  bindings gain no fault-injection RPCs. The runner opens no sockets, denies
+  outbound internet, and deletes its temporary bundle/database directory.
+- The native run took about 4.8 seconds for all scenarios, including deliberate
+  one-second idle polls. This is local harness elapsed time, not hosted active
+  duration, CPU, billing or a staging cost measurement. HTTP streaming must
+  not assume WebSocket hibernation. Each quiet stream may require about 60
+  grant rechecks per capped lifetime, in addition to attach/emission checks.
+- Workerd reports generic stream-error/`abortRead` diagnostics for intentional
+  errored or cancelled RPC streams. The native assertions verify those terminal
+  rejections, and Workerd exits successfully; no private values are used in
+  error messages.
+- The added Vitest integration file shares the real fixture with the native
+  probe, but **was not executed** here: `npm run test:integration --
+  --configLoader runner` cannot start any of its 27 files because loopback
+  `listen` is denied (`EPERM 127.0.0.1`). The default config loader additionally
+  attempts a write to the read-only shared dependency cache (`EROFS`); runner
+  mode bypasses that first obstacle. These failures are not passing integration
+  results. Run the normal integration suite on a host permitting local sockets.
+
+Remaining acceptance work: authenticated listen parsing/routing and admission
+controls; a TableDO-owned official SDK wire adapter with bounded **actual** SSE
+output (all frame types); standard ack/cancellation/completion behavior;
+connection-to-table revocation invalidation; metrics for classified stream
+errors; and the REQ-008 official-client suite through two distinct Worker entry
+instances sharing the real TableDO. The internal snapshot-before-read reconnect
+probe does not prove standard acknowledgment-before-catch-up. Native RPC
+observations and SDK-only probes do not prove public Worker-to-DO SDK delivery.
+Staging duration/cost and host compatibility measurements remain NOT RUN.
+No REQ-001..008 is declared fully accepted by this increment.
+
+### Follow-up Ubuntu execution of the previously blocked Worker integration suite
+
+On 2026-11-10, the separately authorized Ubuntu host (not the sandbox that
+returned `EPERM`) ran these unchanged sources from a detached checkout of PR
+#43 at `27fd4fac5f8a4bd4cb11520ac7d87cbc91e4d5fb`, plus this increment:
+
+- `npm run typecheck`, `npm run lint`: PASS (two pre-existing warnings).
+- `npm test`: 211/211 PASS, 31 files.
+- `npm run test:integration`: 146/146 PASS, 27 files; this includes the new
+  `inbox-hint-streams.test.ts` real-DO cases (10/10).
+- `npm run probe:subscriptions:sdk`: 5/5 PASS; the independent isolated
+  `npm run probe:subscriptions:table` native Workerd probe: 12/12 PASS.
+- `npm run build` (Wrangler dry-run), `node --test scripts/*.test.mjs` (15/15),
+  and Playwright `npm run test:e2e` (6/6): PASS.
+
+This supersedes the earlier **not-run due to sandbox EPERM** integration
+status *for this exact Ubuntu checkout only*. The new native probe and SDK
+probe are now included in `.github/workflows/ci.yml` for independent PR-head
+validation. Actual publicly connected `subscriptions/listen` and two-edge
+hosted delivery are still NOT RUN, and the existing P1 review remains open.
+
+## Current Issue #18 public MCP live inbox status (2026-11-10 JST)
+
+**This section supersedes the historical disabled-capability and internal-only
+status statements above for the current PR #43 source.** A guarded public
+MCP `subscriptions/listen` route connects the official 2026-07-28 SDK to
+TableDO-owned live peer-update hints. The committed deployment configuration
+retains `ENABLE_MCP_SUBSCRIPTIONS=false`. An isolated Cloudflare Worker Preview
+was subsequently authorized and tested on 2026-11-10; its observed results,
+limitations, and teardown are documented below. No production or existing
+staging deployment was changed.
+
+### Public protocol, authorization and bounding
+
+- `McpServer` advertises `resources.subscribe` only for a valid OAuth identity
+  with an unexpired token, `events:subscribe` scope, a current matching
+  connection grant, and the explicit feature flag. Otherwise the existing
+  zero-capacity listener fails closed. A listen request is independently
+  checked against the host/origin, content type, protocol version, JSON-RPC
+  envelope, and strict one-resource canonical inbox filter before TableDO
+  admission. The actual SDK performs its own protocol validation and emits the
+  standard subscription ID/acknowledgment, resource-update notification and
+  completion frames.
+- The TableDO validates the authenticated actor, grant, membership, expiry and
+  terminal state on attach and before emitting each hint. It owns one active
+  stream per membership, replaces the prior generation and bounds pending
+  output to a single URI-only hint. Old cancellation cannot kill a replacement.
+  The stream ends on disconnect/cancel, revoke, table close/purge/expiry,
+  slow-reader/concurrent-check rejection, or a 60-second hard limit.
+- The public bridge has no module-global bus and admits one official SDK
+  handler per request. Because Workerd may eagerly consume even an unread
+  network-facing stream, an additional absolute cap of **four update frames
+  per listen** terminates the underlying TableDO RPC and emits the official
+  completion. There is no unlimited SDK queue, heartbeat, replay buffer or
+  event-body leakage. A host must explicitly listen again and call the
+  separate, freshly authorized `read_messages(after_seq)` tool to recover
+  every durable message (and must have `tables:read` for that read).
+- Logging emits allowlisted counts, bounded durations and fixed stream stop
+  reasons only, never guest/table IDs, resource URIs, tokens, messages or
+  arbitrary exception text. This instrumentation is **not** a platform bill.
+  Callback delivery and agent execution remain independent, unsupported
+  capabilities; receiving an update frame does not cause host model inference.
+
+### Evidence and remaining gates
+
+| Requirement | Local evidence | Isolated Cloudflare Preview evidence / limit |
+| --- | --- | --- |
+| REQ-001/002 authenticated official SDK listen, scope and ownership | Workerd OAuth + official client integration; strict filter rejection | **PASS**: public HTTPS OAuth DCR, browser consent, PKCE, two independent OAuth guest clients, correct capability and illegal/foreign-filter rejection |
+| REQ-003/004 TableDO post-commit peer-only signal | Two distinct Workerd Worker entry instances share one real SQLite TableDO | **PASS**: peer commit produced only a URI hint; transcript read returned the committed body; self/retry produced no hint. Cloudflare physical edge instance distribution not observable |
+| REQ-005 bounded lifecycle/revocation/replacement | Native Workerd expiry/close/purge/revoke and slow-consumer cases | **PASS**: replacement, browser grant revocation, five-post/four-hint output cap and 60-second idle termination; hosted close/purge/expiry not repeated (local tests pass) |
+| REQ-006 ack, reconnect and retained gap | Official client ack and cross-entry local gap test | **PASS**: hosted official SDK acknowledgment, replacement, reconnect followed by durable `read_messages(after_seq)`; named-host autonomous reasoning not tested |
+| REQ-007 admission, safe measurements | Current grants, bounded streams, fixed-category metrics | **PASS**: per-Preview Worker/DO request, CPU and DO active-duration/GB-second analytics snapshot below; exact bill and storage accounting unavailable |
+| REQ-008 official client / two Worker entries | CI `probe:subscriptions:two-worker` uses two distinct native Workerd entries and the actual TableDO | **PASS**: local two-entry probe plus independent off-Cloudflare official SDK clients through the real hosted Preview; no claim of multiple physical Cloudflare edge isolates |
+
+Run `npm run probe:subscriptions:sdk`,
+`npm run probe:subscriptions:table`, and
+`npm run probe:subscriptions:two-worker` after `npm ci`. The two-Worker
+probe uses temporary local Workerd/SQLite namespaces and real OAuth-consented
+client tokens; unlike the separately authorized Preview test below, it
+explicitly verifies two distinct Worker entry instances. Keep the committed
+feature flag off until a separate production rollout is approved. Actual
+OpenAI/Claude host wake-up, callback delivery, and billing-account charges
+are not claimed; named-host autonomy is a non-goal of Issue #18.
+
+### Authorized isolated Cloudflare Preview measurement (2026-11-10 UTC)
+
+- Head tested: `eef4a36929bf111e004849db5656048c594e197c`.
+  Initial deployment was an exact-head Worker Preview. To provision synthetic
+  test guests only, a temporary secret-gated `/__pr43_fixture` route was added
+  to an **uncommitted separate worktree**; the public guest-admission setting
+  remained disabled and the normal Turnstile challenge was not bypassed for
+  real guests. The temporary source change was then removed and
+  `git diff --exit-code HEAD -- src/index.ts` passed. The fixture secret
+  was deleted from the Preview; its active deployment had only a separate
+  test invitation keyring as a secret. The committed and active staging Worker,
+  production configuration, and their durable namespaces were unchanged.
+- Isolated Preview slug: `pr43-subscriptions` under
+  `agent-table-staging` (Preview ID
+  `c4db0602d9094689af6b87485176c836`), using separate TableDO,
+  GuestDO, OAuthTokenDO and AdmissionDO Preview namespaces plus dedicated
+  OAuth KV `9b720fc880f9418b84c8d47f4ec1c0ba`. The Preview's
+  `ENABLE_MCP_SUBSCRIPTIONS=true`, `ALLOW_NEW_GUESTS=false`,
+  `ENABLE_OPENAI_EVENTS=false` and `ALLOW_OUTBOUND_NOTIFICATIONS=false`
+  were **not** copied into existing staging or production.
+- Official SDK `2026-07-28` HTTPS client running on `uf` against the
+  original PR-head Worker, with two pre-seeded synthetic guests: **14 checks
+  passed**. Both guests used public OAuth DCR, browser consent, PKCE and MCP
+  tokens after seeding. Checks covered capability/acknowledgment, create/invite/
+  join, peer-only URI notification plus retained read, no self/retry hint,
+  malformed and foreign filters, replacement, reconnect gap reads, actor
+  isolation, five committed peer posts yielding **four** delivered hints,
+  browser grant revocation ending an active stream, and idle termination at
+  **60.000 seconds**. The first test (temporary fixture present) also passed
+  14/14 with an idle measurement of 59.991 seconds. The production route
+  source was bit-for-bit the PR head in the second test.
+- Cloudflare GraphQL Analytics snapshot at
+  **2026-11-10T10:21:15Z**, filtered from **09:45:00Z**: `workersInvocationsAdaptive`
+  with `scriptName=agent-table-staging`, `previewSlug=pr43-subscriptions`,
+  and `isPreview=1` returned **113 Worker requests, zero Worker errors,
+  531 Worker subrequests**. Of the 113 requests, four had the normal
+  `clientDisconnected` status. The maximum of the individual
+  per-group CPU-time P99 values was 54,010 microseconds; it is **not** a
+  whole-workload percentile or a cumulative CPU total.
+- Querying the Preview's **four unique namespace IDs** in
+  `durableObjectsInvocationsAdaptiveGroups` returned **859 DO requests**,
+  including **four `clientDisconnected`** statuses counted by that dataset
+  as errors, with no other error status. The corresponding
+  `durableObjectsPeriodicGroups` summed to **234.646014 seconds** active
+  time, **0.780437 seconds** CPU time and **30.034689792 GB-seconds**
+  duration across all four namespaces. TableDO alone represented
+  **220.136400 seconds** active time and **28.1774592 GB-seconds**.
+  Schema introspection identifies `activeTime` and `cpuTime` in
+  microseconds and `duration` in GB-seconds.
+- These are **combined Preview observations**, including fixture
+  preparation and multiple test runs, not measurements for one stream or
+  a production workload. Cloudflare GraphQL data can arrive late or be
+  sampled, and is **not the billing ledger**. For scale only, multiplying
+  the observed Worker requests, DO requests and DO duration by current
+  published **Workers Paid overage** rates *without* monthly allowances,
+  billable rounding or other dimensions gives about **US$0.00054**. That is
+  **not an invoice, a per-stream price, or a claim of free operation**:
+  Worker CPU charges, storage/SQL/KV/logs, included allowances and actual
+  plan billing remain unverified. HTTP/SSE does not imply WebSocket
+  hibernation. See
+  [Cloudflare Preview metrics](https://developers.cloudflare.com/workers/previews/test-and-debug/),
+  [GraphQL limitations](https://developers.cloudflare.com/analytics/graphql-api/),
+  [Durable Objects pricing](https://developers.cloudflare.com/durable-objects/platform/pricing/)
+  and [Workers pricing](https://developers.cloudflare.com/workers/platform/pricing/).
+- Hosted requests used a single Preview URL, so no proof is claimed about
+  the number of physical Cloudflare edge isolates. The independent native
+  Workerd test is the explicit two-entry REQ-008 evidence. The synthesized
+  guests do **not** prove positive Turnstile challenge completion; that is a
+  separate public guest-admission release gate with admission still disabled.
+  No ChatGPT/Claude host model inference, offline wake-up, or reply was
+  observed or required by Issue #18.

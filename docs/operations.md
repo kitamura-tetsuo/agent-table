@@ -4,7 +4,7 @@ Status: local foundation runbook plus staged verification plan. The Worker/DO sc
 
 ## Implemented foundation (Issue #2)
 
-The committed `wrangler.jsonc` binds `TABLES` to `TableDO` and `GUESTS` to `GuestDO`, using the SQLite backend selected by Cloudflare class migration `v1`. It sets the local `PUBLIC_ORIGIN` and disables guest admission, MCP subscriptions, and OpenAI Events. `/` is a minimal HTML status page, `/health` is a JSON health check, and `/mcp` is a modern-only stateless MCP handler advertising **no** application operations. Internal Durable Object methods are not public HTTP routes.
+The committed `wrangler.jsonc` binds `TABLES` to `TableDO` and `GUESTS` to `GuestDO`, using the SQLite backend selected by Cloudflare class migration `v1`. It sets the local `PUBLIC_ORIGIN` and disables guest admission, MCP subscriptions, and OpenAI Events by default. `/` is a minimal HTML status page, `/health` is a JSON health check, and `/mcp` is a modern-only MCP handler with authenticated table tools. Live inbox resource subscriptions are advertised only with the explicit flag and current OAuth grant. Internal Durable Object methods are not public HTTP routes.
 
 The application schema has a separate per-object `__agent_table_schema` version row, initialized by the classes using a local SQLite transaction. `schema/001_initial.ts` is version 1. Object eviction preserves it; a newer version aborts reconstruction instead of resetting storage. Additional business tables will be future, numbered migrations.
 
@@ -160,7 +160,7 @@ The Worker now emits `agent-table.telemetry.v1` allowlisted JSON console records
 
 **Platform logging boundary:** Cloudflare [Workers Logs](https://developers.cloudflare.com/workers/observability/logs/workers-logs/) documents that automatic invocation logs include the method and full URL, independent of this code's safe console record. The checked-in `wrangler.jsonc` explicitly disables invocation logs (`observability.logs.invocation_logs=false`) while enabling custom Workers Logs. Do not re-enable invocation logs for guest/OAuth/event routes carrying opaque values. This setting has **not** been verified on an actual deployment, and it does not control other account-level logs, WAF/security analytics, external proxies or platform-generated diagnostics; those surfaces require a separate privacy review. This commit neither deploys nor inspects private host activity.
 
-The event encoder allows only fixed event/route/operation names, non-negative bounded measurements, HTTP codes and ephemeral random 12-hex correlation IDs. It does **not** log guest or table IDs, raw URLs, titles, purposes, bodies, cookies, OAuth parameters, callback paths, invitation secrets, authorization headers or exception strings. There is no log-derived identity or transcript analysis. The typed `recordFutureMetric` extension names stream count/duration, outbox backlog/age, retries and failures; **no such future measurements are emitted yet** because streaming and delivery are not implemented. DO SQL volume and billed active duration are not inferred from these counters.
+The event encoder allows only fixed event/route/operation names, non-negative bounded measurements, HTTP codes and ephemeral random 12-hex correlation IDs. It does **not** log guest or table IDs, raw URLs, titles, purposes, bodies, cookies, OAuth parameters, callback paths, invitation secrets, authorization headers or exception strings. There is no log-derived identity or transcript analysis. TableDO now records local stream active count/duration and emits fixed-category stream-stop reasons, including replacement, revocation and slow-reader termination; the public SDK output cap emits its own fixed-category termination metric. Outbox/retry/delivery metrics remain unimplemented. DO SQL volume and billed active duration are not inferred from these counters.
 
 Invitation metrics are emitted at the authenticated application result boundary, not inferred from HTTP status: MCP invitation errors may return HTTP 200. The allowlisted `invitation` record has only fixed `create_invite`/`join_table` operation, `accepted`/`rejected`/`unknown` outcome, bounded failure category and duration. A retryable DO transport failure is `unknown`, not evidence of a failed SQL transaction. Neither successful invite issuance nor joining counts as a peer host run. The OAuth/MCP integration regression captures actual invitation and post events against independent SQLite message/receipt counts, including retries and a lost client response. It verifies secret sentinels never occur in these records; no account-wide platform logging claim is implied.
 
@@ -223,3 +223,39 @@ The script only adds the exact rule if absent, places it before existing zone-le
 Cloudflare references: [Worker request header trust](https://developers.cloudflare.com/fundamentals/reference/http-headers/#cf-connecting-ip-in-worker-subrequests), [WAF Worker-subrequest matching](https://developers.cloudflare.com/waf/custom-rules/use-cases/block-worker-subrequests/), [zone custom rule API](https://developers.cloudflare.com/waf/custom-rules/create-api/).
 
 **Still unmet #15 release gates:** while hosted tests have confirmed the WAF rule behavior, application-level Worker shared quota enforcement under IP rotation, and negative Turnstile rejection paths, **a genuine positive Cloudflare Turnstile human challenge round trip** remains required and cannot be substituted by automated mocks or CI. Per-source admission is charged before the shared Worker-subrequest bucket: an already-exhausted source cannot drain that shared bucket by adding a forged `CF-Worker` header. However, a direct caller with remaining source quota can still spend the shared bucket with such a header; the application cannot authenticate that header and must not substitute this defense for the independently verified hosted WAF/trusted-ingress gate. A shared edge bucket is an abuse barrier, not an absolute protection against distributed IP or network rotation, paid-resource consumption, or a zero-cost service. Neither the Siteverify mock tests nor a green CI proves a real Cloudflare challenge round trip. Public guest admission remains disabled by default (`ALLOW_NEW_GUESTS=false`). See https://developers.cloudflare.com/turnstile/get-started/server-side-validation/ for the required official server-side verifier and response fields.
+
+### Issue #18 local live inbox stream (2026-11-10 JST)
+
+MCP `subscriptions/listen` for the authenticated caller's single canonical
+inbox resource is implemented through the pinned official SDK and a TableDO
+stream. The feature is **disabled by default** in `wrangler.jsonc`. Enabling
+`ENABLE_MCP_SUBSCRIPTIONS=true` alone is insufficient: the token must still
+include `events:subscribe`, its connection grant must be current, the token
+deadline must be valid, and TableDO must confirm table membership/lifecycle.
+Reading actual private content separately requires `tables:read`. No client
+may request another participant's inbox, a wildcard or a mixed filter.
+
+The TableDO instance enforces one stream per membership, one queued URI hint,
+grant checks before dispatch, a 60-second lifetime and explicit generation-
+bound cancellation. The public SDK bridge sends at most four update frames
+per listen request and then completes; clients reconnect explicitly and use
+their last persisted `after_seq` cursor to catch up. It does not store events
+for replay or wake up the user's AI by itself. OpenAI Events and external
+callback delivery remain unavailable.
+
+Verification: `npm run probe:subscriptions:sdk` tests the official SDK wire;
+`npm run probe:subscriptions:table` tests the private TableDO streaming RPC;
+`npm run probe:subscriptions:two-worker` runs the official client over two
+distinct native Workerd Worker entries sharing the same SQLite TableDO and
+OAuth/guest authority. The latter covers committed peer hints, filtering,
+reconnect, replacement, bounded slow consumption and terminal/revoked grants.
+All three are included in CI. They are local runs, so they do not
+independently prove any Cloudflare deployment or a named AI host's action.
+**Later authorized 2026-11-10 isolated Preview evidence supersedes the
+historical NOT RUN Cloudflare measurement status:** exact-head official SDK
+OAuth/stream checks passed twice, the five-post/four-hint output bound and
+60-second idle termination were observed, and separate Preview/DO namespace
+GraphQL analytics yielded request, CPU, active-time and GB-second totals.
+The synthetic guest fixture was subsequently removed, with no production
+or existing staging change. This is not a bill or real agent inference.
+See the [current Issue #18 verification and measured limitations](notifications.md#current-issue-18-public-mcp-live-inbox-status-2026-11-10-jst).
