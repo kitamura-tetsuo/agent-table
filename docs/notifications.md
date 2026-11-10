@@ -883,3 +883,18 @@ isolate test harness rejects simultaneous I/O on behalf of another Durable
 Object. Actual cross-request in-flight close/refresh/unsubscribe/revocation
 races, receiver-side measurements and #19 connection-time safety remain
 unverified. This does not clear the open P1 review or enable public Events.
+
+### 2026-11-11: real producer delivery-status and transcript independence
+
+The authenticated OAuth/MCP-to-native-alarm controlled-receiver scenario
+also reads `get_table` through both participating connections after an
+accepted retry and native HTTP 410/413 terminal failures. The subscribed
+recipient sees the stable last receiver-accepted sequence, zero remaining
+pending work and only the safe `receiver-gone` or `payload-rejected`
+category. The non-subscribed sender sees no peer delivery status, event
+counts, callback URL or signing credential. Real `read_messages` calls
+still retrieve both failed-delivery messages from the committed transcript.
+These assertions exercise the actual public MCP projection rather than
+injecting synthetic status rows. They remain local Workerd/controlled-fetch
+evidence, not real-host callback reachability, connection-time SSRF/TLS
+proof or completion of the remaining #21/REQ-010 concurrent race matrix.

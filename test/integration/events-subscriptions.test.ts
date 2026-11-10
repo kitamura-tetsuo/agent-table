@@ -1587,6 +1587,47 @@ describe("authenticated event producer through native alarm and HTTPS sender (co
       await alarm();
       expect(captured).toHaveLength(3);
 
+      // Inspect the actual MCP projection after native receiver refusal. The
+      // failed delivery must not hide committed transcript messages or disclose
+      // the peer's callback, credential, or delivery state to the sender.
+      const rejectedView = toolOutput(
+        await peerClient.callTool({
+          name: "get_table",
+          arguments: { table_id: tableId },
+        }),
+      );
+      expect(rejectedView.notifications).toMatchObject({
+        status: "active",
+        pendingCount: 0,
+        lastAcceptedSeq: message.seq,
+        lastErrorCategory: "receiver-gone",
+      });
+      expect(JSON.stringify(rejectedView.notifications)).not.toContain(
+        CALLBACK,
+      );
+      expect(JSON.stringify(rejectedView.notifications)).not.toContain(SECRET);
+      const ownerView = toolOutput(
+        await ownerClient.callTool({
+          name: "get_table",
+          arguments: { table_id: tableId },
+        }),
+      );
+      expect(ownerView.notifications).toMatchObject({
+        status: "disabled",
+        pendingCount: 0,
+        lastAcceptedSeq: null,
+        lastErrorCategory: null,
+      });
+      const readable = toolOutput(
+        await peerClient.callTool({
+          name: "read_messages",
+          arguments: { table_id: tableId, after_seq: message.seq },
+        }),
+      );
+      expect(readable.messages).toMatchObject([
+        { seq: rejectedPost.seq, body: "PRIVATE BODY OF REJECTED EVENT" },
+      ]);
+
       // A third authenticated post exercises 413 without synthesizing a ledger verdict.
       const tooLargePost = toolOutput(
         await ownerClient.callTool({
@@ -1620,6 +1661,33 @@ describe("authenticated event producer through native alarm and HTTPS sender (co
       expect(
         (await rows()).find((row) => row.event_id === tooLarge.event_id),
       ).toMatchObject({ status: "failed", attempt_count: 1 });
+      const oversizedView = toolOutput(
+        await peerClient.callTool({
+          name: "get_table",
+          arguments: { table_id: tableId },
+        }),
+      );
+      expect(oversizedView.notifications).toMatchObject({
+        pendingCount: 0,
+        lastAcceptedSeq: message.seq,
+        lastErrorCategory: "payload-rejected",
+      });
+      expect(JSON.stringify(oversizedView.notifications)).not.toContain(
+        CALLBACK,
+      );
+      expect(
+        toolOutput(
+          await peerClient.callTool({
+            name: "read_messages",
+            arguments: { table_id: tableId, after_seq: rejectedPost.seq },
+          }),
+        ).messages,
+      ).toMatchObject([
+        {
+          seq: tooLargePost.seq,
+          body: "SYNTHETIC TERMINAL PAYLOAD REJECTION",
+        },
+      ]);
 
       // A fifth authenticated post is sent before an owner closes the table.
       // The receiver's later 2xx is acceptance of bytes, not an authority to
