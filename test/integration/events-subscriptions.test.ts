@@ -786,6 +786,79 @@ describe("production MCP Events registration, OAuth and TableDO", () => {
     }
   });
 
+  it("rejects an in-flight refresh after the original active expiry without an alarm", async () => {
+    const principal = await newPrincipal();
+    const client = await clientFor(principal.token);
+    let release: (() => void) | undefined;
+    let arrived: (() => void) | undefined;
+    const waiting = new Promise<void>((resolve) => {
+      arrived = resolve;
+    });
+    try {
+      const tableId = await createTable(client);
+      let challenges = 0;
+      vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+        const body = JSON.parse(
+          new TextDecoder().decode(init?.body as ArrayBuffer),
+        );
+        challenges++;
+        if (challenges === 2) {
+          arrived?.();
+          return new Promise<Response>((resolve) => {
+            release = () =>
+              resolve(
+                new Response(JSON.stringify({ challenge: body.challenge })),
+              );
+          });
+        }
+        return new Response(JSON.stringify({ challenge: body.challenge }));
+      });
+      await callEvent(client, "events/subscribe", subscriptionParams(tableId));
+      const held = callEvent(
+        client,
+        "events/subscribe",
+        subscriptionParams(tableId, CALLBACK, REPLACEMENT_SECRET),
+      );
+      await waiting;
+      const stub = env.TABLES.get(env.TABLES.idFromName(tableId));
+      // Simulate the exact expiry boundary without invoking the alarm cleanup.
+      await runInDurableObject(stub, (_instance, state) => {
+        state.storage.sql.exec(
+          "UPDATE table_event_subscriptions SET expires_at = ? WHERE status = 'active'",
+          Date.now() - 1,
+        );
+      });
+      release?.();
+      await expect(held).rejects.toMatchObject({ code: -32001 });
+      const state = await runInDurableObject(stub, (_instance, storage) => ({
+        subscription: storage.storage.sql
+          .exec<{
+            status: string;
+            secret_envelope: string | null;
+            callback_url: string | null;
+            generation: number;
+          }>(
+            "SELECT status, secret_envelope, callback_url, generation FROM table_event_subscriptions",
+          )
+          .one(),
+        candidates: storage.storage.sql
+          .exec("SELECT * FROM table_event_candidates")
+          .toArray(),
+      }));
+      expect(state.subscription).toMatchObject({
+        status: "expired",
+        secret_envelope: null,
+        callback_url: null,
+        generation: 2,
+      });
+      expect(state.candidates).toEqual([]);
+    } finally {
+      release?.();
+      await client.close();
+      vi.restoreAllMocks();
+    }
+  });
+
   it("erases expired active credentials and surfaces only an expired own status", async () => {
     const principal = await newPrincipal();
     const client = await clientFor(principal.token);

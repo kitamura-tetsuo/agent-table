@@ -843,6 +843,19 @@ export class TableDO extends DurableObject<Env> {
             pending.connection_id !== fresh.connectionId
           )
             return { ok: false, code: "STALE" } as const;
+          // A pending refresh cannot resurrect an active subscription that expired
+          // before the external verification returned, even before alarm cleanup.
+          if (current.status === "active" && (current.expires_at ?? 0) <= now) {
+            this.ctx.storage.sql.exec(
+              "DELETE FROM table_event_candidates WHERE membership_id = ?",
+              currentMember.membership_id,
+            );
+            this.invalidateEventSubscription(
+              currentMember.membership_id,
+              "expired",
+            );
+            return { ok: false, code: "STALE" } as const;
+          }
           if (
             current.status === "active" &&
             (current.expires_at ?? 0) > now &&

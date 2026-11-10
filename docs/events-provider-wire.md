@@ -44,7 +44,10 @@ immutable candidate ID and monotonically increasing fence prevent delayed
 verification from overwriting unsubscribe, a newer refresh, expiry or table
 closure/deletion. Commit rechecks the actual GuestDO events:subscribe grant,
 owner connection, table membership, live table state, candidate fence and
-finite expiry immediately before its local SQLite transaction.
+finite expiry immediately before its local SQLite transaction. A pending
+credential refresh cannot revive an expired active subscription even when
+the expiry alarm has not yet cleaned its credentials; this transition
+erases the expired destination and invalidates the pending candidate.
 
 Expiry and rotation cleanup remove encrypted credentials; a successful
 unsubscribe erases keys and destination while retaining an invalidation
