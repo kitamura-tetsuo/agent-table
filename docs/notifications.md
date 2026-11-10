@@ -726,3 +726,25 @@ stream and RPC failure injections and emit corresponding expected diagnostics;
 no failed tests or Vitest unhandled-error summary remained. No deployment,
 production callback, credential access, issue closure, branch creation, history
 rewrite or push was performed.
+
+### 2026-11-10: authenticated local producer-to-native sender regression
+
+The additional Workerd integration in
+`test/integration/events-subscriptions.test.ts` drives the **real** OAuth
+consent/token exchange, MCP create/join/subscribe/post, committed TableDO
+outbox, durable alarm and native `sendVerifiedHttps` HTTP request assembly.
+A controlled `fetch` capture verifies the original subscription ID, signature,
+opaque callback URL, committed message/event identity, manual redirect policy
+and exclusion of private message text. It deliberately loses the first HTTP
+response, reconstructs the Durable Object and checks stable event identity and
+the persisted retry budget before acceptance. A second genuine MCP post checks
+that HTTP 410 becomes terminal and produces no repeat send.
+
+The test-only TableDO instance supplies the reviewed callback-target binding
+and overrides its private dispatch readiness predicate; **none of these test
+overrides are production settings**. This is an in-process controlled receiver,
+not a hosted HTTPS receiver, a network connection-time DNS/TLS/forbidden-IP
+test, or #19 REQ-002/006 evidence. It narrows #21/REQ-010's disconnected
+producer/consumer gap but does **not** satisfy its complete crash, revocation,
+rotation and real-host campaign. Production Events readiness remains disabled;
+do not merge or close #21 on this regression alone.

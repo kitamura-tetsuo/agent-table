@@ -8,6 +8,7 @@ import {
   Client,
   StreamableHTTPClientTransport,
 } from "@modelcontextprotocol/client";
+import { Webhook } from "standardwebhooks";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as z from "zod/v4";
 import worker from "../../src/index";
@@ -1362,6 +1363,224 @@ describe("production MCP Events registration, OAuth and TableDO", () => {
     } finally {
       release?.();
       await client.close();
+    }
+  });
+});
+
+describe("authenticated event producer through native alarm and HTTPS sender (controlled fetch)", () => {
+  it("retries a lost response with stable signed identity and treats 410 as terminal", async () => {
+    const owner = await newPrincipal();
+    const peer = await newPrincipal();
+    const ownerClient = await clientFor(owner.token);
+    const peerClient = await clientFor(peer.token);
+    const challengeReceiver = echoReceiver();
+    try {
+      const tableId = await createTable(ownerClient);
+      const invite = toolOutput(
+        await ownerClient.callTool({
+          name: "create_invite",
+          arguments: { table_id: tableId, request_id: crypto.randomUUID() },
+        }),
+      );
+      expect(
+        (
+          await peerClient.callTool({
+            name: "join_table",
+            arguments: {
+              invitation: invite.invitation,
+              request_id: crypto.randomUUID(),
+            },
+          })
+        ).isError,
+      ).not.toBe(true);
+      const subscription = (await callEvent(
+        peerClient,
+        "events/subscribe",
+        subscriptionParams(tableId),
+      )) as { id: string };
+      expect(challengeReceiver).toHaveBeenCalledTimes(1);
+      const message = toolOutput(
+        await ownerClient.callTool({
+          name: "post_message",
+          arguments: {
+            table_id: tableId,
+            request_id: crypto.randomUUID(),
+            body: "CONFIDENTIAL PEER MESSAGE NEVER INCLUDED IN EVENT",
+          },
+        }),
+      );
+      const stub = env.TABLES.get(env.TABLES.idFromName(tableId));
+      type DeliveryRow = {
+        event_id: string;
+        message_id: string;
+        message_seq: number;
+        status: string;
+        attempt_count: number;
+        first_attempt_at: number | null;
+        next_attempt_at: number | null;
+      };
+      const rows = () =>
+        runInDurableObject(stub, (_instance, state) =>
+          state.storage.sql
+            .exec<DeliveryRow>("SELECT * FROM table_event_outbox")
+            .toArray(),
+        );
+      const initial = (await rows())[0];
+      expect(initial).toMatchObject({
+        message_id: message.message_id,
+        message_seq: message.seq,
+        status: "pending",
+        attempt_count: 0,
+      });
+      // Arm a due retry deterministically without waiting for wall-clock time.
+      await runInDurableObject(stub, (_instance, state) =>
+        state.storage.sql.exec(
+          "UPDATE table_event_outbox SET next_attempt_at = ? WHERE event_id = ?",
+          Date.now() - 1,
+          initial.event_id,
+        ),
+      );
+      const captured: Array<{
+        url: string;
+        body: string;
+        headers: Record<string, string>;
+        redirect: RequestRedirect | undefined;
+      }> = [];
+      challengeReceiver.mockRestore();
+      vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+        const body = new TextDecoder().decode(init?.body as ArrayBuffer);
+        captured.push({
+          url: String(url),
+          body,
+          headers: Object.fromEntries(new Headers(init?.headers)),
+          redirect: init?.redirect,
+        });
+        if (captured.length === 1) {
+          // The receiver may commit the event while its HTTP reply is lost.
+          throw new Error("Synthetic response lost after receiver acceptance");
+        }
+        return new Response(null, {
+          status: captured.length === 3 ? 410 : 204,
+        });
+      });
+      const alarm = () =>
+        runInDurableObject(stub, async (instance) => {
+          // Only the test instance bypasses readiness. Production remains
+          // fail-closed until the connection-boundary evidence gate is met.
+          const harness = instance as unknown as {
+            env: Env;
+            outboxDispatchEnabled(): boolean;
+          };
+          harness.env = {
+            ...harness.env,
+            EVENTS_REVIEWED_CALLBACK_TARGETS: REVIEWED,
+          };
+          harness.outboxDispatchEnabled = () => true;
+          await instance.alarm();
+        });
+      await alarm();
+      expect(captured).toHaveLength(1);
+      const pending = (await rows())[0];
+      expect(pending).toMatchObject({
+        event_id: initial.event_id,
+        status: "pending",
+        attempt_count: 1,
+      });
+      expect(pending.first_attempt_at).toBeGreaterThan(0);
+      expect(pending.next_attempt_at).toBeGreaterThan(Date.now());
+      // Advance only the retry deadline, never the persisted attempt budget.
+      await runInDurableObject(stub, (_instance, state) =>
+        state.storage.sql.exec(
+          "UPDATE table_event_outbox SET next_attempt_at = ? WHERE event_id = ?",
+          Date.now() - 1,
+          initial.event_id,
+        ),
+      );
+      await evictDurableObject(stub);
+      await alarm();
+      expect(captured).toHaveLength(2);
+      for (const call of captured) {
+        expect(call.url).toBe(CALLBACK);
+        expect(call.redirect).toBe("manual");
+        expect(call.body).not.toContain("CONFIDENTIAL PEER MESSAGE");
+        expect(call.body).not.toContain(owner.guestId);
+        expect(call.headers["cache-control"]).toBe("no-store");
+        const verified = new Webhook(SECRET).verify(call.body, call.headers);
+        expect(verified).toMatchObject({
+          eventId: initial.event_id,
+          name: "table.message.created",
+          data: {
+            table_id: tableId,
+            message_id: message.message_id,
+            seq: message.seq,
+          },
+        });
+        expect(call.headers["x-mcp-subscription-id"]).toBe(subscription.id);
+      }
+      expect(captured[1].body).toBe(captured[0].body);
+      expect((await rows())[0]).toMatchObject({
+        event_id: initial.event_id,
+        status: "accepted",
+        attempt_count: 2,
+        first_attempt_at: pending.first_attempt_at,
+      });
+      await alarm();
+      expect(captured).toHaveLength(2);
+      const view = toolOutput(
+        await peerClient.callTool({
+          name: "get_table",
+          arguments: { table_id: tableId },
+        }),
+      );
+      expect(view.notifications).toMatchObject({
+        available: false,
+        pendingCount: 0,
+        lastAcceptedSeq: message.seq,
+      });
+
+      // A second authenticated post exercises the real 410 refusal path.
+      const rejectedPost = toolOutput(
+        await ownerClient.callTool({
+          name: "post_message",
+          arguments: {
+            table_id: tableId,
+            request_id: crypto.randomUUID(),
+            body: "PRIVATE BODY OF REJECTED EVENT",
+          },
+        }),
+      );
+      const rejected = (await rows()).find(
+        (row) => row.message_id === rejectedPost.message_id,
+      );
+      expect(rejected).toMatchObject({
+        status: "pending",
+        attempt_count: 0,
+      });
+      if (!rejected) throw new Error("Missing second committed event");
+      await runInDurableObject(stub, (_instance, state) =>
+        state.storage.sql.exec(
+          "UPDATE table_event_outbox SET next_attempt_at = ? WHERE event_id = ?",
+          Date.now() - 1,
+          rejected.event_id,
+        ),
+      );
+      await alarm();
+      expect(captured).toHaveLength(3);
+      expect(
+        new Webhook(SECRET).verify(captured[2].body, captured[2].headers),
+      ).toMatchObject({
+        eventId: rejected.event_id,
+        data: { message_id: rejectedPost.message_id, seq: rejectedPost.seq },
+      });
+      expect(captured[2].body).not.toContain("PRIVATE BODY OF REJECTED");
+      expect(
+        (await rows()).find((row) => row.event_id === rejected.event_id),
+      ).toMatchObject({ status: "failed", attempt_count: 1 });
+      await alarm();
+      expect(captured).toHaveLength(3);
+    } finally {
+      await peerClient.close();
+      await ownerClient.close();
     }
   });
 });
