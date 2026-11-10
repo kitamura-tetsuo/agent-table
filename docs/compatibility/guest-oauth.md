@@ -3,12 +3,14 @@
 Status: **PARTIAL REAL-HOST EVIDENCE — ACCEPTANCE OPEN** as of 2026-11-10.
 An owner-authorized ChatGPT Work private MCP app (`Agent Table Test2`) was
 connected to an isolated staging Worker. Real host-origin create/read operations,
-a `refresh_token` exchange and post-browser-revocation HTTP 401 have been
-reported with redacted server receipts. This is **not** a completed nine-case
-host acceptance result: a later **separate** owner-origin Deny has matching
-Cloudflare HTTP observations and a same-guest, DO-backed connection-list
-readback with no new grant. Independent paired receipt review and a trustworthy
-deployed Git-SHA mapping remain outstanding. See
+a `refresh_token` exchange and a broker-level refusal after browser revocation
+have been observed. Separately, a standalone OAuth client confirmed that a
+revoked access token receives `/mcp` HTTP 401; **that 401 was not host-origin**.
+This is **not** a completed nine-case host acceptance result: a separate
+owner-origin Deny has matching Cloudflare HTTP observations and a same-guest,
+DO-backed connection-list readback with no new grant. Independent per-operation
+Durable Object receipt review and a trustworthy deployed Git-SHA mapping
+remain outstanding. See
 Issue [#23](https://github.com/kitamura-tetsuo/agent-table/issues/23) and
 [PR #41](https://github.com/kitamura-tetsuo/agent-table/pull/41).
 The local MCP SDK/OAuth regression tests cannot replace real-host evidence.
@@ -127,7 +129,7 @@ claim, not a blanket provider label.
 | Actual host refresh token | **PASSED ON SOURCE-LABELED STAGING** | Real ChatGPT host `refresh_token`/200 and binding fingerprint matched the owner's Active guest connection; scope arrays identical ([same-version receipt](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6754963099), [older audit](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6744941273)) |
 | Authenticated read after refresh | **PASSED ON SOURCE-LABELED STAGING** | Host `get_table` succeeded immediately after the independently bound active-connection refresh; edge `/mcp` 200 in the same short window, no shared request ID ([same-version receipt](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6754963099)) |
 | Same-guest browser revocation | **PASSED ON SOURCE-LABELED STAGING** | Owner revoked the current Active grant; browser POST `/guest/connections/revoke` returned 303, which the implemented route sends only after a successful GuestDO transaction. Later `/oauth/token` 400; no independent DO export ([new receipt](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6756230954), [older browser report](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6743908128)) |
-| First host call refused after revocation | **OLDER 401 OBSERVED; NEW 400 DOES NOT CLOSE GATE** | Older host call: `POST /mcp` HTTP 401 before new Allow. New same-deployment host `get_table` was blocked by `oauth_token_invalid_grant` after `/oauth/token` HTTP 400; no protected `/mcp` 401 appeared in this window ([older 401](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6744413982), [new 400](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6756230954)) |
+| First host call refused after revocation | **PASSED AT HOST REFUSAL LAYER; NO HOST `/mcp` 401 CLAIM** | The next actual-host `get_table` failed `UNAUTHORIZED` / `oauth_token_invalid_grant` after browser revoke; `/oauth/token` returned 400 on the same deployed Worker. REQ-003 asks for a refused **host protected operation**, not specifically a host `/mcp` 401. The separately measured stale-token `/mcp` 401 came from an **independent OAuth client**, not ChatGPT ([first host refusal](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6756230954), [reconnect/revoke host refusal](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6757741647), [independent resource 401](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6758016570)). No shared GuestDO/request correlation. |
 | Host-side Disconnect | **NOT RUN** | Service-side Revoke and host-side Disconnect are distinct |
 | Notification receipt / idle autonomy | **UNTESTED** | Not part of #23 OAuth gate; separate #18–#24 |
 
@@ -141,9 +143,12 @@ for **new** test runs. The redacted, **incomplete** snapshots
 deployment/test or connection windows. The Deny case passes on the owner's
 same-guest DO-backed list; actual-host refresh and subsequent read pass in a
 separate staged run; browser revocation passes in its own later staged run.
-The new post-revocation token 400 does **not** pass the protected-MCP 401
-case. All overall records remain **incomplete**. Validation cannot authenticate
-external receipts or merge older observations into a newer version's result.
+The `rejectedAfterRevocation` case in the revocation snapshot records a **host
+protected-tool refusal** at the broker's failed OAuth exchange, **not** an
+actual-host `/mcp` HTTP 401. The latter was observed only in a separate
+standalone client experiment. All overall records remain **incomplete**.
+Validation cannot authenticate external receipts or merge older observations
+into a newer version's result.
 
 ### Source-labeled staging smoke test — 2026-11-09 22:39–22:43 UTC
 
@@ -275,12 +280,42 @@ external receipts or merge older observations into a newer version's result.
   `/mcp` HTTP 401 for the freshly revoked connection: the ChatGPT broker
   may stop before making a protected tool request. Neither an independent
   GuestDO state export nor a shared trace ID was collected. The
-  `revokedInBrowser` case passes with these stated limits; the
-  `rejectedAfterRevocation` case remains **blocked**, preserving the
-  distinction between OAuth 400 and protected-resource 401.
+  `revokedInBrowser` case passes with these stated limits. The
+  `rejectedAfterRevocation` case also passes **only at the actual-host refused
+  protected-tool boundary required by REQ-003**, preserving the distinction
+  between OAuth 400 and protected-resource 401.
   [Redacted HTTP/client receipt](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6756230954).
   The matching metadata snapshot is
   `evidence.chatgpt-work-2026-11-10-revocation.json`.
+
+### Reconnected host and independent resource check — 2026-11-10 02:53–03:18 UTC
+
+- After a new explicit **Allow** in the owner-authorized ChatGPT Work
+  private app, live `create_table` and `get_table` returned the same
+  short-lived synthetic table. The owner then revoked that connection in
+  the same guest's browser UI. The **next real-host `get_table`** failed
+  `UNAUTHORIZED` / `oauth_token_invalid_grant`; the host did not deliver
+  table data. A separate sampled Cloudflare edge query showed `/mcp` 200
+  before revocation, `/guest/connections/revoke` 303 at 02:58:32Z and
+  `/oauth/token` **400** at 02:58:50Z. This is a refused host operation
+  **at the OAuth broker**, not a measured host-origin `/mcp` 401.
+  [Redacted host/edge receipt](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6757741647).
+- A **different, standalone synthetic OAuth client**, using explicit browser
+  approval of a new `tables:read` grant and PKCE, received an access token
+  with 900-second TTL at 03:12:18Z. Before revocation, its deliberately
+  uninitialized `tools/list` MCP request returned **400**, *not* 200 or
+  a successful protected tool. After owner browser revocation, the **same
+  unrefreshed, unexpired in-memory access token** received `/mcp` **401**
+  at 03:15:30Z and again at 03:18:19Z. Live Worker tail independently
+  observed the latter `POST /mcp` 401; sampled edge analytics did not
+  include the post-revocation 401s. These are **resource-server revocation
+  checks only**, never claimed as real ChatGPT-origin calls.
+  [Standalone client and live-tail receipt](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6758016570).
+- Neither sequence captured a shared host/Worker/GuestDO/TableDO trace
+  identifier or a direct independent SQLite Durable Object row export. The
+  real-host refusal case can be recorded **as host-refused**, but the full
+  interoperability acceptance remains open until independently paired
+  grant/table evidence and host/deployment identity requirements are resolved.
 
 Before closing #23, independently review the paired host/Worker/DO grant and
 table receipts for all cases, and ensure

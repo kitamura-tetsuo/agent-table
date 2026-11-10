@@ -56,7 +56,7 @@
       "serverObservationRef": "pr41_6756230954_revoke_303"
     },
     "rejectedAfterRevocation": {
-      "status": "blocked",
+      "status": "passed",
       "clientObservationRef": "pr41_6756230954_host_invalid_grant",
       "serverObservationRef": "pr41_6756230954_oauth_token_400"
     }

@@ -81,19 +81,27 @@ describe("actual host interoperability evidence gate", () => {
     );
   });
 
-  it("keeps a token-refresh 400 distinct from protected MCP 401", () => {
+  it("records host broker refusal without claiming a protected MCP 401", () => {
     const result = evaluateHostEvidence(revokedHostRecord);
     expect(result.structurallyValid).toBe(true);
     expect(result.completeRecord).toBe(false);
     expect(revokedHostRecord.cases.revokedInBrowser.status).toBe("passed");
     expect(revokedHostRecord.cases.rejectedAfterRevocation.status).toBe(
-      "blocked",
+      "passed",
     );
+    // The host denied its protected operation at token refresh; this is not an MCP 401.
+    expect(
+      revokedHostRecord.cases.rejectedAfterRevocation.serverObservationRef,
+    ).toBe("pr41_6756230954_oauth_token_400");
     expect(result.missing).not.toContain(
       "actual client and server evidence for revokedInBrowser",
     );
-    expect(result.missing).toContain(
+    expect(result.missing).not.toContain(
       "actual client and server evidence for rejectedAfterRevocation",
+    );
+    expect(result.missing).toContain("exact host product/build identity");
+    expect(result.missing).toContain(
+      "actual client and server evidence for createdTable",
     );
   });
 
