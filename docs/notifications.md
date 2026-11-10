@@ -923,3 +923,42 @@ hosted HTTPS receipt or proof of Cloudflare DNS/IP/TLS properties. This new
 case does not resolve the remaining held-credential-refresh, deletion,
 revocation and independent-host race evidence required by #21/REQ-010; the
 public Events readiness gate remains disabled.
+
+### 2026-11-11: authenticated in-flight refresh and browser deletion interleavings
+
+Two additional production-entry Workerd regressions start with actual browser
+OAuth consent, MCP subscriptions and committed peer posts, then invoke the
+native TableDO alarm with its unchanged verified HTTPS sender and a controlled
+in-process `fetch` receiver. Only the test TableDO instance bypasses the
+hard-disabled production Events readiness predicate.
+
+- **Credential refresh during delivery:** The first signed request reaches the
+  receiver after the SQL lease is persisted (generation 1, one charged attempt,
+  non-null token and original first-attempt timestamp). Before responding, the
+  fixture calls the **actual authenticated MCP `events/subscribe`** refresh,
+  including a separate callback challenge with the replacement secret. The
+  unchanged subscription identity advances to generation 2. The old 204 cannot
+  settle the mismatched generation, and an alarm after DO eviction cannot retry
+  before lease recovery. On a controlled expired-lease boundary, a second
+  alarm sends exactly one signed request with the **new** credential, same
+  event/message identity, attempt count 2 and unchanged first-attempt timestamp;
+  acceptance persists and another eviction does not replay it.
+- **Browser-confirmed deletion during delivery:** A scoped MCP `delete_table`
+  request produces only a pending confirmation. The owner actually opens the
+  browser approval page with its guest cookie, obtains the CSRF token and
+  cookie, and submits the same-origin, CSRF-validated browser **POST** while
+  the captured application callback is waiting. The old lease had been
+  persisted and charged before approval. The approval erases message, receipt
+  and event rows and commits a terminal tombstone. The subsequently returned
+  204 cannot recreate erased data, and an alarm after eviction produces no
+  second request. The signed request was already dispatched and cannot be
+  recalled from the receiver.
+
+These are deterministic real API entry-point races in one isolated Workerd
+test process, not separately hosted HTTPS receiver captures, physical
+Cloudflare edge restarts or arbitrary concurrent host traffic. They establish
+the application lease/refresh/deletion fences at those exact boundaries,
+without proving #19's unresolved same-connection DNS-rebinding property or
+the real idle-agent pilot in #24. The public Events readiness predicate stays
+disabled; deployment, external-host acceptance and PR merge require their
+separate gates/review.
