@@ -2091,7 +2091,7 @@ describe("authenticated event producer through native alarm and HTTPS sender (co
           headers: { "Retry-After": "1" },
         });
       });
-      const alarm = () =>
+      const alarm = (outboundAllowed = true) =>
         runInDurableObject(stub, async (instance) => {
           const harness = instance as unknown as {
             env: Env;
@@ -2100,10 +2100,33 @@ describe("authenticated event producer through native alarm and HTTPS sender (co
           harness.env = {
             ...harness.env,
             EVENTS_REVIEWED_CALLBACK_TARGETS: REVIEWED,
+            ALLOW_OUTBOUND_NOTIFICATIONS: outboundAllowed ? "true" : "false",
           };
-          harness.outboxDispatchEnabled = () => true;
+          // Only public Events readiness is bypassed for the controlled
+          // receiver; the real operator outbound predicate remains active.
+          harness.outboxDispatchEnabled = () =>
+            allowOutboundNotifications(harness.env);
           await instance.alarm();
         });
+      await runInDurableObject(stub, (_instance, state) =>
+        state.storage.sql.exec(
+          "UPDATE table_event_outbox SET next_attempt_at = ? WHERE event_id = ?",
+          Date.now() - 1,
+          initial.event_id,
+        ),
+      );
+      await alarm(false);
+      expect(deliveredIds).toHaveLength(0);
+      expect((await rows())[0]).toMatchObject({
+        status: "pending",
+        attempt_count: 0,
+        first_attempt_at: null,
+      });
+      await evictDurableObject(stub);
+      await alarm(false);
+      expect(deliveredIds).toHaveLength(0);
+      expect((await rows())[0].attempt_count).toBe(0);
+
       let firstAttemptAt: number | null = null;
       for (let attempt = 1; attempt <= 8; attempt++) {
         // Change only the scheduling deadline: never reset persisted identity or budget.
@@ -2135,164 +2158,64 @@ describe("authenticated event producer through native alarm and HTTPS sender (co
         status: "failed",
         attempt_count: 8,
       });
-    } finally {
-      await peerClient.close();
-      await ownerClient.close();
-    }
-  });
 
-  it("pauses native delivery without charging attempts and preserves the original retry horizon", async () => {
-    const owner = await newPrincipal();
-    const peer = await newPrincipal();
-    const ownerClient = await clientFor(owner.token);
-    const peerClient = await clientFor(peer.token);
-    const challengeReceiver = echoReceiver();
-    try {
-      const tableId = await createTable(ownerClient);
-      const invite = toolOutput(
-        await ownerClient.callTool({
-          name: "create_invite",
-          arguments: { table_id: tableId, request_id: crypto.randomUUID() },
-        }),
-      );
-      expect(
-        (
-          await peerClient.callTool({
-            name: "join_table",
-            arguments: {
-              invitation: invite.invitation,
-              request_id: crypto.randomUUID(),
-            },
-          })
-        ).isError,
-      ).not.toBe(true);
-      await callEvent(
-        peerClient,
-        "events/subscribe",
-        subscriptionParams(tableId),
-      );
-      expect(challengeReceiver).toHaveBeenCalledTimes(1);
-      const post = toolOutput(
+      const horizonPost = toolOutput(
         await ownerClient.callTool({
           name: "post_message",
           arguments: {
             table_id: tableId,
             request_id: crypto.randomUUID(),
-            body: "SYNTHETIC PAUSED OUTBOUND EVENT",
+            body: "SYNTHETIC ORIGINAL RETRY HORIZON",
           },
         }),
       );
-      const stub = env.TABLES.get(env.TABLES.idFromName(tableId));
-      type Row = {
-        event_id: string;
-        message_id: string;
-        status: string;
-        attempt_count: number;
-        first_attempt_at: number | null;
-        next_attempt_at: number | null;
-        last_error_category: string | null;
-      };
-      const rows = () =>
-        runInDurableObject(stub, (_instance, state) =>
-          state.storage.sql
-            .exec<Row>("SELECT * FROM table_event_outbox")
-            .toArray(),
-        );
-      const initial = (await rows())[0];
-      expect(initial).toMatchObject({
-        message_id: post.message_id,
-        status: "pending",
-        attempt_count: 0,
-        first_attempt_at: null,
-      });
+      const horizonEvent = (await rows()).find(
+        (row) => row.message_id === horizonPost.message_id,
+      );
+      if (!horizonEvent) throw new Error("Missing second authenticated event");
       await runInDurableObject(stub, (_instance, state) =>
         state.storage.sql.exec(
           "UPDATE table_event_outbox SET next_attempt_at = ? WHERE event_id = ?",
           Date.now() - 1,
-          initial.event_id,
+          horizonEvent.event_id,
         ),
       );
-      challengeReceiver.mockRestore();
-      const delivered: string[] = [];
-      vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
-        expect(String(url)).toBe(CALLBACK);
-        const body = new TextDecoder().decode(init?.body as ArrayBuffer);
-        const headers = Object.fromEntries(new Headers(init?.headers));
-        const event = new Webhook(SECRET).verify(body, headers) as {
-          eventId: string;
-        };
-        delivered.push(event.eventId);
-        return new Response(null, { status: 503 });
-      });
-      const alarm = (outboundAllowed: boolean) =>
-        runInDurableObject(stub, async (instance) => {
-          const harness = instance as unknown as {
-            env: Env;
-            outboxDispatchEnabled(): boolean;
-          };
-          harness.env = {
-            ...harness.env,
-            EVENTS_REVIEWED_CALLBACK_TARGETS: REVIEWED,
-            ALLOW_OUTBOUND_NOTIFICATIONS: outboundAllowed ? "true" : "false",
-          };
-          // Bypass only the public Events-readiness gate for this controlled
-          // receiver; retain the real operator outbound-control predicate.
-          harness.outboxDispatchEnabled = () =>
-            allowOutboundNotifications(harness.env);
-          await instance.alarm();
-        });
-
-      await alarm(false);
-      expect(delivered).toHaveLength(0);
-      expect((await rows())[0]).toMatchObject({
-        event_id: initial.event_id,
-        status: "pending",
-        attempt_count: 0,
-        first_attempt_at: null,
-      });
       await evictDurableObject(stub);
-      await alarm(false);
-      expect(delivered).toHaveLength(0);
-      expect((await rows())[0].attempt_count).toBe(0);
-
-      await evictDurableObject(stub);
-      await alarm(true);
-      expect(delivered).toEqual([initial.event_id]);
-      const failed = (await rows())[0];
-      expect(failed).toMatchObject({
+      await alarm();
+      expect(deliveredIds).toHaveLength(9);
+      expect(deliveredIds[8]).toBe(horizonEvent.event_id);
+      const charged = (await rows()).find(
+        (row) => row.event_id === horizonEvent.event_id,
+      );
+      expect(charged).toMatchObject({
         status: "pending",
         attempt_count: 1,
         last_error_category: "server-error",
       });
-      expect(failed.first_attempt_at).toBeGreaterThan(0);
-
-      // Backdate only the original first attempt to exercise elapsed-time
-      // expiry; neither the committed message nor attempt budget is reset.
+      expect(charged?.first_attempt_at).toBeGreaterThan(0);
+      // Exercise elapsed-time cleanup without changing the original budget.
       await runInDurableObject(stub, (_instance, state) =>
         state.storage.sql.exec(
           "UPDATE table_event_outbox SET first_attempt_at = ?, next_attempt_at = ? WHERE event_id = ?",
           Date.now() - 60 * 60_000 - 1,
           Date.now() - 1,
-          initial.event_id,
+          horizonEvent.event_id,
         ),
       );
       await evictDurableObject(stub);
-      await alarm(true);
-      expect(delivered).toEqual([initial.event_id]);
-      expect((await rows())[0]).toMatchObject({
-        event_id: initial.event_id,
+      await alarm();
+      expect(deliveredIds).toHaveLength(9);
+      expect(
+        (await rows()).find((row) => row.event_id === horizonEvent.event_id),
+      ).toMatchObject({
         status: "failed",
         attempt_count: 1,
         last_error_category: "retry-exhausted",
         next_attempt_at: null,
       });
-      await evictDurableObject(stub);
-      await alarm(true);
-      expect(delivered).toHaveLength(1);
 
-      // A later authenticated post must not dispatch once table expiry
-      // becomes authoritative, even if the outbox row was already committed.
-      const later = toolOutput(
+      // An actual committed post is never delivered after table expiry.
+      const expiredPost = toolOutput(
         await ownerClient.callTool({
           name: "post_message",
           arguments: {
@@ -2303,7 +2226,7 @@ describe("authenticated event producer through native alarm and HTTPS sender (co
         }),
       );
       expect(
-        (await rows()).some((row) => row.message_id === later.message_id),
+        (await rows()).some((row) => row.message_id === expiredPost.message_id),
       ).toBe(true);
       await runInDurableObject(stub, (_instance, state) =>
         state.storage.sql.exec(
@@ -2312,8 +2235,8 @@ describe("authenticated event producer through native alarm and HTTPS sender (co
         ),
       );
       await evictDurableObject(stub);
-      await alarm(true);
-      expect(delivered).toHaveLength(1);
+      await alarm();
+      expect(deliveredIds).toHaveLength(9);
       expect(await rows()).toHaveLength(0);
       await runInDurableObject(stub, (_instance, state) => {
         expect(
@@ -2327,7 +2250,6 @@ describe("authenticated event producer through native alarm and HTTPS sender (co
     } finally {
       await peerClient.close();
       await ownerClient.close();
-      vi.restoreAllMocks();
     }
   });
 

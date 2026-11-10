@@ -840,14 +840,15 @@ partial and the public Events readiness gate remains disabled.
 
 ### 2026-11-11: authenticated outbound pause, retry horizon and table expiry
 
-A native TableDO-alarm regression starts with real OAuth/MCP guest creation,
+An extended native TableDO-alarm regression starts with real OAuth/MCP guest creation,
 join, verified Events registration and a committed peer message. With the
 operator outbound predicate false, two alarm executions separated by Durable
 Object eviction issue **zero** callback requests and leave the original
 pending row, uncharged retry count and null first-attempt time unchanged.
-After the predicate resumes, the actual native HTTPS request is captured
-by a controlled in-process receiver, whose 503 response charges one attempt.
-The regression backdates only the original attempt timestamp past the one-hour
+After the predicate resumes, a controlled in-process receiver captures eight
+bounded native HTTPS 503 attempts for the original event without a ninth send.
+A second authenticated event incurs one native 503 attempt. The regression
+backdates only that event's original attempt timestamp past the one-hour
 retry horizon and verifies that a reconstructed alarm marks the same event
 retry-exhausted without another request or resetting its charged count.
 A subsequent authenticated post is then subjected to an expired stored table
