@@ -150,5 +150,12 @@ test("release workflows remain explicit main-only manual dispatches with environ
   assert.match(shared, /sha256sum "\$config"/);
   assert.match(shared, /wrangler deploy --config "\$config"/);
   assert.match(shared, /CLOUDFLARE_API_TOKEN/);
-  assert.doesNotMatch(shared, /if:\s*always\(\)/);
+  assert.match(shared, /if: steps\.gate\.outputs\.approved == 'true'/);
+  assert.match(shared, /if: always\(\)/);
+  const gateStep = shared
+    .split(
+      "- name: Validate candidate without access to deployment credentials",
+    )[1]
+    .split("- name: Publish only")[0];
+  assert.doesNotMatch(gateStep, /CLOUDFLARE_API_TOKEN/);
 });
