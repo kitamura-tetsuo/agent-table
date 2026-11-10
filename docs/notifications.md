@@ -816,3 +816,24 @@ and the independent #19 connection-time transport safety criteria remain
 unverified. The public Events flag remains disabled. These receiver-local tests do not
 change Issue #19's limited-beta risk acceptance or authorize its separate
 activation gate.
+
+### 2026-11-11: authenticated atomic post and lease-commit fault boundaries
+
+The OAuth/MCP producer-to-native-alarm Workerd regression now injects failures at
+both the DurableDeadlineScheduler post alarm-arm checkpoint and the post-SQL
+mutation checkpoint. It reuses the same authenticated mutation ID after each
+failed attempt, evicts and reconstructs the TableDO, and checks that no message,
+idempotent receipt, or event outbox row leaked from either rolled-back
+transaction. The following successful authenticated post produces exactly one
+message/receipt/pending event, has a durable alarm, and is idempotent on retry.
+
+On that same real producer event, a second fault is injected after the outbox
+lease mutation but before the storage transaction commits. The native alarm
+fails without any captured callback or charged attempt; persistent state
+remains pending, the recovery alarm is retained, and a reconstructed TableDO
+successfully sends the original signed event exactly once to an in-process
+controlled fetch receiver. Only scheduler checkpoint fault injection, due-time
+acceleration, and test-local callback readiness are substituted. No external
+hosted HTTPS endpoint, real Cloudflare restart, simultaneous in-flight lifecycle
+race, or DNS/TLS/IP boundary was measured. #21/REQ-010 is therefore still
+partial and the public Events readiness gate remains disabled.

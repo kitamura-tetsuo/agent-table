@@ -2139,4 +2139,182 @@ describe("authenticated event producer through native alarm and HTTPS sender (co
       await ownerClient.close();
     }
   });
+
+  it("rolls back authenticated post/outbox on alarm-arm or commit faults and recovers once", async () => {
+    const owner = await newPrincipal();
+    const peer = await newPrincipal();
+    const ownerClient = await clientFor(owner.token);
+    const peerClient = await clientFor(peer.token);
+    const challengeReceiver = echoReceiver();
+    try {
+      const tableId = await createTable(ownerClient);
+      const invite = toolOutput(
+        await ownerClient.callTool({
+          name: "create_invite",
+          arguments: { table_id: tableId, request_id: crypto.randomUUID() },
+        }),
+      );
+      expect(
+        (
+          await peerClient.callTool({
+            name: "join_table",
+            arguments: {
+              invitation: invite.invitation,
+              request_id: crypto.randomUUID(),
+            },
+          })
+        ).isError,
+      ).not.toBe(true);
+      await callEvent(
+        peerClient,
+        "events/subscribe",
+        subscriptionParams(tableId),
+      );
+      expect(challengeReceiver).toHaveBeenCalledTimes(1);
+      const stub = env.TABLES.get(env.TABLES.idFromName(tableId));
+      const requestId = crypto.randomUUID();
+      const post = () =>
+        ownerClient.callTool({
+          name: "post_message",
+          arguments: {
+            table_id: tableId,
+            request_id: requestId,
+            body: "SYNTHETIC ATOMIC POST WITH INJECTED STORAGE FAILURE",
+          },
+        });
+      const persisted = () =>
+        runInDurableObject(stub, (_instance, state) => ({
+          messages: state.storage.sql
+            .exec<{ message_id: string }>(
+              "SELECT message_id FROM table_messages",
+            )
+            .toArray(),
+          receipts: state.storage.sql
+            .exec<{ message_seq: number }>(
+              "SELECT message_seq FROM table_post_receipts",
+            )
+            .toArray(),
+          events: state.storage.sql
+            .exec<{
+              event_id: string;
+              message_id: string;
+              status: string;
+              attempt_count: number;
+            }>(
+              "SELECT event_id, message_id, status, attempt_count FROM table_event_outbox",
+            )
+            .toArray(),
+          alarm: state.storage.getAlarm(),
+        }));
+      for (const phase of ["after-arm", "after-mutation"] as const) {
+        await runInDurableObject(stub, (instance) => {
+          const harness = instance as unknown as {
+            deadlines: { checkpoint(checkpoint: string): Promise<void> };
+          };
+          harness.deadlines.checkpoint = async (checkpoint) => {
+            if (checkpoint === phase)
+              throw new Error("Injected atomic append fault");
+          };
+        });
+        let failed = false;
+        try {
+          const result = await post();
+          failed = result.isError === true;
+        } catch {
+          failed = true;
+        }
+        expect(failed).toBe(true);
+        await evictDurableObject(stub);
+        const snapshot = await persisted();
+        expect(snapshot.messages).toHaveLength(0);
+        expect(snapshot.receipts).toHaveLength(0);
+        expect(snapshot.events).toHaveLength(0);
+        expect(challengeReceiver).toHaveBeenCalledTimes(1);
+      }
+      const committed = toolOutput(await post());
+      const snapshot = await persisted();
+      expect(snapshot.messages).toHaveLength(1);
+      expect(snapshot.receipts).toHaveLength(1);
+      expect(snapshot.events).toHaveLength(1);
+      expect(snapshot.events[0]).toMatchObject({
+        message_id: committed.message_id,
+        status: "pending",
+        attempt_count: 0,
+      });
+      expect(await snapshot.alarm).not.toBeNull();
+      const repeated = toolOutput(await post());
+      expect(repeated.message_id).toBe(committed.message_id);
+      expect((await persisted()).events).toHaveLength(1);
+      challengeReceiver.mockRestore();
+      const captured: string[] = [];
+      vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+        expect(String(url)).toBe(CALLBACK);
+        const body = new TextDecoder().decode(init?.body as ArrayBuffer);
+        const payload = new Webhook(SECRET).verify(
+          body,
+          Object.fromEntries(new Headers(init?.headers)),
+        ) as { eventId: string };
+        captured.push(payload.eventId);
+        return new Response(null, { status: 204 });
+      });
+      await runInDurableObject(stub, (_instance, state) =>
+        state.storage.sql.exec(
+          "UPDATE table_event_outbox SET next_attempt_at = ?",
+          Date.now() - 1,
+        ),
+      );
+      await evictDurableObject(stub);
+      await runInDurableObject(stub, async (instance, state) => {
+        const harness = instance as unknown as {
+          env: Env;
+          outboxDispatchEnabled(): boolean;
+          deadlines: { checkpoint(phase: string): Promise<void> };
+        };
+        harness.env = {
+          ...harness.env,
+          EVENTS_REVIEWED_CALLBACK_TARGETS: REVIEWED,
+        };
+        harness.outboxDispatchEnabled = () => true;
+        harness.deadlines.checkpoint = async (phase) => {
+          if (
+            phase === "after-mutation" &&
+            state.storage.sql
+              .exec<{ status: string }>("SELECT status FROM table_event_outbox")
+              .one().status === "in_flight"
+          )
+            throw new Error("Injected durable lease fault");
+        };
+        await expect(instance.alarm()).rejects.toThrow(
+          "Table cleanup unavailable",
+        );
+      });
+      expect(captured).toHaveLength(0);
+      expect((await persisted()).events[0]).toMatchObject({
+        status: "pending",
+        attempt_count: 0,
+      });
+      expect(await (await persisted()).alarm).not.toBeNull();
+      await evictDurableObject(stub);
+      await runInDurableObject(stub, async (instance) => {
+        const harness = instance as unknown as {
+          env: Env;
+          outboxDispatchEnabled(): boolean;
+        };
+        harness.env = {
+          ...harness.env,
+          EVENTS_REVIEWED_CALLBACK_TARGETS: REVIEWED,
+        };
+        harness.outboxDispatchEnabled = () => true;
+        await instance.alarm();
+      });
+      expect(captured).toEqual([snapshot.events[0].event_id]);
+      expect((await persisted()).events[0]).toMatchObject({
+        status: "accepted",
+        attempt_count: 1,
+      });
+    } finally {
+      await peerClient.close();
+      await ownerClient.close();
+    }
+  });
 });
