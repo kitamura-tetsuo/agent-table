@@ -230,6 +230,33 @@ describe("callback egress preflight", () => {
     }
   });
 
+  it("returns only bounded Retry-After durations from synthetic receiver headers", async () => {
+    const spy = vi.spyOn(globalThis, "fetch");
+    try {
+      for (const [header, expected] of [
+        ["2", 2000],
+        ["9999999999", 900000],
+        ["garbage", undefined],
+      ] as const) {
+        spy.mockResolvedValueOnce(
+          new Response(null, {
+            status: 429,
+            headers: { "Retry-After": header },
+          }),
+        );
+        const outcome = await sendVerifiedHttps(
+          "https://events.provider.example.org/callback",
+          reviewed,
+          { method: "POST", body: new Uint8Array([1]) },
+        );
+        expect(outcome.ok).toBe(false);
+        if (!outcome.ok) expect(outcome.retryAfterMs).toBe(expected);
+      }
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it("safely extracts Cloudflare 1xxx error code on 5xx responses with diagnostics enabled", async () => {
     const spy = vi.spyOn(globalThis, "fetch");
     try {

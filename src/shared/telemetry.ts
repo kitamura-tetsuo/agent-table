@@ -66,6 +66,7 @@ export type FutureMetric =
   | { name: "stream.duration_ms"; value: number }
   | { name: "outbox.pending"; value: number }
   | { name: "outbox.oldest_age_ms"; value: number }
+  | { name: "outbox.attempt"; value: number }
   | { name: "outbox.retry"; value: number }
   | { name: "outbox.delivery_failure"; value: number };
 
@@ -100,6 +101,7 @@ const METRICS: ReadonlySet<string> = new Set([
   "stream.duration_ms",
   "outbox.pending",
   "outbox.oldest_age_ms",
+  "outbox.attempt",
   "outbox.retry",
   "outbox.delivery_failure",
 ]);
@@ -232,7 +234,7 @@ export function emitOperationalEvent(event: OperationalEvent): void {
   }
 }
 
-/** Extension seam: unused notification metrics are never emitted as zeroes. */
+/** Allowlisted scalar observations; zero means an actual measured empty backlog. */
 export function recordFutureMetric(metric: FutureMetric): void {
   const value = measurement(metric.value);
   if (!METRICS.has(metric.name) || value === null) return;

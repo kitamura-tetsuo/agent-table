@@ -621,59 +621,108 @@ are not claimed; named-host autonomy is a non-goal of Issue #18.
 
 ## Durable peer-event outbox — implementation status
 
-Issue #21 now has an **unreleased, incomplete** TableDO outbox scaffold
-(application schema v11). A successful authenticated post atomically commits
-a message/receipt and an event for each currently active peer subscription,
-using an alarm prearmed in the same storage transaction. Duplicate post keys,
-self-posts, and subscriptions created after an earlier post cannot create
-historical events. The persistent event ID, original message/sequence,
-recipient membership, canonical subscription/generation and initial retry
-budget are stored without the message body or callback secret. A verified
-same-identity refresh preserves event identity; unsubscribe/expiry invalidates
-outstanding work.
+Issue [#21](https://github.com/kitamura-tetsuo/agent-table/issues/21) remains
+**unreleased and incomplete**. Schema v11 persists message-bound, metadata-only
+work in the original append/receipt SQL transaction. The TableDO alarm now
+contains a dispatcher, but its production entry requires public Events enabled,
+operator outbound permission, and `callbackTransportReadiness().enabled`.
+The last gate is permanently false pending Issue #19's connection-time
+DNS/IP rebinding and original-host TLS evidence. No public Events setting,
+transport readiness decision, deployment or production callback was enabled by
+this increment.
 
-**This scaffold does not dispatch a webhook.** The lease/retry engine,
-dispatch-time authority, bounded retries and deadlines, terminal handling,
-safe status/telemetry and production-path receiver/restart tests required by
-#21 remain to be implemented before this draft is eligible for merge.
-The currently disabled public Events/readiness controls must stay off;
-an atomic outbox row or subscription challenge cannot prove delivery or
-host execution.
+The alarm inspects at most four due events and starts no further event after
+30 seconds of batch elapsed time. Each native HTTPS operation already has a
+ten-second total deadline and bounded request/response bytes. Lifecycle cleanup
+retains its separate 100-item budget. Only an enabled dispatcher includes retry
+and lease deadlines in alarm scheduling; a paused/disabled sender schedules
+original retention/expiry cleanup and does not charge attempts or poll overdue
+work every second. Reconstruction derives wakeups from SQLite rather than
+in-memory queues.
 
-### Issue #21: retained outbox lease ledger (Draft, not a delivery implementation)
+Before reservation the consumer opens the encrypted current/rotation credentials
+and obtains a fresh GuestDO `events:subscribe` decision. Alarm and fenced lease
+commit together before the next external await. A second fresh grant check
+follows that yielding commit. Immediately before transport starts, synchronous
+checks require current membership/guest ownership, original peer-message
+identity, live table/subscription, finite lifetimes, matching generation/lease,
+unchanged credentials/destination and enabled outbound controls. Signing uses
+the provider adapter, original event/message IDs, original occurrence timestamp
+and the recipient's inbox URI. No transcript body is selected for dispatch.
+Already-dispatched bytes cannot be recalled.
 
-The Issue #21 branch now includes a SQL-only attempt ledger in
-`src/notifications/outbox.ts`. It conditionally reserves a due outbox event
-with its stable event ID, subscription generation and random lease token; it
-records the first attempt and consumes one of eight lifetime reservations
-**before** any future network await. The original one-hour horizon,
-subscription/table expiry, generation and cancelled/terminal state fence stale
-completions. A transient failure uses bounded backoff and capped Retry-After;
-HTTP 410/413 and permanent failures terminate without retry. Only a 2xx
-response could become `accepted`, which means receiver acceptance, not host
-execution or transcript acknowledgment. The ledger contains no callback
-credentials. A rotation updates pending/in-flight generations without resetting
-the original event ID or attempt budget.
+A reservation proven never to have entered transport can be released only by
+its exact lease/generation token. This restores the unused charge (and clears
+first-attempt time only when there has never been a started attempt). Revocation
+observed before send cancels work; unavailable authority or credential opening
+failures defer for 60 seconds without charging an attempt. Ambiguous interrupted
+reservations and every started transport keep their charge. Reconstruction and
+refresh never reset their first-attempt horizon or budget. At most eight charged
+reservations and one hour from the recorded first attempt are allowed, further
+bounded by stored validity and fresh connection authority. Completion also
+requires the lease deadline not to have elapsed; late results are discarded even
+without a replacement lease. Backoff has deterministic jitter and caps
+Retry-After at 15 minutes. HTTP 410/413 and signing/payload failures terminate;
+2xx means receiver acceptance only.
 
-The existing TableDO alarm performs a safe, *network-free* terminal sweep for
-expired or exhausted work, retaining message rows and terminal outcomes. Workerd
-SQLite tests exercise an actual authenticated MCP post/subscribe/refresh and
-stored outbox row, reconstruction, reservation/retry, generation rollover,
-stale-result fencing, unsubscribe cancellation, eight-attempt exhaustion and
-the alarm terminal sweep. Classifier tests explicitly refuse unsafe redirects
-and unverified connection boundaries.
+Alarm observations emit aggregate backlog count/age, transport attempt, retry
+and terminal-failure metrics with no event/table/guest IDs, destination, response
+body or signing material. These are measurements of local work, not billed CPU,
+external captures or host execution. Own-only `get_table` status continues to
+report `available:false` / `delivery_not_ready`; an accepted sequence is not a
+contiguous read or processing acknowledgment.
 
-**This is partial #21 implementation.** The SQL operations are not yet called
-by a production HTTPS dispatcher. A future integration still needs a bounded
-alarm batch with prearmed lease recovery, fresh GuestDO
-`events:subscribe` grant/membership/connection authority before every send,
-provider signing with decrypted credentials, actual controlled-receiver
-captures, cancellation and pause races, telemetry, and an end-to-end
-restart/retry oracle. In particular, `reserveOutboxAttempt` by itself is not
-an outbound authorization and must be invoked only after a durable wakeup has
-been armed. The public Events gate remains fail-closed because Issue #19's
-connection-time DNS/IP rebinding and original-host TLS evidence is missing.
-Synthetic Workerd tests are not Cloudflare production delivery, a receiver
-receipt, or a real idle-host run. Do not merge/close #21 or enable Events from
-these results. Issue #24 real-host evidence and Issue #22 recovery clearance
-remain distinct release gates.
+### Requirement and evidence map
+
+All regression evidence below is **local Workerd with real Durable Object
+SQLite**. Dispatcher fixtures use real GuestDO grants but seed synthetic SQL
+work and replace private transport/readiness methods only inside
+`runInDurableObject`. They do not expose an RPC/configuration bypass or change
+the production gate. Registration/producer tests use authenticated MCP and
+provider challenge fixtures. None is production-origin receiver evidence.
+
+| Requirement | Component and observable regression evidence | Remaining acceptance limit |
+| --- | --- | --- |
+| REQ-001 | Existing atomic post producer; `events-subscriptions.test.ts` checks original message/event rows, duplicate/self suppression and refresh identity | Controlled external capture absent |
+| REQ-002 | `DurableDeadlineScheduler.commitWithWakeup`; existing authenticated producer rollback/reconstruction and new dispatcher lease-commit fault test | Hosted commit/arm crash proof absent |
+| REQ-003 | Real TableDO alarm, four-row batch, persisted lease before transport, expired-lease reclaim after eviction, exact-deadline/stale completion refusal in `outbox-dispatch.test.ts` | Transport results are synthetic |
+| REQ-004 | Two fresh GuestDO checks plus final synchronous local checks; revoked/expired/mismatched membership, unavailable authority and post-commit pause/revoke/close regressions | Shared egress invariant blocked by #19 |
+| REQ-005 | `outbox.ts` conditional settlement; eight attempts across evictions, unchanged first attempt/event IDs, bounded Retry-After, 410/413 terminal tests | Response-loss acceptance is synthetic |
+| REQ-006 | Existing lifecycle invalidation plus cancelled/deleted/generation-stale completion tests; disabled reconstruction has zero attempts and no due-alarm spin | New dispatcher lifecycle races use synthetic SQL interventions |
+| REQ-007 | Existing verified refresh carries generation without resetting identity/budget; ledger and dispatcher reject old results and reclaim after recovery | Real receiver/key-rotation race absent |
+| REQ-008 | Existing authenticated MCP own-connection status/read tests; no status/secret expansion in this increment | Production receiver acceptance absent |
+| REQ-009 | Four-attempt/six-pending failing-callback workload and allowlisted aggregate telemetry assertions; closed readiness regression | Billed/hosted active-exchange and restart workload measurements absent |
+| REQ-010 | Local regressions cover durable state and alarm integration incrementally | **Not accepted:** no actual authenticated post-to-alarm-to-controlled-receiver captures through a proven production transport |
+
+The new deterministic suite is `test/integration/outbox-dispatch.test.ts`;
+`outbox-ledger.test.ts` retains direct SQL state-machine tests, and
+`test/unit/egress-policy.test.ts` covers native transport policy/Retry-After using
+synthetic fetch responses. A selected helper verdict or a synthetic signature
+check cannot satisfy REQ-010. The safe next step is independent #19 connection
+boundary evidence, followed by the explicitly authorized controlled-receiver
+production-path campaign. Issue #24 real-host evidence and Issue #22 recovery
+clearance remain distinct release gates. Do not merge/close #21 or enable Events
+from these results.
+
+Validation on 2026-11-10, on `feat/issue-21-durable-outbox` starting at
+`8b01f96f72ec629754190efaa5254526ce21a704`:
+
+- `npm run typecheck`: exit 0 (`tsc --noEmit`, no diagnostics).
+- `npm run lint`: exit 0; `Checked 120 files in 164ms. No fixes applied.`;
+  `Found 2 warnings.` / `Found 15 infos.` The two warnings concern existing
+  private transcript/deletion test-barrier fields, unchanged by this increment.
+- `npx biome format src schema test`: exit 0;
+  `Checked 120 files in 66ms. No fixes applied.`
+- `npm test`: exit 0; `Test Files 41 passed (41)` / `Tests 284 passed (284)`.
+- `npm run test:integration`: exit 0;
+  `Test Files 32 passed (32)` / `Tests 184 passed (184)`.
+- `git diff --check`: exit 0, no output.
+
+Workerd commands used `WRANGLER_LOG_PATH` under `/tmp` and
+`WRANGLER_SEND_METRICS=false`. The initial sandbox invocation could not bind
+loopback (`listen EPERM`) and ran no tests; rerunning with authorized local
+socket access produced the results above. Suites include deliberate storage,
+stream and RPC failure injections and emit corresponding expected diagnostics;
+no failed tests or Vitest unhandled-error summary remained. No deployment,
+production callback, credential access, issue closure, branch creation, history
+rewrite or push was performed.

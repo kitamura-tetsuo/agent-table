@@ -81,6 +81,7 @@ export type CallbackTransportOutcome =
       reason: CallbackFailure;
       status?: number;
       cfErrorCode?: number;
+      retryAfterMs?: number;
     };
 
 export interface CallbackRequest {
@@ -463,11 +464,24 @@ export async function sendVerifiedHttps(
       } else if (response.body) {
         void response.body.cancel().catch(() => undefined);
       }
+      const retryAfter = response.headers.get("Retry-After");
+      const retryAfterMs =
+        retryAfter === null
+          ? undefined
+          : /^\d{1,10}$/.test(retryAfter)
+            ? Math.min(900_000, Number(retryAfter) * 1000)
+            : Number.isFinite(Date.parse(retryAfter))
+              ? Math.min(
+                  900_000,
+                  Math.max(0, Date.parse(retryAfter) - Date.now()),
+                )
+              : undefined;
       controller.abort();
       return {
         ok: false,
         reason: "upstream-non-2xx",
         status: response.status,
+        ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
         ...(cfErrorCode !== undefined ? { cfErrorCode } : {}),
       };
     }

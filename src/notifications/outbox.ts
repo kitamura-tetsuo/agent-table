@@ -57,7 +57,7 @@ export type AttemptOutcome =
 /** Transport interpretation is separate from host execution or transcript read. */
 export function classifyAttemptOutcome(
   response: CallbackTransportOutcome,
-  retryAfterMs?: number,
+  retryAfterMs = response.ok ? undefined : response.retryAfterMs,
 ): AttemptOutcome {
   if (response.ok) return { kind: "accepted" };
   if (response.reason === "upstream-non-2xx") {
@@ -95,11 +95,14 @@ export function reserveOutboxAttempt(
   eventId: string,
   generation: number,
   now: number,
+  authorityExpiresAt = Number.MAX_SAFE_INTEGER,
 ): OutboxLease | null {
   if (
     !Number.isSafeInteger(now) ||
     now <= 0 ||
-    !Number.isSafeInteger(generation)
+    !Number.isSafeInteger(generation) ||
+    !Number.isSafeInteger(authorityExpiresAt) ||
+    authorityExpiresAt <= now
   )
     return null;
   const row = sql
@@ -130,6 +133,7 @@ export function reserveOutboxAttempt(
     now + OUTBOX_LEASE_MS,
     firstAttemptAt + OUTBOX_RETRY_HORIZON_MS,
     row.expires_at,
+    authorityExpiresAt,
   );
   if (leaseDeadline <= now) return null;
   const leaseToken = crypto.randomUUID();
@@ -210,12 +214,14 @@ export function settleOutboxAttempt(
     )
     .toArray()[0];
   if (
-    !row ||
-    row.status !== "in_flight" ||
+    row?.status !== "in_flight" ||
     row.lease_token !== lease.leaseToken ||
     row.subscription_generation !== lease.generation ||
     row.attempt_count !== lease.attemptCount ||
-    row.first_attempt_at !== lease.firstAttemptAt
+    row.first_attempt_at !== lease.firstAttemptAt ||
+    row.lease_deadline !== lease.leaseDeadline ||
+    now >= lease.leaseDeadline ||
+    now >= lease.firstAttemptAt + OUTBOX_RETRY_HORIZON_MS
   )
     return null;
   let status: "accepted" | "pending" | "failed";
@@ -317,4 +323,33 @@ export function expireOutboxWork(
   );
   return sql.exec<{ changed: number }>("SELECT changes() AS changed").one()
     .changed;
+}
+
+/**
+ * Release only a reservation known never to have entered the transport.
+ * Once send starts, even an ambiguous failure must retain its charged attempt.
+ * The token fence prevents a late pre-send denial from refunding another lease.
+ */
+export function releaseUnsentOutboxAttempt(
+  sql: OutboxSql,
+  lease: OutboxLease,
+  nextAttemptAt: number,
+  cancelled: boolean,
+): void {
+  sql.exec(
+    `UPDATE table_event_outbox
+     SET status = ?, attempt_count = attempt_count - 1,
+         first_attempt_at = CASE WHEN attempt_count = 1 THEN NULL ELSE first_attempt_at END,
+         next_attempt_at = ?, lease_token = NULL, lease_deadline = NULL,
+         last_error_category = ?
+     WHERE event_id = ? AND subscription_generation = ?
+       AND status = 'in_flight' AND lease_token = ? AND attempt_count = ?`,
+    cancelled ? "cancelled" : "pending",
+    cancelled ? null : nextAttemptAt,
+    cancelled ? "authorization-revoked" : null,
+    lease.eventId,
+    lease.generation,
+    lease.leaseToken,
+    lease.attemptCount,
+  );
 }
