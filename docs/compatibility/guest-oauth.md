@@ -1,30 +1,34 @@
 # Guest OAuth interoperability — actual host evidence gate
 
-Status: **NINE METADATA-REFERENCED CASES OBSERVED ON ONE GUEST/GRANT SEQUENCE; STRICT ACCEPTANCE OPEN** as of 2026-11-10.
+Status: **TOOLS-LEVEL HOST OAUTH ACCEPTED FOR THE TESTED PRIVATE CONNECTION;
+NOTIFICATIONS / AUTONOMY UNTESTED** as of 2026-11-10.
 The owner-authorized ChatGPT Work private MCP app (`Agent Table Test2`) completed
-an owner Deny → same-guest Allow → synthetic create/read → real host refresh →
-post-refresh read → same-grant browser revoke → broker-level host refusal sequence
-against an isolated staging Worker. An independent GuestDO/TableDO SQLite
-readback corroborated grant and table state, with sampled Cloudflare HTTP
-status receipts. The revoked table remained live during the final refusal.
-The source Git SHA was independently compared to the archived executable
-Worker `index.js`; deployment versions and runtime bindings differed across
-inspection steps, and this is not signed end-to-end provenance.
+Deny → same-guest Allow → synthetic create/read → real host refresh →
+post-refresh read → same-grant browser revoke → host broker refusal
+against an isolated staging Worker. Independent GuestDO/TableDO SQLite rows,
+a bound token-refresh audit, and sampled Cloudflare edge receipts corroborate
+the original four-scope grant and live table; the table had not expired when
+the final host call was refused. The archived executable Worker `index.js`
+was independently matched to Git source; this is not signed deployment
+provenance.
 
-The nine-case redacted metadata record is **structurally valid but NOT
-complete under the fail-closed acceptance gate**: this ChatGPT SaaS build was
-not exposed and no shared per-request host-to-Worker trace ID was available.
-Browser Deny was evidenced by owner UI + absence of a same-guest grant, not
-a raw `access_denied` callback. After browser revocation the actual host's
-broker refused the next protected `get_table` with
-`oauth_token_invalid_grant`; **no host-origin `/mcp` HTTP 401 is claimed**.
-A standalone synthetic client separately observed an `/mcp` 401.
-Host-side Disconnect, notifications and autonomous idle processing were not
-tested. The latest staging audit/diagnostic secret was removed, both modes
-restored to `off`, and unauthenticated diagnostic response verified 404.
-Do not merge [PR #41](https://github.com/kitamura-tetsuo/agent-table/pull/41)
-or close [Issue #23](https://github.com/kitamura-tetsuo/agent-table/issues/23)
-without an explicit review of these remaining evidence gaps.
+The owner explicitly accepted **(a)** an undisclosed ChatGPT SaaS build ID
+and **(b)** bounded, independently corroborated evidence without a common
+host-to-Worker request ID for this isolated test. The nine-case redacted
+record now passes the metadata **completeness** gate. This is a
+**product/surface/account/date-scoped tools interoperability observation**,
+not a blanket claim about ChatGPT, dots or future SaaS builds; metadata
+completeness does not authenticate external receipts.
+Deny is supported by owner browser observation and independent absence of
+a new same-guest grant, not a raw `access_denied` callback. Following the
+owner's browser revocation, the real host's next protected `get_table`
+was refused at its broker with `oauth_token_invalid_grant`, not a host-origin
+`/mcp` HTTP 401; the latter came from a separate synthetic client.
+Host-side Disconnect remains explicitly `not-run` and has **not** been
+equated with service revocation. Notifications and idle autonomous execution
+remain untested. No production deployment took place; temporary staging
+audit/diagnostic bindings and secret were removed and the unauthenticated
+diagnostic endpoint returned 404.
 
 ## Latest single-guest, same-new-grant sequence — 2026-11-10 08:15–09:19 UTC
 
@@ -34,8 +38,10 @@ references **all nine** named host/browser cases in sequence for the same
 synthetic guest and the grant approved at **08:23:39.606 UTC**. Unlike the
 earlier snapshots below, create/read, host refresh, browser revocation and
 protected-tool refusal all concern that **same grant**. Deny occurred before
-that grant existed. `passed` refers to each redacted paired observation,
-**not** to a completed overall interoperability certification.
+that grant existed. `passed` refers to the paired client/server metadata
+observations. Under the owner's documented evidence standard, the **nine-case
+tools-level gate is accepted for this one tested surface and date**; it does
+not establish universal compatibility or notification/autonomy support.
 
 | Window UTC | Real-host/browser observation | Independent or bounded Worker-side corroboration |
 | --- | --- | --- |
@@ -55,16 +61,21 @@ ChatGPT Work SaaS build remains undisclosed**. A failed broker token exchange
 is evidence of host protected-operation denial; it is **not** a host `/mcp`
 401. The browser Deny lacked a captured raw `access_denied` callback.
 Host Disconnect remains `not-run`, and notifications/autonomous execution
-remain unverified. The evidence gate therefore returns
-`completeRecord=false` until external evidence or explicit acceptance
-criteria review resolves the missing host build and trace provenance.
+remain unverified. The owner approved the documented non-exposure of the
+SaaS build and cross-source correlation without a common request ID on
+2026-11-10. The revised metadata evaluator returns
+`structurallyValid=true`, `completeRecord=true` for this nine-case snapshot;
+that result is **not** a signed transcript or independent replay.
 
 ## Scope and inputs
 
 Use one explicitly authorized private connector surface of a candidate
-personal-agent host. Record its exact product/surface/version or exposed build,
+personal-agent host. Record its exact product/surface, version/build ID **if
+exposed** (otherwise the explicit `not-exposed-in-tested-host` marker),
 account/workspace eligibility, test UTC date, protocol/transport, canonical
-resource, and the deployed Agent Table git SHA. A product landing page,
+resource, and the independently attributed Agent Table git SHA. The marker
+must not stand in for unknown host eligibility or an untested connection.
+A product landing page,
 connection badge or SDK compatibility assertion does not count as host origin.
 Do not purchase accounts, publish a connector, deploy to production or alter
 permission/identity recovery rules merely to perform this test.
@@ -129,8 +140,13 @@ JSON fields instead of accidentally retaining secret material. Store private
 source traces outside Git under explicit access controls. If a wire-level
 incompatibility is observed, add a separate synthetic/reduced OAuth regression
 case; do not loosen PKCE, redirect, scope, audience, guest identity or
-revocation rules. Use exact product/build and endpoint in any compatibility
-claim, not a blanket provider label.
+revocation rules. Use exact product/surface, tested date, build identity when exposed
+(or explicitly disclosed non-exposure), and pinned endpoint/source SHA in any
+compatibility claim, not a blanket provider label. Under this one owner-approved
+test, time-bounded edge samples, matching GuestDO grant fingerprints, TableDO
+creation fingerprints and actual-host tool results can be accepted without a
+shared per-request trace ID. State the residual causal-correlation limitation;
+never represent a broker token 400 as a host-origin resource 401.
 
 ## Observed 2026-11-09 UTC — partial, redacted
 

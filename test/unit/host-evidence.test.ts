@@ -38,11 +38,11 @@ describe("actual host interoperability evidence gate", () => {
     );
   });
 
-  it("does not certify a pinned Worker without exposed host build or denial", () => {
+  it("does not certify a pinned Worker without actual host case receipts", () => {
     const result = evaluateHostEvidence(pinnedHostRecord);
     expect(result.structurallyValid).toBe(true);
     expect(result.completeRecord).toBe(false);
-    expect(result.missing).toContain("exact host product/build identity");
+    expect(result.missing).not.toContain("exact host product/build identity");
     expect(result.missing).toContain(
       "actual client and server evidence for deniedConsent",
     );
@@ -59,7 +59,7 @@ describe("actual host interoperability evidence gate", () => {
     expect(result.missing).not.toContain(
       "actual client and server evidence for deniedConsent",
     );
-    expect(result.missing).toContain("exact host product/build identity");
+    expect(result.missing).not.toContain("exact host product/build identity");
     expect(result.missing).toContain(
       "actual client and server evidence for refreshedToken",
     );
@@ -77,7 +77,7 @@ describe("actual host interoperability evidence gate", () => {
     expect(result.missing).not.toContain(
       "actual client and server evidence for readAfterRefresh",
     );
-    expect(result.missing).toContain("exact host product/build identity");
+    expect(result.missing).not.toContain("exact host product/build identity");
     expect(result.missing).toContain(
       "actual client and server evidence for revokedInBrowser",
     );
@@ -101,7 +101,7 @@ describe("actual host interoperability evidence gate", () => {
     expect(result.missing).not.toContain(
       "actual client and server evidence for rejectedAfterRevocation",
     );
-    expect(result.missing).toContain("exact host product/build identity");
+    expect(result.missing).not.toContain("exact host product/build identity");
     expect(result.missing).toContain(
       "actual client and server evidence for createdTable",
     );
@@ -119,7 +119,7 @@ describe("actual host interoperability evidence gate", () => {
     );
     expect(sqlRevokedHostRecord.deployment.buildSha).toBeNull();
     expect(result.missing).toContain("isolated deployed Agent Table build SHA");
-    expect(result.missing).toContain("exact host product/build identity");
+    expect(result.missing).not.toContain("exact host product/build identity");
     expect(result.missing).toContain(
       "actual client and server evidence for deniedConsent",
     );
@@ -128,11 +128,11 @@ describe("actual host interoperability evidence gate", () => {
     );
   });
 
-  it("records one guest/grant across nine real-host cases without waiving missing SaaS build", () => {
+  it("completes the bounded nine-case host record with explicitly undisclosed SaaS build", () => {
     const result = evaluateHostEvidence(sameGrantHostRecord);
     expect(result.structurallyValid).toBe(true);
-    expect(result.completeRecord).toBe(false);
-    expect(result.missing).toEqual(["exact host product/build identity"]);
+    expect(result.completeRecord).toBe(true);
+    expect(result.missing).toEqual([]);
     expect(sameGrantHostRecord.deployment.buildSha).toBe(
       "a560900dc9ebbbd108bb5c49e312512e1e626553",
     );
@@ -146,6 +146,30 @@ describe("actual host interoperability evidence gate", () => {
     expect(
       sameGrantHostRecord.cases.rejectedAfterRevocation.serverObservationRef,
     ).toBe("pr41_6763655747_oauth_token400");
+  });
+
+  it("does not allow generic or ambiguous build placeholders to bypass host identity", () => {
+    for (const exposedBuild of [
+      "unknown",
+      "unavailable",
+      "not-exposed",
+      "not-exposed-unspecified",
+      "not available",
+    ]) {
+      const result = evaluateHostEvidence({
+        ...sameGrantHostRecord,
+        host: { ...sameGrantHostRecord.host, exposedBuild },
+      });
+      expect(result.structurallyValid).toBe(true);
+      expect(result.completeRecord).toBe(false);
+      expect(result.missing).toContain("exact host product/build identity");
+    }
+    const missingDate = evaluateHostEvidence({
+      ...sameGrantHostRecord,
+      observedAt: null,
+    });
+    expect(missingDate.completeRecord).toBe(false);
+    expect(missingDate.missing).toContain("observation date");
   });
 
   it("cannot certify SDK-only observations or one missing denial", () => {

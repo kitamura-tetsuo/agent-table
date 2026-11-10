@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import notificationsMarkdown from "../../docs/notifications.md?raw";
 import referencesMarkdown from "../../docs/references.md?raw";
+import { evaluateHostEvidence } from "../e2e/host/evidence";
 import denied from "../e2e/host/evidence.chatgpt-work-2026-11-10-deny.json";
 import revoked from "../e2e/host/evidence.chatgpt-work-2026-11-10-revocation.json";
 import sameGrant from "../e2e/host/evidence.chatgpt-work-2026-11-10-same-grant.json";
@@ -30,8 +31,9 @@ describe("published host compatibility summaries", () => {
     }
   });
 
-  it("documents same-grant host refusal but retains exact-build and trace blockers", () => {
+  it("documents accepted same-grant tools evidence and its explicit provenance limits", () => {
     expect(sameGrant.cases.rejectedAfterRevocation.status).toBe("passed");
+    expect(evaluateHostEvidence(sameGrant).completeRecord).toBe(true);
     expect(sameGrant.host.exposedBuild).toBe("not-exposed-in-tested-host");
     for (const summary of summaries) {
       expect(summary).toContain("same-guest, same-approved-grant");
@@ -39,6 +41,7 @@ describe("published host compatibility summaries", () => {
       expect(summary).toContain("oauth_token_invalid_grant");
       expect(summary).toContain("exact host SaaS build");
       expect(summary).toContain("per-request");
+      expect(summary).toMatch(/owner (?:explicitly )?approved/);
     }
   });
 
@@ -51,7 +54,7 @@ describe("published host compatibility summaries", () => {
     expect(candidate).toContain("synthetic-only `/mcp` 401");
     expect(candidate).toContain("same-grant nine-case metadata record");
     expect(candidate).toContain("independently confirmed revoked grant");
-    expect(candidate).toContain("#23 partial");
+    expect(candidate).toContain("#23 bounded tools-level accepted");
     expect(candidate).toContain("**untested**");
   });
 });

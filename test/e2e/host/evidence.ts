@@ -77,12 +77,16 @@ export function evaluateHostEvidence(input: unknown): {
     missing.push("actual host-origin traffic (not SDK-only)");
   }
   const exposedBuild = record.host.exposedBuild.trim().toLowerCase();
+  // A SaaS host may not disclose a stable build ID. Only the explicit,
+  // reviewable non-exposure marker can replace that unavailable identifier.
+  const explicitlyNotExposed = exposedBuild === "not-exposed-in-tested-host";
   if (
-    !exposedBuild ||
-    exposedBuild === "unknown" ||
-    exposedBuild === "unavailable" ||
-    exposedBuild.startsWith("not-exposed") ||
-    exposedBuild.startsWith("not available")
+    !explicitlyNotExposed &&
+    (!exposedBuild ||
+      exposedBuild === "unknown" ||
+      exposedBuild === "unavailable" ||
+      exposedBuild.startsWith("not-exposed") ||
+      exposedBuild.startsWith("not available"))
   ) {
     missing.push("exact host product/build identity");
   }
