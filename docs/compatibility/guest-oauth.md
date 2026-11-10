@@ -122,8 +122,8 @@ claim, not a blanket provider label.
 | Denied consent without grant | **PASSED FOR TESTED GUEST (OWNER STATE READBACK)** | Owner selected Deny, host showed connection failure, Cloudflare `/authorize` 200/302 matches and same-guest DO-backed connection list contains the same two prior rows with no new grant ([edge receipt](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6754509851), [state readback](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6754667287)). Direct independent DO export and raw `access_denied` callback were not captured. |
 | Deliberate guest choice/reuse | **OWNER OBSERVED** | Same guest shown across old revoked and fresh active grants; [browser report](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6743908128) |
 | Approved consent | **OBSERVED** | Actual reconnect Allow and `/authorize` 200/302 followed by token 200; [client report](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6743908128), [server status](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6744413982) |
-| Host `create_table` | **HOST TOOL OBSERVED** | Actual private-app tool result; direct independent DO table persistence audit still needed ([client report](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6743636141)) |
-| Host `get_table` | **HOST TOOL OBSERVED** | Host read after creation and after reauthorization; exact protected operation to persisted table needs independent join ([client report](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6743908128)) |
+| Host `create_table` | **HOST TOOL OBSERVED** | Actual private-app tool results on older and source-labeled staging versions; direct independent DO table persistence audit still needed ([older client report](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6743636141), [latest corroboration](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6754828876)) |
+| Host `get_table` | **HOST TOOL OBSERVED** | Host read after creation and after reauthorization; exact protected operation to persisted table still needs an independent join ([older client report](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6743908128), [latest corroboration](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6754828876)) |
 | Actual host refresh token | **SERVER OBSERVED** | Live redacted `refresh_token`/200; active connection digest and equal four-scope arrays ([audit receipt](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6744941273)) |
 | Authenticated read after refresh | **HOST/SERVER OBSERVED** | Host `get_table` succeeded; matching-window `/mcp` 200, no shared request ID ([audit receipt](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6744941273)) |
 | Same-guest browser revocation | **BROWSER/SERVER OBSERVED** | Old grant Revoked, fresh grant Active; `POST /guest/connections/revoke` 303 ([browser report](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6743908128), [edge receipt](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6744413982)) |
@@ -164,6 +164,25 @@ external receipts or merge older observations into a newer version's result.
 - See the [redacted PR receipt](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6753521454).
   Host SaaS build remains undisclosed; the metadata-only schema must reject
   sentinels such as `not-exposed` as a completed build identity.
+
+### Post-Deny use of existing authorized connection — 2026-11-09 23:56 UTC
+
+- The real ChatGPT Work private app `Agent Table Test2` invoked
+  `create_table` and `get_table` on another synthetic one-hour table.
+  The two responses agreed on table identity, title, state, creator Seat 1
+  and expiry. No personal content, invitation or grant mutation was involved.
+  This demonstrates continued protected tool access through the **existing
+  authorized connection**, not approval of the separately denied attempt.
+- A fresh read-only Cloudflare Zone `httpRequestsAdaptive` query for
+  23:56:20–23:57:25Z returned `/oauth/token` **200** at 23:56:48Z
+  and `/mcp` **200** at 23:56:51Z and 23:56:57Z. Wrangler still identified
+  source-labeled staging version `8a44a405-6ed3-4f8d-b392-234313f322dd`
+  as the latest 100% deployment. These are time-aligned edge observations,
+  not independent TableDO writes or a grant/guest request-ID join.
+- The token request's **grant type is unknown**, so this observation does
+  **not** pass the real-host refresh case. Without a server-side binding and
+  table receipt, the protected create/read cases remain incomplete.
+  [Redacted evidence](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6754828876).
 
 ### Separate owner-origin Deny attempt — 2026-11-09 23:35 UTC
 
