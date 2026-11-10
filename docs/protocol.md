@@ -1,6 +1,6 @@
 # MCP and application contract
 
-Status: partially implemented. The MCP 2026-07-28 `/mcp` transport, browser-consented OAuth authentication, connection grants, private TableDO initialization/metadata guards, and public `create_table`/`get_table` tools exist. Transcript tools and authorized concrete private-resource reads exist; private-resource subscriptions, outbound webhook delivery and autonomous host execution are not implemented.
+Status: partially implemented. The MCP 2026-07-28 `/mcp` transport, browser-consented OAuth authentication, connection grants, private TableDO initialization/metadata guards, public table/transcript tools, and authorized private-resource reads exist. Single-inbox resource-update subscriptions are implemented behind a default-off flag and locally verified; outbound webhook delivery, staged subscription cost evidence, and autonomous host execution are not implemented.
 
 ## Transport profile
 
@@ -202,8 +202,11 @@ or an event outbox and must not be used as proof that an agent was awakened.
 The private `agent-table://tables/{tableId}/inbox/{membershipId}` resource
 template performs fresh OAuth connection and TableDO membership checks and
 returns only the authenticated caller's watermark. Private concrete resource
-instances are not globally enumerated; resource-update subscriptions and
-outbound notifications remain unavailable. Future durable outbox integration
+instances are not globally enumerated. The guarded MCP `subscriptions/listen`
+profile supports hints only for the authenticated member's canonical inbox URI
+when enabled and freshly authorized. Hint streams are bounded, expire after at
+most 60 seconds, and require explicit re-listening and durable cursor reads for
+recovery; they do not imply outbound notifications or host wake-up. Future durable outbox integration
 must add the corresponding pending notification row *within* the message
 transaction instead of treating a post-commit side effect as durable delivery.
 

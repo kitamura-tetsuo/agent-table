@@ -2,6 +2,15 @@ import type { InboxSubscriptionCheck } from "./subscriptions";
 
 export const INBOX_AUTH_POLL_MS = 1_000;
 
+export type InboxStreamStopReason =
+  | "cancelled"
+  | "replaced"
+  | "deadline"
+  | "authorization"
+  | "slow_consumer"
+  | "concurrency"
+  | "terminal";
+
 type Entry = {
   cancellationId: string;
   snapshot: InboxSubscriptionCheck;
@@ -20,6 +29,10 @@ export class InboxHintStreams {
 
   constructor(
     private readonly observe: (active: number, durationMs?: number) => void,
+    private readonly onStop?: (
+      reason: InboxStreamStopReason,
+      durationMs: number,
+    ) => void,
   ) {}
 
   attach(
@@ -28,7 +41,7 @@ export class InboxHintStreams {
     cancellationId: string = crypto.randomUUID(),
   ): ReadableStream<Uint8Array> {
     const old = this.entries.get(snapshot.membershipId);
-    if (old) this.stop(old);
+    if (old) this.stop(old, "replaced");
     // A private table has exactly two seats. Do not silently expand that bound.
     if (this.entries.size >= 2 || snapshot.expiresAt <= Date.now()) {
       throw new Error("Inbox stream unavailable");
@@ -45,7 +58,7 @@ export class InboxHintStreams {
             checking: false,
             started: Date.now(),
             deadline: setTimeout(
-              () => this.stop(entry),
+              () => this.stop(entry, "deadline"),
               snapshot.expiresAt - Date.now(),
             ),
           };
@@ -53,7 +66,7 @@ export class InboxHintStreams {
           this.observe(this.entries.size);
           this.poll(entry);
         },
-        cancel: () => this.stop(entry, true),
+        cancel: () => this.stop(entry, "cancelled", true),
       },
       // At most one small URI hint is queued here. RPC/network buffering is a
       // separate boundary; this does not bound a future SDK router's SSE queue.
@@ -62,12 +75,13 @@ export class InboxHintStreams {
   }
 
   closeAll(): void {
-    for (const entry of this.entries.values()) this.stop(entry);
+    for (const entry of this.entries.values()) this.stop(entry, "terminal");
   }
 
   cancel(membershipId: string, cancellationId: string): void {
     const entry = this.entries.get(membershipId);
-    if (entry && entry.cancellationId === cancellationId) this.stop(entry);
+    if (entry && entry.cancellationId === cancellationId)
+      this.stop(entry, "cancelled");
   }
 
   async notify(membershipId: string): Promise<void> {
@@ -75,7 +89,7 @@ export class InboxHintStreams {
     if (!entry) return;
     if (!(await this.revalidate(entry)) || !this.current(entry)) return;
     if ((entry.controller.desiredSize ?? 0) <= 0) {
-      this.stop(entry);
+      this.stop(entry, "slow_consumer");
       return;
     }
     // Only the canonical URI crosses this boundary: no text, actor, or cursor.
@@ -90,15 +104,22 @@ export class InboxHintStreams {
     return this.entries.get(entry.snapshot.membershipId) === entry;
   }
 
-  private stop(entry: Entry, cancelled = false): void {
+  private stop(
+    entry: Entry,
+    reason: InboxStreamStopReason,
+    sourceAlreadyCancelled = false,
+  ): void {
     if (!this.current(entry)) return;
     this.entries.delete(entry.snapshot.membershipId);
     clearTimeout(entry.deadline);
     clearTimeout(entry.poll);
     // Error discards queued hints on replacement, expiry and invalidation.
     // Bytes already read by a downstream consumer cannot be recalled.
-    if (!cancelled) entry.controller.error(new Error("Inbox stream ended"));
-    this.observe(this.entries.size, Date.now() - entry.started);
+    if (!sourceAlreadyCancelled)
+      entry.controller.error(new Error("Inbox stream ended"));
+    const duration = Date.now() - entry.started;
+    this.observe(this.entries.size, duration);
+    this.onStop?.(reason, duration);
   }
 
   private poll(entry: Entry): void {
@@ -114,7 +135,7 @@ export class InboxHintStreams {
     // No per-post promise queue, including when GuestDO is slow. Conservative
     // termination on overlap lets a client reconnect and recover by cursor.
     if (entry.checking || this.pendingChecks >= 2) {
-      this.stop(entry);
+      this.stop(entry, "concurrency");
       return false;
     }
     entry.checking = true;
@@ -129,7 +150,7 @@ export class InboxHintStreams {
         checked.tableId !== entry.snapshot.tableId ||
         Math.min(checked.expiresAt, entry.snapshot.expiresAt) <= Date.now()
       ) {
-        this.stop(entry);
+        this.stop(entry, "authorization");
         return false;
       }
       // Revalidation can shorten a lifetime, never renew it.
@@ -137,13 +158,13 @@ export class InboxHintStreams {
         entry.snapshot = { ...entry.snapshot, expiresAt: checked.expiresAt };
         clearTimeout(entry.deadline);
         entry.deadline = setTimeout(
-          () => this.stop(entry),
+          () => this.stop(entry, "deadline"),
           checked.expiresAt - Date.now(),
         );
       }
       return true;
     } catch {
-      this.stop(entry);
+      this.stop(entry, "authorization");
       return false;
     } finally {
       entry.checking = false;

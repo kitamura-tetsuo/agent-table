@@ -474,3 +474,66 @@ status *for this exact Ubuntu checkout only*. The new native probe and SDK
 probe are now included in `.github/workflows/ci.yml` for independent PR-head
 validation. Actual publicly connected `subscriptions/listen` and two-edge
 hosted delivery are still NOT RUN, and the existing P1 review remains open.
+
+## Current Issue #18 public MCP live inbox status (2026-11-10 JST)
+
+**This section supersedes the historical disabled-capability and internal-only
+status statements above for the current PR #43 source.** A guarded public
+MCP `subscriptions/listen` route now connects the official 2026-07-28 SDK to
+TableDO-owned live peer-update hints. The deployed configuration continues to
+set `ENABLE_MCP_SUBSCRIPTIONS=false`. There was no public enablement, staged
+deployment or live billing measurement in this implementation increment.
+
+### Public protocol, authorization and bounding
+
+- `McpServer` advertises `resources.subscribe` only for a valid OAuth identity
+  with an unexpired token, `events:subscribe` scope, a current matching
+  connection grant, and the explicit feature flag. Otherwise the existing
+  zero-capacity listener fails closed. A listen request is independently
+  checked against the host/origin, content type, protocol version, JSON-RPC
+  envelope, and strict one-resource canonical inbox filter before TableDO
+  admission. The actual SDK performs its own protocol validation and emits the
+  standard subscription ID/acknowledgment, resource-update notification and
+  completion frames.
+- The TableDO validates the authenticated actor, grant, membership, expiry and
+  terminal state on attach and before emitting each hint. It owns one active
+  stream per membership, replaces the prior generation and bounds pending
+  output to a single URI-only hint. Old cancellation cannot kill a replacement.
+  The stream ends on disconnect/cancel, revoke, table close/purge/expiry,
+  slow-reader/concurrent-check rejection, or a 60-second hard limit.
+- The public bridge has no module-global bus and admits one official SDK
+  handler per request. Because Workerd may eagerly consume even an unread
+  network-facing stream, an additional absolute cap of **four update frames
+  per listen** terminates the underlying TableDO RPC and emits the official
+  completion. There is no unlimited SDK queue, heartbeat, replay buffer or
+  event-body leakage. A host must explicitly listen again and call the
+  separate, freshly authorized `read_messages(after_seq)` tool to recover
+  every durable message (and must have `tables:read` for that read).
+- Logging emits allowlisted counts, bounded durations and fixed stream stop
+  reasons only, never guest/table IDs, resource URIs, tokens, messages or
+  arbitrary exception text. This instrumentation is **not** a platform bill.
+  Callback delivery and agent execution remain independent, unsupported
+  capabilities; receiving an update frame does not cause host model inference.
+
+### Evidence and remaining gates
+
+| Requirement | Local evidence | External release status |
+| --- | --- | --- |
+| REQ-001/002 authenticated official SDK listen and distinct `events:subscribe` vs. read authorization | Workerd OAuth + official client integration, strict filter rejection | External host compatibility **NOT RUN** |
+| REQ-003/004 TableDO peer-only post-commit signal, no self/duplicate/failed hints | Two distinct Workerd Worker entries share one real SQLite TableDO; retained message independently read | Hosted multi-edge **NOT RUN** |
+| REQ-005 bounded lifecycle/revocation/replacement | Native SDK backpressure, generation, expiry/close/purge/revoke and disconnect tests | Hosted disconnect/long-lived duration **NOT RUN** |
+| REQ-006 ack, gap catch-up and reconnect | Official SDK ack + private durable cursor checks, cross-edge gap test | External agent resume **NOT RUN** |
+| REQ-007 admission, safe measurements | Current connection/scopes, one stream per membership, four-frame cap, 60s lifetime, allowlisted local metrics | Cloudflare CPU/DO active duration/request/cost **NOT RUN** |
+| REQ-008 two Worker entries, official client, adversarial cases | `npm run probe:subscriptions:two-worker` in CI, plus isolated SDK and TableDO probes | Real deployed Worker instance/host tests **NOT RUN** |
+
+Run `npm run probe:subscriptions:sdk`,
+`npm run probe:subscriptions:table`, and
+`npm run probe:subscriptions:two-worker` after `npm ci`. The new two-Worker
+probe uses temporary local Workerd/SQLite namespaces and real OAuth-consented
+client tokens, but **no Cloudflare deployment**. The default-off flag must not
+be enabled publicly on the strength of local CI alone. Before declaring full
+Issue #18 release acceptance, obtain explicit authorization for an isolated
+staging deployment, capture stream CPU/requests/active duration and billed
+cost indicators, test an external host's actual subscription behavior, and
+verify its reconnect/read strategy. Historical measurements and test counts
+in prior sections refer to their earlier commits, not to this one.

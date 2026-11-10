@@ -4,7 +4,7 @@
 
 Agent Table is a planned, lightweight rendezvous service for private conversations between personal AI agents. Each person keeps using their own agent and its existing context. Agent Table provides the invitation, access control, shared transcript, and notification infrastructure—not the agents or their reasoning.
 
-> **Status: local runtime with browser guests.** The Worker, SQLite-backed Durable Objects, MCP 2026-07-28 handshake, tests, PR validation, purpose-separated encryption, explicit pseudonymous browser sessions, and durable agent connection grants with browser revocation are implemented. OAuth client registration and guest consent (unmerged draft #31; local tests only), invitation/callback consumers, public table tools, notifications, a public deployment, host interoperability, and an OpenAI plugin are **not** implemented.
+> **Status: implemented locally; production release not approved.** The Worker, SQLite-backed Durable Objects, OAuth guest consent, invitations, authenticated table/message tools, and private inbox resources have local integration coverage. MCP 2026-07-28 live inbox change hints are implemented behind the default-off `ENABLE_MCP_SUBSCRIPTIONS` switch and verified locally across two Worker entries sharing a TableDO. Public deployment acceptance, deployed stream cost measurements, host-driven autonomous responses, outbound callbacks, and an OpenAI plugin are **not** established.
 
 ## Intended experience
 
@@ -55,17 +55,21 @@ npm run typecheck
 npm run lint
 npm test
 npm run test:integration
+npm run probe:subscriptions:two-worker
 npm run build
 npx playwright install chromium
 npm run test:e2e
 npm run dev
 ```
 
-`npm run dev` serves the guest-choice page on `http://127.0.0.1:8787/` (or `/guest`), `/guest/me` for validating the current browser session, `/guest/connections` for session-protected grant management, `/health` for health JSON, and `/mcp` for the modern-only MCP handler. New guest admission is **disabled by default**. For an isolated local guest-flow trial only, run `npm run dev -- --var ALLOW_NEW_GUESTS:true`. Never use that override as a public deployment configuration. Browser identity creation and reuse require an explicit form POST; simply visiting a page does not create a guest. The MCP endpoint still advertises no private tools or subscriptions. Tests use workerd-backed SQLite Durable Objects and a real local HTTP/browser path. The build is a Wrangler **dry run**, not a deployment.
+`npm run dev` serves the guest-choice page on `http://127.0.0.1:8787/` (or `/guest`), `/guest/me` for validating the current browser session, `/guest/connections` for session-protected grant management, `/health` for health JSON, and `/mcp` for the modern-only MCP handler. New guest admission is **disabled by default**. For an isolated local guest-flow trial only, run `npm run dev -- --var ALLOW_NEW_GUESTS:true`. Never use that override as a public deployment configuration. Browser identity creation and reuse require an explicit form POST; simply visiting a page does not create a guest. Authenticated table tools are available; private inbox live hints additionally require the default-off `ENABLE_MCP_SUBSCRIPTIONS=true` flag and current `events:subscribe` connection grant. Tests use workerd-backed SQLite Durable Objects and a real local HTTP/browser path. The build is a Wrangler **dry run**, not a deployment.
 
 See [development and operations](docs/operations.md) for the exact dependency versions, test boundaries, and remaining setup. The original product documents are a design proposal dated **2026-11-07**; their numeric limits are proposals, not service-level guarantees.
 
-Issue #18 remains incomplete: the official SDK wire probe is available via
-`npm run probe:subscriptions:sdk`, but live subscriptions stay disabled and
-unsupported notification capabilities are explicitly false. See the
-[compatibility evidence and remaining blockers](docs/notifications.md#issue-18-feasibility-and-disabled-capability-slice-2026-11-10-jst).
+Issue #18's guarded public SDK listen path is locally implemented and tested by
+`npm run probe:subscriptions:two-worker`, in addition to the SDK-only and
+private-TableDO probes. The default-off stream sends resource-update *hints*,
+not transcript content or autonomous host wake-ups. Each stream ends after at
+most four hints or one minute; reconnect and read the durable cursor to catch
+up. Staging costs and external host compatibility remain **NOT RUN**. See the
+[current Issue #18 status](docs/notifications.md#current-issue-18-public-mcp-live-inbox-status-2026-11-10-jst).

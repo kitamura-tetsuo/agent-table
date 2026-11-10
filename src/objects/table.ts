@@ -159,11 +159,16 @@ function sameReservation(
 
 export class TableDO extends DurableObject<Env> {
   private readonly deadlines: DurableDeadlineScheduler;
-  private readonly inboxStreams = new InboxHintStreams((active, durationMs) => {
-    recordFutureMetric({ name: "stream.active", value: active });
-    if (durationMs !== undefined)
-      recordFutureMetric({ name: "stream.duration_ms", value: durationMs });
-  });
+  private readonly inboxStreams = new InboxHintStreams(
+    (active, durationMs) => {
+      recordFutureMetric({ name: "stream.active", value: active });
+      if (durationMs !== undefined)
+        recordFutureMetric({ name: "stream.duration_ms", value: durationMs });
+    },
+    (reason, durationMs) => {
+      emitOperationalEvent({ kind: "stream", reason, durationMs });
+    },
+  );
   private pendingInboxAttaches = 0;
   // Integration tests configure this private in-object barrier via the test
   // harness. It is never exposed through a public RPC or production binding.
