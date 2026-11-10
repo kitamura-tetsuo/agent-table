@@ -148,9 +148,9 @@ export async function getTable(
   tableId: string,
 ): Promise<PublicTableResult> {
   try {
-    return await env.TABLES.get(env.TABLES.idFromName(tableId)).getMetadata(
-      actor,
-    );
+    return await env.TABLES.get(
+      env.TABLES.idFromName(tableId),
+    ).getMetadataForMcp(actor);
   } catch {
     return unavailable();
   }

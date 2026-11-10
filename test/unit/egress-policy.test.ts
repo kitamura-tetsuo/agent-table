@@ -3,6 +3,7 @@ import {
   callbackTransportReadiness,
   extractSafeCloudflareErrorCode,
   MAX_CALLBACK_REQUEST_BYTES,
+  reviewedCallbackTargets,
   sendVerifiedHttps,
   validateReviewedCallbackDestination,
 } from "../../src/notifications/egress";
@@ -15,6 +16,34 @@ const reviewed = [
 ] as const;
 
 describe("callback egress preflight", () => {
+  it("loads only a fully reviewed fail-closed Workers binding", () => {
+    const valid = JSON.stringify(reviewed);
+    expect(reviewedCallbackTargets(valid)).toEqual(reviewed);
+    expect(reviewedCallbackTargets(undefined)).toEqual([]);
+    for (const invalid of [
+      "",
+      "not JSON",
+      "{}",
+      "[]",
+      JSON.stringify([
+        ...reviewed,
+        { origin: "https://localhost", pathPrefix: "/" },
+      ]),
+      JSON.stringify([
+        { origin: "http://events.provider.example.org", pathPrefix: "/" },
+      ]),
+      JSON.stringify([
+        {
+          origin: "https://events.provider.example.org",
+          pathPrefix: "/callback/../other",
+        },
+      ]),
+      JSON.stringify(Array.from({ length: 9 }, () => reviewed[0])),
+    ]) {
+      expect(reviewedCallbackTargets(invalid)).toEqual([]);
+    }
+  });
+
   it("recognizes an exact reviewed origin with an opaque callback path", () => {
     const decision = validateReviewedCallbackDestination(
       "https://events.provider.example.org/callback/sub-opaque-123?challenge=synthetic",
@@ -196,6 +225,33 @@ describe("callback egress preflight", () => {
         ok: false,
         reason: "transport-error",
       });
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("returns only bounded Retry-After durations from synthetic receiver headers", async () => {
+    const spy = vi.spyOn(globalThis, "fetch");
+    try {
+      for (const [header, expected] of [
+        ["2", 2000],
+        ["9999999999", 900000],
+        ["garbage", undefined],
+      ] as const) {
+        spy.mockResolvedValueOnce(
+          new Response(null, {
+            status: 429,
+            headers: { "Retry-After": header },
+          }),
+        );
+        const outcome = await sendVerifiedHttps(
+          "https://events.provider.example.org/callback",
+          reviewed,
+          { method: "POST", body: new Uint8Array([1]) },
+        );
+        expect(outcome.ok).toBe(false);
+        if (!outcome.ok) expect(outcome.retryAfterMs).toBe(expected);
+      }
     } finally {
       spy.mockRestore();
     }

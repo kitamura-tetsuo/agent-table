@@ -1,6 +1,19 @@
-import { McpServer, ResourceTemplate } from "@modelcontextprotocol/server";
+import {
+  McpServer,
+  ProtocolError,
+  ResourceTemplate,
+} from "@modelcontextprotocol/server";
 import { createMcpHandler } from "agents/mcp/server";
 import * as z from "zod/v4";
+import {
+  MESSAGE_EVENT_DEFINITION,
+  validEventListParams,
+} from "../notifications/openai-events";
+import {
+  type EventServiceFailure,
+  subscribeEvent,
+  unsubscribeEvent,
+} from "../services/events";
 import {
   closeTable,
   createInvite,
@@ -110,9 +123,31 @@ function appResult(result: PublicTableResult, liveSubscriptions = false) {
           transport: "mcp_subscriptions_listen",
           maxHintsPerStream: MAX_MCP_HINTS_PER_STREAM,
           reconnect: "listen_again_then_read_after_last_seq",
+          ...(result.value.notifications
+            ? { events: result.value.notifications }
+            : {}),
         }
-      : { available: false, reason: "not_implemented" },
+      : (result.value.notifications ?? {
+          available: false,
+          reason: "not_implemented",
+        }),
   });
+}
+
+function eventError(reason: EventServiceFailure): ProtocolError {
+  if (reason === "invalid")
+    return new ProtocolError(-32602, "Invalid Events parameters");
+  if (reason.startsWith("callback_")) {
+    return new ProtocolError(-32015, "CallbackEndpointError", {
+      reason: reason.slice("callback_".length),
+    });
+  }
+  if (reason === "conflict")
+    return new ProtocolError(-32009, "Subscription destination conflict");
+  if (reason === "unavailable")
+    return new ProtocolError(-32603, "Subscription service unavailable");
+  // Do not reveal whether a private table, membership, or grant exists.
+  return new ProtocolError(-32001, "Subscription unavailable");
 }
 
 /**
@@ -146,6 +181,41 @@ function newServer(
     );
     return checked.allowed ? checked.actor : null;
   };
+
+  // These are actual MCP extension methods, not tools. Public Events
+  // capabilities are intentionally NOT advertised before Issue #21 delivery.
+  server.server.setRequestHandler(
+    "events/list",
+    { params: z.unknown() },
+    async (params) => {
+      if (!validEventListParams(params))
+        throw new ProtocolError(-32602, "Invalid Events cursor");
+      if (!(await scopedActor("events:subscribe"))) throw eventError("denied");
+      return { events: [MESSAGE_EVENT_DEFINITION] };
+    },
+  );
+  server.server.setRequestHandler(
+    "events/subscribe",
+    { params: z.unknown() },
+    async (params) => {
+      const actor = await scopedActor("events:subscribe");
+      if (!actor) throw eventError("denied");
+      const result = await subscribeEvent(env, actor, params);
+      if (!result.ok) throw eventError(result.reason);
+      return result.value;
+    },
+  );
+  server.server.setRequestHandler(
+    "events/unsubscribe",
+    { params: z.unknown() },
+    async (params) => {
+      const actor = await scopedActor("events:subscribe");
+      if (!actor) throw eventError("denied");
+      const result = await unsubscribeEvent(env, actor, params);
+      if (!result.ok) throw eventError(result.reason);
+      return {};
+    },
+  );
 
   server.registerTool(
     "create_table",

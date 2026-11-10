@@ -41,7 +41,14 @@ Long-lived HTTP/SSE streams can keep objects active. WebSocket hibernation must 
 
 OpenAI documents an Events integration for Work chats and dots, with webhook delivery and callback verification. Its documented profile does not support the draft's streaming/polling modes or `gap`/`terminated` control deliveries. Treat it as an optional provider adapter, not core-MCP compatibility. [OPENAI-EVENTS]
 
-Implement `events/list`, `events/subscribe`, and `events/unsubscribe` using a pinned provider-compatible wire schema. Do not assume that installing the MCP SDK automatically provides these extension methods. Advertise the profile only when its methods, storage, and secure egress are operational.
+The authenticated `events/list`, `events/subscribe`, and `events/unsubscribe`
+extension methods and encrypted, fenced TableDO registration state are
+implemented under Issue #20; see [events-provider-wire.md](events-provider-wire.md)
+for exact coverage and release boundaries. These are protocol methods, not
+ordinary MCP tools. They remain unadvertised, and registration neither enables
+outbound message delivery nor autonomous host execution. Advertise the profile
+only after the separate secure transport, durable delivery and hosted
+interoperability gates have been met.
 
 The initial event is `table.message.created` with arguments `{ "table_id": "..." }`. The caller's recipient membership is derived from authentication. A subscription receives only committed messages from the other participant. Reads, retries, status changes, failed posts, and subscription maintenance never generate this event.
 
@@ -76,7 +83,7 @@ Transient transport failures, `429`, and `5xx` use exponential backoff with jitt
 
 If a callback accepted an event but the response was lost, another delivery may occur. The receiver deduplicates the event; write tools still deduplicate the resulting operation. Do not claim exactly-once agent reasoning or exactly-once external effects.
 
-Expose only the caller's own delivery state through `get_table`: active/expired/disabled, pending count, last accepted sequence, and safe last-error category. Do not expose callback URLs, secrets, or the peer's private connection metadata. An accepted-sequence field is a delivery observation, not a processing acknowledgment or a contiguous read cursor.
+Expose only the caller's own delivery state through `get_table`: active/expired/disabled, pending count, last accepted sequence, and safe last-error category. The current partial Issue #21 implementation reports the existing per-connection pending count and null acceptance/error until a verified delivery producer records an outcome. The status remains `available:false` / `delivery_not_ready`; its counters cannot authorize sending or justify public Events readiness. Invalid stored error text is reduced to `unknown` instead of being returned to callers. Do not expose callback URLs, secrets, or the peer's private connection metadata. An accepted-sequence field is a delivery observation, not a processing acknowledgment or a contiguous read cursor.
 
 ## Loop and cost controls
 
@@ -611,3 +618,347 @@ are not claimed; named-host autonomy is a non-goal of Issue #18.
   separate public guest-admission release gate with admission still disabled.
   No ChatGPT/Claude host model inference, offline wake-up, or reply was
   observed or required by Issue #18.
+
+## Durable peer-event outbox — implementation status
+
+Issue [#21](https://github.com/kitamura-tetsuo/agent-table/issues/21) remains
+**unreleased and incomplete**. Schema v11 persists message-bound, metadata-only
+work in the original append/receipt SQL transaction. The TableDO alarm now
+contains a dispatcher, but its production entry requires public Events enabled,
+operator outbound permission, and `callbackTransportReadiness().enabled`.
+The last gate is permanently false pending Issue #19's connection-time
+DNS/IP rebinding and original-host TLS evidence. No public Events setting,
+transport readiness decision, deployment or production callback was enabled by
+this increment.
+
+The alarm inspects at most four due events and starts no further event after
+30 seconds of batch elapsed time. Each native HTTPS operation already has a
+ten-second total deadline and bounded request/response bytes. Lifecycle cleanup
+retains its separate 100-item budget. Only an enabled dispatcher includes retry
+and lease deadlines in alarm scheduling; a paused/disabled sender schedules
+original retention/expiry cleanup and does not charge attempts or poll overdue
+work every second. Reconstruction derives wakeups from SQLite rather than
+in-memory queues.
+
+Before reservation the consumer opens the encrypted current/rotation credentials
+and obtains a fresh GuestDO `events:subscribe` decision. Alarm and fenced lease
+commit together before the next external await. A second fresh grant check
+follows that yielding commit. Immediately before transport starts, synchronous
+checks require current membership/guest ownership, original peer-message
+identity, live table/subscription, finite lifetimes, matching generation/lease,
+unchanged credentials/destination and enabled outbound controls. Signing uses
+the provider adapter, original event/message IDs, original occurrence timestamp
+and the recipient's inbox URI. No transcript body is selected for dispatch.
+Already-dispatched bytes cannot be recalled.
+
+A reservation proven never to have entered transport can be released only by
+its exact lease/generation token. This restores the unused charge (and clears
+first-attempt time only when there has never been a started attempt). Revocation
+observed before send cancels work; unavailable authority or credential opening
+failures defer for 60 seconds without charging an attempt. Ambiguous interrupted
+reservations and every started transport keep their charge. Reconstruction and
+refresh never reset their first-attempt horizon or budget. At most eight charged
+reservations and one hour from the recorded first attempt are allowed, further
+bounded by stored validity and fresh connection authority. Completion also
+requires the lease deadline not to have elapsed; late results are discarded even
+without a replacement lease. Backoff has deterministic jitter and caps
+Retry-After at 15 minutes. HTTP 410/413 and signing/payload failures terminate;
+2xx means receiver acceptance only.
+
+Alarm observations emit aggregate backlog count/age, transport attempt, retry
+and terminal-failure metrics with no event/table/guest IDs, destination, response
+body or signing material. These are measurements of local work, not billed CPU,
+external captures or host execution. Own-only `get_table` status continues to
+report `available:false` / `delivery_not_ready`; an accepted sequence is not a
+contiguous read or processing acknowledgment.
+
+### Requirement and evidence map
+
+All regression evidence below is **local Workerd with real Durable Object
+SQLite**. Dispatcher fixtures use real GuestDO grants but seed synthetic SQL
+work and replace private transport/readiness methods only inside
+`runInDurableObject`. They do not expose an RPC/configuration bypass or change
+the production gate. Registration/producer tests use authenticated MCP and
+provider challenge fixtures. None is production-origin receiver evidence.
+
+| Requirement | Component and observable regression evidence | Remaining acceptance limit |
+| --- | --- | --- |
+| REQ-001 | Existing atomic post producer; `events-subscriptions.test.ts` checks original message/event rows, duplicate/self suppression and refresh identity | Controlled external capture absent |
+| REQ-002 | `DurableDeadlineScheduler.commitWithWakeup`; existing authenticated producer rollback/reconstruction and new dispatcher lease-commit fault test | Hosted commit/arm crash proof absent |
+| REQ-003 | Real TableDO alarm, four-row batch, persisted lease before transport, expired-lease reclaim after eviction, exact-deadline/stale completion refusal in `outbox-dispatch.test.ts` | Transport results are synthetic |
+| REQ-004 | Two fresh GuestDO checks plus final synchronous local checks; revoked/expired/mismatched membership, unavailable authority and post-commit pause/revoke/close regressions | Shared egress invariant blocked by #19 |
+| REQ-005 | `outbox.ts` conditional settlement; eight attempts across evictions, unchanged first attempt/event IDs, bounded Retry-After, 410/413 terminal tests | Response-loss acceptance is synthetic |
+| REQ-006 | Existing lifecycle invalidation plus cancelled/deleted/generation-stale completion tests; disabled reconstruction has zero attempts and no due-alarm spin | New dispatcher lifecycle races use synthetic SQL interventions |
+| REQ-007 | Existing verified refresh carries generation without resetting identity/budget; ledger and dispatcher reject old results and reclaim after recovery | Real receiver/key-rotation race absent |
+| REQ-008 | Existing authenticated MCP own-connection status/read tests; no status/secret expansion in this increment | Production receiver acceptance absent |
+| REQ-009 | Four-attempt/six-pending failing-callback workload and allowlisted aggregate telemetry assertions; closed readiness regression | Billed/hosted active-exchange and restart workload measurements absent |
+| REQ-010 | Local regressions cover durable state and alarm integration incrementally | **Not accepted:** no actual authenticated post-to-alarm-to-controlled-receiver captures through a proven production transport |
+
+The new deterministic suite is `test/integration/outbox-dispatch.test.ts`;
+`outbox-ledger.test.ts` retains direct SQL state-machine tests, and
+`test/unit/egress-policy.test.ts` covers native transport policy/Retry-After using
+synthetic fetch responses. A selected helper verdict or a synthetic signature
+check cannot satisfy REQ-010. The safe next step is independent #19 connection
+boundary evidence, followed by the explicitly authorized controlled-receiver
+production-path campaign. Issue #24 real-host evidence and Issue #22 recovery
+clearance remain distinct release gates. Do not merge/close #21 or enable Events
+from these results.
+
+Validation on 2026-11-10, on `feat/issue-21-durable-outbox` starting at
+`8b01f96f72ec629754190efaa5254526ce21a704`:
+
+- `npm run typecheck`: exit 0 (`tsc --noEmit`, no diagnostics).
+- `npm run lint`: exit 0; `Checked 120 files in 164ms. No fixes applied.`;
+  `Found 2 warnings.` / `Found 15 infos.` The two warnings concern existing
+  private transcript/deletion test-barrier fields, unchanged by this increment.
+- `npx biome format src schema test`: exit 0;
+  `Checked 120 files in 66ms. No fixes applied.`
+- `npm test`: exit 0; `Test Files 41 passed (41)` / `Tests 284 passed (284)`.
+- `npm run test:integration`: exit 0;
+  `Test Files 32 passed (32)` / `Tests 184 passed (184)`.
+- `git diff --check`: exit 0, no output.
+
+Workerd commands used `WRANGLER_LOG_PATH` under `/tmp` and
+`WRANGLER_SEND_METRICS=false`. The initial sandbox invocation could not bind
+loopback (`listen EPERM`) and ran no tests; rerunning with authorized local
+socket access produced the results above. Suites include deliberate storage,
+stream and RPC failure injections and emit corresponding expected diagnostics;
+no failed tests or Vitest unhandled-error summary remained. No deployment,
+production callback, credential access, issue closure, branch creation, history
+rewrite or push was performed.
+
+### 2026-11-10: authenticated local producer-to-native sender regression
+
+The additional Workerd integration in
+`test/integration/events-subscriptions.test.ts` drives the **real** OAuth
+consent/token exchange, MCP create/join/subscribe/post, committed TableDO
+outbox, durable alarm and native `sendVerifiedHttps` HTTP request assembly.
+A controlled `fetch` capture verifies the original subscription ID, signature,
+opaque callback URL, committed message/event identity, manual redirect policy
+and exclusion of private message text. It deliberately loses the first HTTP
+response, reconstructs the Durable Object and checks stable event identity and
+the persisted retry budget before acceptance. A second genuine MCP post checks
+that HTTP 410 becomes terminal and produces no repeat send.
+
+The test-only TableDO instance supplies the reviewed callback-target binding
+and overrides its private dispatch readiness predicate; **none of these test
+overrides are production settings**. This is an in-process controlled receiver,
+not a hosted HTTPS receiver, a network connection-time DNS/TLS/forbidden-IP
+test, or #19 REQ-002/006 evidence. It narrows #21/REQ-010's disconnected
+producer/consumer gap but does **not** satisfy its complete crash, revocation,
+rotation and real-host campaign. Production Events readiness remains disabled;
+do not merge or close #21 on this regression alone.
+
+### 2026-11-11: persistent retry-budget and cancellation regressions
+
+The authenticated Workerd producer-to-native-sender test now covers both HTTP
+410 and 413 terminal responses from a controlled fetch receiver: each new
+MCP-committed peer event is independently signed, captured, charged once and
+left terminal across a Durable Object eviction, with no repeat outbound call.
+
+A second producer-to-alarm scenario returns HTTP 503 with Retry-After for
+eight consecutive captured delivery attempts, evicting the Durable Object
+between attempts. It checks that all eight requests reuse the exact event ID,
+that the original first-attempt timestamp and charged count survive each
+reconstruction, that the eighth attempt terminalizes the SQL row and that a
+ninth alarm sends nothing. The fixture changes only persisted scheduling due
+times to exercise the complete bounded retry budget without real-time waiting;
+it does not simulate eight hours of operation or prove network delivery.
+
+An independent OAuth-authenticated post/subscribe/unsubscribe regression
+reserves a real SQLite attempt lease, commits an actual MCP unsubscribe, then
+applies an intentionally stale receiver-success verdict using the production
+lease settlement function. The stale result cannot resurrect cancelled work,
+including after DO eviction. This is a deterministic serialized lease race,
+not simultaneous external HTTP acceptance and unsubscribe: the native Workerd
+test harness rejects concurrent cross-Durable-Object I/O in that synthetic
+construction. A supported external receiver/barrier harness remains needed for
+a full in-flight HTTP race and the remaining REQ-010 matrix. The public Events
+transport gate remains fail-closed and the tests do not establish #19 DNS/IP/TLS
+connection-time policy or actual autonomous host execution.
+
+### 2026-11-11: native alarm after committed authority termination
+
+An additional authenticated producer regression exercises two distinct
+post-commit boundaries: the intended callback recipient's **real GuestDO
+connection revocation** and an owner's **real MCP close_table** mutation.
+Each case first commits an eligible peer message through MCP, confirms the
+original pending durable outbox identity, advances only its scheduling due
+time and then makes the terminal decision through the public application
+entry point. The actual TableDO alarm is driven with private readiness
+overridden only inside the Workerd test; a controlled fetch observer asserts
+zero application requests after the termination, cancellation with zero
+charged attempts, and unchanged terminal state after Durable Object eviction.
+
+This tests the no-new-send rule for terminal authority *before* an attempt
+starts. It does not prove that an already-dispatched external request can be
+recalled; concurrent held-HTTP revocation/closure, credential rotation,
+receiver-controlled barriers and hosted network evidence remain outside this
+regression. The production Events gate stays fail-closed pending the distinct opt-in
+activation and release controls. Issue #19 accepts the Hosted Workers native
+fetch security boundary as a limited-beta platform dependency; same-connection
+DNS rebinding/validation-to-dial remains explicitly unverified, not a passed
+experiment or a required public-IPv4 server.
+
+### 2026-11-11: same-identity refresh before first delivery
+
+A second authenticated integration test commits a peer event under callback
+credential generation 1, then performs the actual MCP events/subscribe
+same-identity refresh with a rotated, challenge-verified credential. After
+retained-storage reconstruction, the native TableDO alarm uses that new
+credential to sign exactly one controlled receiver-captured application
+callback, preserving the original event/message ID, with generation 2 and
+one charged accepted attempt. Further alarms do not replay the acceptance.
+
+This is a serial pre-dispatch credential-rotation case, not proof that a
+held old HTTP response cannot affect a simultaneous refresh; that interleaving
+and the independent #19 connection-time transport safety criteria remain
+unverified. The public Events flag remains disabled. These receiver-local tests do not
+change Issue #19's limited-beta risk acceptance or authorize its separate
+activation gate.
+
+### 2026-11-11: authenticated atomic post and lease-commit fault boundaries
+
+The OAuth/MCP producer-to-native-alarm Workerd regression now injects failures at
+both the DurableDeadlineScheduler post alarm-arm checkpoint and the post-SQL
+mutation checkpoint. It reuses the same authenticated mutation ID after each
+failed attempt, evicts and reconstructs the TableDO, and checks that no message,
+idempotent receipt, or event outbox row leaked from either rolled-back
+transaction. The following successful authenticated post produces exactly one
+message/receipt/pending event, has a durable alarm, and is idempotent on retry.
+
+On that same real producer event, a second fault is injected after the outbox
+lease mutation but before the storage transaction commits. The native alarm
+fails without any captured callback or charged attempt; persistent state
+remains pending, the recovery alarm is retained, and a reconstructed TableDO
+successfully sends the original signed event exactly once to an in-process
+controlled fetch receiver. Only scheduler checkpoint fault injection, due-time
+acceleration, and test-local callback readiness are substituted. No external
+hosted HTTPS endpoint, real Cloudflare restart, simultaneous in-flight lifecycle
+race, or DNS/TLS/IP boundary was measured. #21/REQ-010 is therefore still
+partial and the public Events readiness gate remains disabled.
+
+### 2026-11-11: authenticated outbound pause, retry horizon and table expiry
+
+An extended native TableDO-alarm regression starts with real OAuth/MCP guest creation,
+join, verified Events registration and a committed peer message. With the
+operator outbound predicate false, two alarm executions separated by Durable
+Object eviction issue **zero** callback requests and leave the original
+pending row, uncharged retry count and null first-attempt time unchanged.
+After the predicate resumes, a controlled in-process receiver captures the
+original event through a native HTTPS 429 with a one-hour Retry-After (clamped
+to 15 minutes), followed by seven 503 attempts without a ninth send.
+A second authenticated event incurs one native 503 attempt. The regression
+backdates only that event's original attempt timestamp past the one-hour
+retry horizon and verifies that a reconstructed alarm marks the same event
+retry-exhausted without another request or resetting its charged count.
+A subsequent authenticated post is then subjected to an expired stored table
+deadline; alarm cleanup purges the outbox, retains an expired tombstone and
+starts no new callback.
+
+This covers serial operator-pause/restart, retry-budget expiry and table
+expiry boundaries, not held in-flight HTTP races, real external receiver
+reachability or proof of platform DNS/IP/TLS behavior. Only the private
+public-readiness gate is bypassed within the controlled test; the actual
+operator outbound-control predicate remains active. Public Events remain
+disabled, and #21/REQ-010 has unfinished concurrent lifecycle coverage.
+
+### 2026-11-11: controlled send-before-close result fencing
+
+The existing authenticated OAuth/MCP producer fixture now commits a new
+peer event and runs the actual TableDO alarm with the native signed HTTPS
+sender. Its controlled receiver captures the outgoing bytes before returning
+HTTP 204; at this precise in-process callback boundary, the fixture invokes
+TableDO's canonical owner close transition using the already-authenticated
+owner's guest identity. The transition cancels the in-flight event before the
+receiver result settles. Canonical SQL still shows the original event ID,
+one charged attempt and `cancelled` status, never `accepted`. Eviction and a
+subsequent alarm cannot cause a second request or revive that event.
+
+This deterministic controlled-receiver interleaving tests the application's
+lease/terminal-result fence, **not** a concurrent second OAuth/MCP request or
+a real independently hosted HTTPS receiver. The test uses the private core
+close transition after prior owner authentication because Workerd's single-
+isolate test harness rejects simultaneous I/O on behalf of another Durable
+Object. Actual cross-request in-flight close/refresh/unsubscribe/revocation
+races, receiver-side measurements and #19 connection-time safety remain
+unverified. This does not clear the open P1 review or enable public Events.
+
+### 2026-11-11: real producer delivery-status and transcript independence
+
+The authenticated OAuth/MCP-to-native-alarm controlled-receiver scenario
+also reads `get_table` through both participating connections after an
+accepted retry and native HTTP 410/413 terminal failures. The subscribed
+recipient sees the stable last receiver-accepted sequence, zero remaining
+pending work and only the safe `receiver-gone` or `payload-rejected`
+category. The non-subscribed sender sees no peer delivery status, event
+counts, callback URL or signing credential. Real `read_messages` calls
+still retrieve both failed-delivery messages from the committed transcript.
+These assertions exercise the actual public MCP projection rather than
+injecting synthetic status rows. They remain local Workerd/controlled-fetch
+evidence, not real-host callback reachability, connection-time SSRF/TLS
+proof or completion of the remaining #21/REQ-010 concurrent race matrix.
+
+### 2026-11-11: in-flight native delivery versus authenticated unsubscribe
+
+The existing OAuth/MCP producer and rotated-subscription integration scenario
+now makes a second real authenticated post after an accepted first event. The
+actual TableDO alarm reserves its SQLite delivery lease and sends the second
+signed callback to the controlled receiver. Before that receiver returns HTTP
+204, the fixture invokes the real TableDO `unsubscribeEvent` authorization and
+invalidation method using the recipient's previously verified connection
+actor; that method revalidates the connection itself. The callback response then
+arrives after the subscription and its lease have been cancelled. The test
+asserts the original signed event/message identity, one captured HTTP request,
+one charged attempt, terminal cancellation and no resurrection/retry after DO
+eviction. It then completes a fresh authenticated subscription to the same
+canonical destination, commits a new peer message and observes exactly one
+new signed event through the alarm after another reconstruction. The previous
+cancelled event is not replayed into the later incarnation. The delivered bytes
+from the earlier attempt cannot be recalled after dispatch.
+
+This is a deterministic, in-object, controlled-fetch response interleaving; it
+is **not** a second concurrent external OAuth/MCP HTTP request, independently
+hosted HTTPS receipt or proof of Cloudflare DNS/IP/TLS properties. This new
+case does not resolve the remaining held-credential-refresh, deletion,
+revocation and independent-host race evidence required by #21/REQ-010; the
+public Events readiness gate remains disabled.
+
+### 2026-11-11: authenticated in-flight refresh and browser deletion interleavings
+
+Two additional production-entry Workerd regressions start with actual browser
+OAuth consent, MCP subscriptions and committed peer posts, then invoke the
+native TableDO alarm with its unchanged verified HTTPS sender and a controlled
+in-process `fetch` receiver. Only the test TableDO instance bypasses the
+hard-disabled production Events readiness predicate.
+
+- **Credential refresh during delivery:** The first signed request reaches the
+  receiver after the SQL lease is persisted (generation 1, one charged attempt,
+  non-null token and original first-attempt timestamp). Before responding, the
+  fixture calls the **actual authenticated MCP `events/subscribe`** refresh,
+  including a separate callback challenge with the replacement secret. The
+  unchanged subscription identity advances to generation 2. The old 204 cannot
+  settle the mismatched generation, and an alarm after DO eviction cannot retry
+  before lease recovery. On a controlled expired-lease boundary, a second
+  alarm sends exactly one signed request with the **new** credential, same
+  event/message identity, attempt count 2 and unchanged first-attempt timestamp;
+  acceptance persists and another eviction does not replay it.
+- **Browser-confirmed deletion during delivery:** A scoped MCP `delete_table`
+  request produces only a pending confirmation. The owner actually opens the
+  browser approval page with its guest cookie, obtains the CSRF token and
+  cookie, and submits the same-origin, CSRF-validated browser **POST** while
+  the captured application callback is waiting. The old lease had been
+  persisted and charged before approval. The approval erases message, receipt
+  and event rows and commits a terminal tombstone. The subsequently returned
+  204 cannot recreate erased data, and an alarm after eviction produces no
+  second request. The signed request was already dispatched and cannot be
+  recalled from the receiver.
+
+These are deterministic real API entry-point races in one isolated Workerd
+test process, not separately hosted HTTPS receiver captures, physical
+Cloudflare edge restarts or arbitrary concurrent host traffic. They establish
+the application lease/refresh/deletion fences at those exact boundaries,
+without proving #19's unresolved same-connection DNS-rebinding property or
+the real idle-agent pilot in #24. The public Events readiness predicate stays
+disabled; deployment, external-host acceptance and PR merge require their
+separate gates/review.

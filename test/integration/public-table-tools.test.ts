@@ -457,7 +457,17 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
         name: "get_table",
         arguments: { table_id: tableId },
       });
-      expect(output(fetched)).toEqual(metadata);
+      expect(output(fetched)).toEqual({
+        ...metadata,
+        notifications: {
+          available: false,
+          reason: "delivery_not_ready",
+          status: "disabled",
+          pendingCount: 0,
+          lastAcceptedSeq: null,
+          lastErrorCategory: null,
+        },
+      });
       const retried = await client.callTool({
         name: "create_table",
         arguments: { ...input, ttl_seconds: 86_400 },

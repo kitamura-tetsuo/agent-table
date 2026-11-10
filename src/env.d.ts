@@ -34,6 +34,7 @@ declare global {
       PRINCIPAL_RATE_PER_MINUTE?: string;
       INVITATION_RESPONSE_KEYRING?: string;
       CALLBACK_CREDENTIAL_KEYRING?: string;
+      EVENTS_REVIEWED_CALLBACK_TARGETS?: string;
     }
     interface GlobalProps {
       mainModule: typeof import("./index");
