@@ -36,7 +36,6 @@ function edgeCategory(request: Request): EdgeAdmissionCategory | null {
   if (path === "/guest/session" && request.method === "POST") return "guest";
   if (path === "/oauth/register" && request.method === "POST") return "dcr";
   if (path === "/mcp") return "application";
-  if (path === "/__staging/evidence") return "protocol";
   if (path === "/join") return "invitation";
   if (
     path === "/authorize" ||
@@ -71,14 +70,15 @@ const handleRequest: ExportedHandler<Env>["fetch"] = async (
 ) => {
   const ingressRejected = await rejectOversizedIngress(request);
   if (ingressRejected) return ingressRejected;
+  const url = new URL(request.url);
+  // Disabled diagnostics must not consume the OAuth protocol rate-limit budget.
+  if (url.pathname === "/__staging/evidence")
+    return handleStagingEvidence(request, env);
   const category = edgeCategory(request);
   if (category) {
     const rateRejected = await checkEdgeAdmission(request, env, category);
     if (rateRejected) return rateRejected;
   }
-  const url = new URL(request.url);
-  if (url.pathname === "/__staging/evidence")
-    return handleStagingEvidence(request, env);
   if (
     url.pathname === "/mcp" ||
     url.pathname === "/.well-known/oauth-protected-resource/mcp"

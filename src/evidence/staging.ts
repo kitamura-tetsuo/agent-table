@@ -82,7 +82,10 @@ export async function handleStagingEvidence(
   request: Request,
   env: Env,
 ): Promise<Response> {
-  if (!stagingEvidenceEnabled(env))
+  if (
+    !stagingEvidenceEnabled(env) ||
+    new URL(request.url).origin !== STAGING_ORIGIN
+  )
     return jsonResponse({ error: "not_found" }, 404);
   if (request.method !== "POST")
     return jsonResponse({ error: "method_not_allowed" }, 405);

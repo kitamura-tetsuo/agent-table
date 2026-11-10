@@ -3,6 +3,7 @@ import {
   handleStagingEvidence,
   requestFingerprint,
 } from "../../src/evidence/staging";
+import worker from "../../src/index";
 
 const GUEST = "9fff5657-a730-4571-84a8-1d0c752b8cfb";
 const TABLE = "36c4b87f-28a7-43bc-aeb2-a263c276cbd1";
@@ -69,6 +70,30 @@ describe("staging-only SQLite evidence inspection", () => {
       const response = await probe(env);
       expect(response.status).toBe(env.STAGING_EVIDENCE_KEY ? 404 : 401);
     }
+  });
+
+  it("rejects alternate hostnames and bypasses protocol admission when off", async () => {
+    const alienHost = new Request(
+      "https://agent-table-staging.kitamura-tetsuo.workers.dev/__staging/evidence",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Agent-Table-Staging-Evidence": SECRET,
+        },
+        body: JSON.stringify({ guestId: GUEST }),
+      },
+    );
+    expect((await handleStagingEvidence(alienHost, bindings)).status).toBe(404);
+    const disabled = { ...bindings, STAGING_EVIDENCE_MODE: "off" } as Env;
+    const response = await worker.fetch(
+      new Request(`${STAGING}/__staging/evidence`, {
+        method: "POST",
+      }) as Parameters<typeof worker.fetch>[0],
+      disabled,
+      {} as ExecutionContext,
+    );
+    expect(response.status).toBe(404);
   });
 
   it("requires a full constant-time fixed-size secret and POST", async () => {
