@@ -324,3 +324,40 @@ of pooling historical refresh/revocation versions.
 Then review and merge only after all six requirements are satisfied. Host
 disconnect remains separately identified, not silently presumed. No public
 IPv4 receiver or production deployment is needed for this OAuth gate.
+
+### Temporary staging-only Durable Object SQLite inspection
+
+The PR includes a deliberately dormant `POST /__staging/evidence` route for
+CLI-operated, independent SQLite row checks. It cannot be activated unless
+`PUBLIC_ORIGIN` is exactly the isolated test origin and
+`STAGING_EVIDENCE_MODE=read-only`. It also requires a separately generated,
+64-character lowercase hexadecimal `STAGING_EVIDENCE_KEY` secret supplied via
+the `X-Agent-Table-Staging-Evidence` request header. The committed staging
+operator's normal staging configuration is **off**; the temporary enabled configuration and secret must
+not be committed or used with production. Only the operator with this separate
+secret may use the probe.
+
+A bounded JSON POST accepts exactly a UUID-v4 `guestId`, and optionally
+`tableId` and `connectionId`. The Worker uses exact-name DO stubs, and the
+DOs query their own SQLite rows (not the normal HTTP response):
+`guest_identity`, `guest_connections`,
+`guest_creation_reservations`, `table_metadata`,
+`table_memberships`, and a terminal tombstone if present. Responses have
+`Cache-Control: no-store`, statuses, timestamps, ownership booleans and a
+truncated SHA-256 fingerprint of the independently random creation request ID.
+The same fingerprint appearing in the GuestDO reservation and TableDO
+metadata provides an exact operation join without publishing the request ID.
+The probe does **not** return original guest/connection/table IDs, table titles,
+message bodies, cookies or OAuth tokens. It accepts neither SQL text nor an
+arbitrary object name. Absence of a row is evidence of absence **at the probe
+time**, not evidence that no expired row ever existed.
+
+Run from the trusted staging operator's CLI with a high-entropy temporary
+secret installed through `wrangler secret put` using the temporary staging
+configuration. Pin the deployed Worker version and source SHA, query only
+owner-authorized synthetic IDs, then restore the **off** staging configuration,
+delete the temporary Cloudflare secret and confirm HTTP 404 on the diagnostic
+route. Securely discard the local secret. Keep only redacted outcome metadata.
+A staging SQL receipt is **not** an actual-host tool receipt or a complete
+host/product build attestation; #23 must remain open until the independent
+host/origin/refresh/revocation acceptance evidence is complete.

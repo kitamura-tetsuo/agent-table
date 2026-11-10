@@ -1,5 +1,9 @@
 import { DurableObject } from "cloudflare:workers";
 import {
+  requestFingerprint,
+  stagingEvidenceEnabled,
+} from "../evidence/staging";
+import {
   authorizeGuestConnection,
   type ConnectionScope,
   type VerifiedConnectionActor,
@@ -182,6 +186,48 @@ export class TableDO extends DurableObject<Env> {
   // An application schema exists even when no table has ever been created.
   schemaVersion(): number {
     return readApplicationSchemaVersion(this.ctx.storage);
+  }
+
+  /**
+   * Internal DO-RPC only: reads persisted table SQLite authority independently
+   * of the HTTP create/get results, without any stored content or identifiers.
+   */
+  async readStagingEvidence(tableId: string, guestId: string) {
+    if (
+      !stagingEvidenceEnabled(this.env) ||
+      this.ctx.id.toString() !== this.env.TABLES.idFromName(tableId).toString()
+    ) {
+      throw new Error("Staging evidence is disabled");
+    }
+    const metadata = this.metadataRow();
+    const table = metadata?.table_id === tableId ? metadata : undefined;
+    const membership = table
+      ? this.ctx.storage.sql
+          .exec<Pick<MembershipRow, "guest_id" | "role" | "seat">>(
+            "SELECT guest_id, role, seat FROM table_memberships WHERE seat = 1 LIMIT 1",
+          )
+          .toArray()[0]
+      : undefined;
+    const tombstone = this.tombstoneRow();
+    return {
+      metadataExists: Boolean(table),
+      state: table?.state ?? null,
+      createdAt: table?.created_at ?? null,
+      expiresAt: table?.expires_at ?? null,
+      creatorMatchesGuest: table ? table.creator_guest_id === guestId : null,
+      seatOneCreatorMatchesGuest: table
+        ? membership?.guest_id === guestId &&
+          membership.role === "creator" &&
+          membership.seat === 1
+        : null,
+      requestFingerprint: table
+        ? await requestFingerprint(table.creation_request_id)
+        : null,
+      tombstoneState:
+        !table && tombstone?.table_id === tableId
+          ? tombstone.terminal_state
+          : null,
+    };
   }
 
   private metadataRow(): MetadataRow | undefined {
