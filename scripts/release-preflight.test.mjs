@@ -1,9 +1,15 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { spawnSync } from "node:child_process";
 import { test } from "node:test";
 import {
   PreflightError,
@@ -297,7 +303,9 @@ test("restore config generation overrides stale snapshot permissions and remains
   original.vars.ALLOW_NEW_GUESTS = "true";
   original.vars.ALLOW_NEW_TABLES = "true";
 
-  const restoredText = prepareQuarantinedRestoreConfig(JSON.stringify(original));
+  const restoredText = prepareQuarantinedRestoreConfig(
+    JSON.stringify(original),
+  );
   const restored = JSON.parse(restoredText);
   assert.equal(restored.vars.RESTORE_QUARANTINE, "true");
   for (const flag of [
@@ -336,7 +344,9 @@ test("restore generator refuses invalid worker schema rather than emitting a usa
   blockedRestore(config, "unsafe-sqlite-migration-history");
   assert.throws(
     () => prepareQuarantinedRestoreConfig("{"),
-    (error) => error instanceof PreflightError && error.message === "invalid-config-json",
+    (error) =>
+      error instanceof PreflightError &&
+      error.message === "invalid-config-json",
   );
 });
 
@@ -383,7 +393,10 @@ test("restore preparation CLI writes a private exclusive file without releasing 
     }
     const second = run();
     assert.notEqual(second.status, 0);
-    assert.match(second.stderr, /^PREFLIGHT_BLOCKED unreadable-or-invalid-input\n$/);
+    assert.match(
+      second.stderr,
+      /^PREFLIGHT_BLOCKED unreadable-or-invalid-input\n$/,
+    );
     assert.equal(readFileSync(outputPath, "utf8"), restoredBytes);
     assert.equal(second.stdout, "");
   } finally {
