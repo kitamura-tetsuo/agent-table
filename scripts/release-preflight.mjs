@@ -217,6 +217,63 @@ function verifyEvidence(
   }
 }
 
+function validatePeerIsolation(config, peer, environment) {
+  const vars = config.vars;
+  requireCondition(
+    peer?.vars?.RELEASE_ENVIRONMENT ===
+      (environment === "staging" ? "production" : "staging"),
+    "peer-environment-marker-mismatch",
+  );
+  requireCondition(
+    typeof peer.name === "string" && peer.name !== config.name,
+    "shared-worker-name",
+  );
+  // The counterpart is part of the isolation decision, not just a namespace
+  // comparison. A partial or weakened peer configuration must fail closed.
+  const peerEnvironment = environment === "staging" ? "production" : "staging";
+  requireCondition(
+    peer.name.endsWith(`-${peerEnvironment}`),
+    "peer-worker-name-mismatch",
+  );
+  requireCondition(
+    peer.main === "src/index.ts",
+    "peer-unexpected-worker-entry",
+  );
+  requireCondition(
+    peer?.compatibility_flags?.includes("global_fetch_strictly_public"),
+    "peer-missing-strict-public-fetch",
+  );
+  requireCondition(
+    peer?.vars?.RESTORE_QUARANTINE === "true" ||
+      peer?.vars?.RESTORE_QUARANTINE === "false",
+    "peer-restore-quarantine-mode-missing",
+  );
+  requireCondition(
+    [
+      "ENABLE_MCP_SUBSCRIPTIONS",
+      "ENABLE_OPENAI_EVENTS",
+      "ALLOW_OUTBOUND_NOTIFICATIONS",
+      "ALLOW_NEW_GUESTS",
+      "ALLOW_NEW_TABLES",
+    ].every(
+      (name) => peer?.vars?.[name] === "true" || peer?.vars?.[name] === "false",
+    ),
+    "peer-invalid-capability-switch",
+  );
+  const peerKv = kvId(peer);
+  requireCondition(peerKv !== kvId(config), "shared-oauth-kv");
+  const peerOrigin = parseOrigin(
+    peer?.vars?.PUBLIC_ORIGIN,
+    environment === "staging" ? "production" : "staging",
+  );
+  requireCondition(
+    peerOrigin.origin !== new URL(vars.PUBLIC_ORIGIN).origin,
+    "shared-public-origin",
+  );
+  getNames(peer);
+  validateSqliteMigrationHistory(peer);
+}
+
 export function validateRelease({
   environment,
   profile,
@@ -260,7 +317,7 @@ export function validateRelease({
   parseOrigin(vars.PUBLIC_ORIGIN, environment);
   getNames(config);
   validateSqliteMigrationHistory(config);
-  const oauthKvId = kvId(config);
+  kvId(config);
   requireCondition(
     vars.RESTORE_QUARANTINE === "true" || vars.RESTORE_QUARANTINE === "false",
     "restore-quarantine-mode-missing",
@@ -276,59 +333,7 @@ export function validateRelease({
     "invalid-capability-switch",
   );
 
-  requireCondition(
-    peer?.vars?.RELEASE_ENVIRONMENT ===
-      (environment === "staging" ? "production" : "staging"),
-    "peer-environment-marker-mismatch",
-  );
-  requireCondition(
-    typeof peer.name === "string" && peer.name !== config.name,
-    "shared-worker-name",
-  );
-  // The counterpart is part of the isolation decision, not just a namespace
-  // comparison. A partial or weakened peer configuration must fail closed.
-  const peerEnvironment = environment === "staging" ? "production" : "staging";
-  requireCondition(
-    peer.name.endsWith(`-${peerEnvironment}`),
-    "peer-worker-name-mismatch",
-  );
-  requireCondition(
-    peer.main === "src/index.ts",
-    "peer-unexpected-worker-entry",
-  );
-  requireCondition(
-    peer?.compatibility_flags?.includes("global_fetch_strictly_public"),
-    "peer-missing-strict-public-fetch",
-  );
-  requireCondition(
-    peer?.vars?.RESTORE_QUARANTINE === "true" ||
-      peer?.vars?.RESTORE_QUARANTINE === "false",
-    "peer-restore-quarantine-mode-missing",
-  );
-  requireCondition(
-    [
-      "ENABLE_MCP_SUBSCRIPTIONS",
-      "ENABLE_OPENAI_EVENTS",
-      "ALLOW_OUTBOUND_NOTIFICATIONS",
-      "ALLOW_NEW_GUESTS",
-      "ALLOW_NEW_TABLES",
-    ].every(
-      (name) => peer?.vars?.[name] === "true" || peer?.vars?.[name] === "false",
-    ),
-    "peer-invalid-capability-switch",
-  );
-  const peerKv = kvId(peer);
-  requireCondition(peerKv !== oauthKvId, "shared-oauth-kv");
-  const peerOrigin = parseOrigin(
-    peer?.vars?.PUBLIC_ORIGIN,
-    environment === "staging" ? "production" : "staging",
-  );
-  requireCondition(
-    peerOrigin.origin !== new URL(vars.PUBLIC_ORIGIN).origin,
-    "shared-public-origin",
-  );
-  getNames(peer);
-  validateSqliteMigrationHistory(peer);
+  validatePeerIsolation(config, peer, environment);
 
   validateSecretInventory(secrets, environment, config.name);
   // A runtime switch cannot assert readiness for a profile lacking independent evidence.
@@ -361,7 +366,7 @@ export function validateRelease({
  * older snapshot. This function cannot reconcile external post-snapshot
  * revocations; it deliberately has no clear-quarantine operation.
  */
-export function prepareQuarantinedRestoreConfig(configText) {
+export function prepareQuarantinedRestoreConfig(configText, peerText) {
   let source;
   try {
     source = JSON.parse(configText);
@@ -384,6 +389,17 @@ export function prepareQuarantinedRestoreConfig(configText) {
   kvId(source);
   getNames(source);
   validateSqliteMigrationHistory(source);
+  // An isolated restore cannot be prepared without the separately reviewed
+  // counterpart configuration. A reused KV namespace or shared origin must
+  // fail before writing even a quarantined candidate.
+  requireCondition(typeof peerText === "string", "missing-restore-peer");
+  let peer;
+  try {
+    peer = JSON.parse(peerText);
+  } catch {
+    throw new PreflightError("invalid-peer-config-json");
+  }
+  validatePeerIsolation(source, peer, environment);
   const candidate = structuredClone(source);
   candidate.vars.RESTORE_QUARANTINE = "true";
   for (const name of [
@@ -409,7 +425,10 @@ function main() {
     const args = process.argv.slice(2);
     if (args.includes("--prepare-restore")) {
       const configText = readFileSync(argumentValue(args, "config"), "utf8");
-      const restoredText = prepareQuarantinedRestoreConfig(configText);
+      const restoredText = prepareQuarantinedRestoreConfig(
+        configText,
+        readFileSync(argumentValue(args, "peer-config"), "utf8"),
+      );
       // Exclusive, owner-readable output: never clobber an operator config.
       writeFileSync(argumentValue(args, "output"), restoredText, {
         flag: "wx",
