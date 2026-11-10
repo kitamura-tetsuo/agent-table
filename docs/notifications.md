@@ -911,7 +911,11 @@ actor; that method revalidates the connection itself. The callback response then
 arrives after the subscription and its lease have been cancelled. The test
 asserts the original signed event/message identity, one captured HTTP request,
 one charged attempt, terminal cancellation and no resurrection/retry after DO
-eviction. The delivered bytes cannot be recalled after dispatch.
+eviction. It then completes a fresh authenticated subscription to the same
+canonical destination, commits a new peer message and observes exactly one
+new signed event through the alarm after another reconstruction. The previous
+cancelled event is not replayed into the later incarnation. The delivered bytes
+from the earlier attempt cannot be recalled after dispatch.
 
 This is a deterministic, in-object, controlled-fetch response interleaving; it
 is **not** a second concurrent external OAuth/MCP HTTP request, independently

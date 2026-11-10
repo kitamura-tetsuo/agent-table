@@ -2088,6 +2088,67 @@ describe("authenticated event producer through native alarm and HTTPS sender (co
       expect(
         (await rows()).find((row) => row.event_id === contested.event_id),
       ).toMatchObject({ status: "cancelled", attempt_count: 1 });
+
+      // A later subscription to the identical destination is a new
+      // incarnation: it receives only subsequently committed peer messages.
+      vi.restoreAllMocks();
+      const nextChallenge = echoReceiver();
+      const newSubscription = (await callEvent(
+        peerClient,
+        "events/subscribe",
+        subscriptionParams(tableId, CALLBACK, REPLACEMENT_SECRET),
+      )) as { id: string };
+      expect(newSubscription.id).toBe(subscription.id);
+      expect(nextChallenge).toHaveBeenCalledTimes(1);
+      nextChallenge.mockRestore();
+      const laterPost = toolOutput(
+        await ownerClient.callTool({
+          name: "post_message",
+          arguments: {
+            table_id: tableId,
+            request_id: crypto.randomUUID(),
+            body: "SYNTHETIC POST AFTER RESUBSCRIBE",
+          },
+        }),
+      );
+      const later = (await rows()).find(
+        (row) => row.message_id === laterPost.message_id,
+      );
+      if (!later) throw new Error("Missing post-resubscribe event");
+      expect(later.event_id).not.toBe(contested.event_id);
+      expect(later.status).toBe("pending");
+      expect(
+        (await rows()).find((row) => row.event_id === contested.event_id),
+      ).toMatchObject({ status: "cancelled", attempt_count: 1 });
+      await runInDurableObject(stub, (_instance, state) =>
+        state.storage.sql.exec(
+          "UPDATE table_event_outbox SET next_attempt_at = ? WHERE event_id = ?",
+          Date.now() - 1,
+          later.event_id,
+        ),
+      );
+      const subsequentDeliveries: string[] = [];
+      vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+        const body = new TextDecoder().decode(init?.body as ArrayBuffer);
+        const headers = Object.fromEntries(new Headers(init?.headers));
+        const event = new Webhook(REPLACEMENT_SECRET).verify(body, headers) as {
+          eventId: string;
+        };
+        subsequentDeliveries.push(event.eventId);
+        return new Response(null, { status: 204 });
+      });
+      await evictDurableObject(stub);
+      await alarm();
+      expect(subsequentDeliveries).toEqual([later.event_id]);
+      expect(
+        (await rows()).find((row) => row.event_id === contested.event_id),
+      ).toMatchObject({ status: "cancelled", attempt_count: 1 });
+      expect(
+        (await rows()).find((row) => row.event_id === later.event_id),
+      ).toMatchObject({ status: "accepted", attempt_count: 1 });
+      await evictDurableObject(stub);
+      await alarm();
+      expect(subsequentDeliveries).toEqual([later.event_id]);
     } finally {
       await peerClient.close();
       await ownerClient.close();
