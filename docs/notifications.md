@@ -845,8 +845,9 @@ join, verified Events registration and a committed peer message. With the
 operator outbound predicate false, two alarm executions separated by Durable
 Object eviction issue **zero** callback requests and leave the original
 pending row, uncharged retry count and null first-attempt time unchanged.
-After the predicate resumes, a controlled in-process receiver captures eight
-bounded native HTTPS 503 attempts for the original event without a ninth send.
+After the predicate resumes, a controlled in-process receiver captures the
+original event through a native HTTPS 429 with a one-hour Retry-After (clamped
+to 15 minutes), followed by seven 503 attempts without a ninth send.
 A second authenticated event incurs one native 503 attempt. The regression
 backdates only that event's original attempt timestamp past the one-hour
 retry horizon and verifies that a reconstructed alarm marks the same event
@@ -861,3 +862,24 @@ reachability or proof of platform DNS/IP/TLS behavior. Only the private
 public-readiness gate is bypassed within the controlled test; the actual
 operator outbound-control predicate remains active. Public Events remain
 disabled, and #21/REQ-010 has unfinished concurrent lifecycle coverage.
+
+### 2026-11-11: controlled send-before-close result fencing
+
+The existing authenticated OAuth/MCP producer fixture now commits a new
+peer event and runs the actual TableDO alarm with the native signed HTTPS
+sender. Its controlled receiver captures the outgoing bytes before returning
+HTTP 204; at this precise in-process callback boundary, the fixture invokes
+TableDO's canonical owner close transition using the already-authenticated
+owner's guest identity. The transition cancels the in-flight event before the
+receiver result settles. Canonical SQL still shows the original event ID,
+one charged attempt and `cancelled` status, never `accepted`. Eviction and a
+subsequent alarm cannot cause a second request or revive that event.
+
+This deterministic controlled-receiver interleaving tests the application's
+lease/terminal-result fence, **not** a concurrent second OAuth/MCP request or
+a real independently hosted HTTPS receiver. The test uses the private core
+close transition after prior owner authentication because Workerd's single-
+isolate test harness rejects simultaneous I/O on behalf of another Durable
+Object. Actual cross-request in-flight close/refresh/unsubscribe/revocation
+races, receiver-side measurements and #19 connection-time safety remain
+unverified. This does not clear the open P1 review or enable public Events.

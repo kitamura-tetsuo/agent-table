@@ -1448,6 +1448,7 @@ describe("authenticated event producer through native alarm and HTTPS sender (co
         redirect: RequestRedirect | undefined;
       }> = [];
       challengeReceiver.mockRestore();
+      let closeAfterSendStarts: (() => Promise<void>) | undefined;
       vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
         const body = new TextDecoder().decode(init?.body as ArrayBuffer);
         captured.push({
@@ -1459,6 +1460,11 @@ describe("authenticated event producer through native alarm and HTTPS sender (co
         if (captured.length === 1) {
           // The receiver may commit the event while its HTTP reply is lost.
           throw new Error("Synthetic response lost after receiver acceptance");
+        }
+        if (captured.length === 5) {
+          // HTTP bytes are already dispatched; close the canonical TableDO
+          // before the receiver acknowledges, using the real lifecycle method.
+          await closeAfterSendStarts?.();
         }
         return new Response(null, {
           status:
@@ -1614,9 +1620,70 @@ describe("authenticated event producer through native alarm and HTTPS sender (co
       expect(
         (await rows()).find((row) => row.event_id === tooLarge.event_id),
       ).toMatchObject({ status: "failed", attempt_count: 1 });
+
+      // A fifth authenticated post is sent before an owner closes the table.
+      // The receiver's later 2xx is acceptance of bytes, not an authority to
+      // resurrect the cancelled outbox after the terminal decision.
+      const closingPost = toolOutput(
+        await ownerClient.callTool({
+          name: "post_message",
+          arguments: {
+            table_id: tableId,
+            request_id: crypto.randomUUID(),
+            body: "SYNTHETIC CLOSE AFTER DISPATCH BEFORE ACK",
+          },
+        }),
+      );
+      const closingEvent = (await rows()).find(
+        (row) => row.message_id === closingPost.message_id,
+      );
+      if (!closingEvent) throw new Error("Missing contested delivery event");
+      await runInDurableObject(stub, (_instance, state) =>
+        state.storage.sql.exec(
+          "UPDATE table_event_outbox SET next_attempt_at = ? WHERE event_id = ?",
+          Date.now() - 1,
+          closingEvent.event_id,
+        ),
+      );
+      await runInDurableObject(stub, async (instance) => {
+        const harness = instance as unknown as {
+          env: Env;
+          outboxDispatchEnabled(): boolean;
+          closeTableForGuest(
+            guestId: string,
+            requestId: string,
+          ): Promise<{ ok: boolean }>;
+        };
+        harness.env = {
+          ...harness.env,
+          EVENTS_REVIEWED_CALLBACK_TARGETS: REVIEWED,
+        };
+        harness.outboxDispatchEnabled = () => true;
+        closeAfterSendStarts = async () => {
+          const closed = await harness.closeTableForGuest(
+            owner.guestId,
+            crypto.randomUUID(),
+          );
+          expect(closed.ok).toBe(true);
+        };
+        await instance.alarm();
+      });
+      expect(captured).toHaveLength(5);
+      expect(
+        new Webhook(SECRET).verify(captured[4].body, captured[4].headers),
+      ).toMatchObject({
+        eventId: closingEvent.event_id,
+        data: { message_id: closingPost.message_id, seq: closingPost.seq },
+      });
+      expect(
+        (await rows()).find((row) => row.event_id === closingEvent.event_id),
+      ).toMatchObject({ status: "cancelled", attempt_count: 1 });
       await evictDurableObject(stub);
       await alarm();
-      expect(captured).toHaveLength(4);
+      expect(captured).toHaveLength(5);
+      expect(
+        (await rows()).find((row) => row.event_id === closingEvent.event_id),
+      ).toMatchObject({ status: "cancelled", attempt_count: 1 });
     } finally {
       await peerClient.close();
       await ownerClient.close();
@@ -2087,8 +2154,12 @@ describe("authenticated event producer through native alarm and HTTPS sender (co
         };
         deliveredIds.push(event.eventId);
         return new Response(null, {
-          status: 503,
-          headers: { "Retry-After": "1" },
+          // Exercise the native 429 header parser and its 15-minute cap
+          // before the remaining attempts exercise transient 5xx responses.
+          status: deliveredIds.length === 1 ? 429 : 503,
+          headers: {
+            "Retry-After": deliveredIds.length === 1 ? "3600" : "1",
+          },
         });
       });
       const alarm = (outboundAllowed = true) =>
@@ -2146,6 +2217,17 @@ describe("authenticated event producer through native alarm and HTTPS sender (co
         expect(row.first_attempt_at).toBe(firstAttemptAt);
         expect(row.status).toBe(attempt === 8 ? "failed" : "pending");
         expect(deliveredIds).toHaveLength(attempt);
+        if (attempt === 1) {
+          expect(row.last_error_category).toBe("rate-limited");
+          // The provider requested one hour, but the transport must clamp
+          // this to a bounded 15-minute backoff without an immediate loop.
+          expect(row.next_attempt_at).toBeGreaterThanOrEqual(
+            Date.now() + 900_000 - 5_000,
+          );
+          expect(row.next_attempt_at).toBeLessThanOrEqual(
+            Date.now() + 900_000 + 5_000,
+          );
+        }
         if (attempt === 8) {
           expect(row.last_error_category).toBe("retry-exhausted");
           expect(row.next_attempt_at).toBeNull();
