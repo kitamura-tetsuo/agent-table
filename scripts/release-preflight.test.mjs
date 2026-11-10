@@ -602,3 +602,39 @@ test("restore CLI refuses an environment override before creating any output", (
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("checked-in restore candidate is the actual generator output for stale-enabled input", () => {
+  const source = makeConfig("staging");
+  source.vars.RESTORE_QUARANTINE = "false";
+  for (const name of [
+    "ENABLE_MCP_SUBSCRIPTIONS",
+    "ENABLE_OPENAI_EVENTS",
+    "ALLOW_NEW_GUESTS",
+    "ALLOW_NEW_TABLES",
+    "ALLOW_OUTBOUND_NOTIFICATIONS",
+  ]) {
+    source.vars[name] = "true";
+  }
+  const actual = prepareQuarantinedRestoreConfig(
+    JSON.stringify(source),
+    JSON.stringify(makeConfig("production")),
+  );
+  const checkedIn = readFileSync(
+    "test/fixtures/quarantined-restore-generated.json",
+    "utf8",
+  );
+  // A changed generator must not silently drift from the Worker test's config.
+  assert.deepEqual(JSON.parse(checkedIn), JSON.parse(actual));
+  const vars = JSON.parse(checkedIn).vars;
+  assert.equal(vars.RELEASE_ENVIRONMENT, "staging");
+  assert.equal(vars.RESTORE_QUARANTINE, "true");
+  for (const name of [
+    "ENABLE_MCP_SUBSCRIPTIONS",
+    "ENABLE_OPENAI_EVENTS",
+    "ALLOW_NEW_GUESTS",
+    "ALLOW_NEW_TABLES",
+    "ALLOW_OUTBOUND_NOTIFICATIONS",
+  ]) {
+    assert.equal(vars[name], "false");
+  }
+});

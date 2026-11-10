@@ -18,6 +18,7 @@ import {
   RESTORE_QUARANTINE_RECHECK_MS,
   rejectRestoredAccess,
 } from "../../src/shared/release-quarantine";
+import generatedRestore from "../fixtures/quarantined-restore-generated.json";
 
 const origin = "http://localhost:8787";
 
@@ -359,6 +360,54 @@ describe("restore quarantine isolation of Durable Object alarm paths", () => {
 });
 
 describe("retained-state rollback and independent quarantine decisions", () => {
+  it("applies the actual offline-generated quarantine settings to retained Worker state", async () => {
+    const stored = await storedPrivateTable();
+    const path = `/guest/table?table_id=${stored.tableId}`;
+    const allowed = await dispatchWithBindings(
+      path,
+      { ...env, RELEASE_ENVIRONMENT: "staging", RESTORE_QUARANTINE: "false" },
+      { headers: { Cookie: stored.cookie } },
+    );
+    expect(allowed.status).toBe(200);
+    await evictDurableObject(stored.table);
+    await evictDurableObject(stored.guest);
+
+    // These fields are produced by --prepare-restore, not hand-selected in
+    // this runtime test. The paired Node oracle rejects generator drift.
+    const restored = { ...env, ...generatedRestore.vars };
+    expect(restored.RELEASE_ENVIRONMENT).toBe("staging");
+    expect(isRestoreQuarantined(restored)).toBe(true);
+    expect(allowOutboundNotifications(restored)).toBe(false);
+
+    for (const endpoint of [
+      path,
+      "/guest/connections",
+      "/oauth/token",
+      "/mcp",
+    ]) {
+      const response = await dispatchWithBindings(endpoint, restored, {
+        method:
+          endpoint === "/oauth/token" || endpoint === "/mcp" ? "POST" : "GET",
+        headers: { Cookie: stored.cookie },
+      });
+      expect(response.status).toBe(503);
+    }
+    await runInDurableObject(stored.table, async (_instance, state) => {
+      expect(
+        state.storage.sql
+          .exec<{ body: string }>("SELECT body FROM table_messages")
+          .one().body,
+      ).toBe("Synthetic private recovery fixture");
+    });
+    await runInDurableObject(stored.guest, async (_instance, state) => {
+      expect(
+        state.storage.sql
+          .exec("SELECT COUNT(*) AS n FROM guest_sessions")
+          .one(),
+      ).toEqual({ n: 1 });
+    });
+  });
+
   it("refuses a recovered old session across a changed or absent release binding", async () => {
     const stored = await storedPrivateTable();
     const path = `/guest/table?table_id=${stored.tableId}`;
