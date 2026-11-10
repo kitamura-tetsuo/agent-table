@@ -1002,7 +1002,8 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
       const landing = await exports.default.fetch(`${ORIGIN}/join`);
       expect(landing.status).toBe(200);
       expect(await landing.text()).not.toContain(secret);
-      expect(landing.headers.get("Referrer-Policy")).toBe("no-referrer");
+      // Preserve same-origin POST Origin without a cross-site Referer.
+      expect(landing.headers.get("Referrer-Policy")).toBe("same-origin");
     } finally {
       await client.close();
     }

@@ -7,17 +7,23 @@ import {
 } from "./auth/guest";
 import {
   authorizationServer,
+  classifyOAuthGrant,
   handleAuthenticatedMcp,
   handleAuthorize,
   oauthTokenStub,
 } from "./auth/provider";
+import { handleStagingEvidence } from "./evidence/staging";
 import {
   checkEdgeAdmission,
   type EdgeAdmissionCategory,
   rejectOversizedIngress,
 } from "./shared/admission";
 import { correlationId, emitOperationalEvent } from "./shared/telemetry";
+import { handleBrowserTableCreate } from "./web/create";
 import { handleDeletionPage } from "./web/deletion";
+import { handleJoinPage, handleJoinScript } from "./web/join";
+import { handleBrowserTableManage } from "./web/manage";
+import { handleBrowserTableView } from "./web/table";
 
 export { OAuthTokenDO } from "./auth/token-do";
 export { AdmissionDO } from "./objects/admission";
@@ -46,7 +52,11 @@ function edgeCategory(request: Request): EdgeAdmissionCategory | null {
     path === "/guest/me" ||
     path === "/guest/connections" ||
     path === "/guest/delete" ||
-    path === "/guest/connections/revoke"
+    path === "/guest/table" ||
+    path === "/guest/manage" ||
+    path === "/guest/create" ||
+    path === "/guest/connections/revoke" ||
+    path === "/join.js"
   ) {
     return "application";
   }
@@ -60,19 +70,37 @@ const handleRequest: ExportedHandler<Env>["fetch"] = async (
 ) => {
   const ingressRejected = await rejectOversizedIngress(request);
   if (ingressRejected) return ingressRejected;
+  const url = new URL(request.url);
+  // Disabled diagnostics must not consume the OAuth protocol rate-limit budget.
+  if (url.pathname === "/__staging/evidence")
+    return handleStagingEvidence(request, env);
   const category = edgeCategory(request);
   if (category) {
     const rateRejected = await checkEdgeAdmission(request, env, category);
     if (rateRejected) return rateRejected;
   }
-  const url = new URL(request.url);
   if (
     url.pathname === "/mcp" ||
     url.pathname === "/.well-known/oauth-protected-resource/mcp"
   )
     return handleAuthenticatedMcp(request, env, ctx);
   if (url.pathname === "/authorize") return handleAuthorize(request, env);
-  if (url.pathname === "/oauth/token" || url.pathname === "/oauth/revoke")
+  if (url.pathname === "/oauth/token") {
+    if (env.OAUTH_AUDIT_MODE !== "metadata")
+      return oauthTokenStub(env).fetch(request);
+    const grantType = await classifyOAuthGrant(request);
+    const response = await oauthTokenStub(env).fetch(request);
+    // Staging-only and allowlisted: never log request bodies or credentials.
+    console.info(
+      JSON.stringify({
+        event: "agent_table.oauth_token_exchange",
+        grant_type: grantType,
+        http_status: response.status,
+      }),
+    );
+    return response;
+  }
+  if (url.pathname === "/oauth/revoke")
     return oauthTokenStub(env).fetch(request);
   if (
     url.pathname === "/.well-known/oauth-authorization-server" ||
@@ -92,25 +120,14 @@ const handleRequest: ExportedHandler<Env>["fetch"] = async (
     return handleConnectionRevoke(request, env);
   }
   if (url.pathname === "/guest/delete") return handleDeletionPage(request, env);
-  if (
-    url.pathname === "/join" &&
-    (request.method === "GET" || request.method === "HEAD")
-  ) {
-    return new Response(
-      request.method === "HEAD"
-        ? null
-        : '<!doctype html><html lang="en"><meta charset="utf-8"><title>Agent Table invitation</title><h1>Agent Table invitation</h1><p>Approval is required in the browser flow; opening this page never redeems an invitation.</p></html>',
-      {
-        headers: {
-          "Content-Type": "text/html; charset=utf-8",
-          "Cache-Control": "no-store",
-          "Referrer-Policy": "no-referrer",
-          "Content-Security-Policy":
-            "default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
-        },
-      },
-    );
-  }
+  if (url.pathname === "/guest/table")
+    return handleBrowserTableView(request, env);
+  if (url.pathname === "/guest/manage")
+    return handleBrowserTableManage(request, env);
+  if (url.pathname === "/guest/create")
+    return handleBrowserTableCreate(request, env);
+  if (url.pathname === "/join") return handleJoinPage(request, env);
+  if (url.pathname === "/join.js") return handleJoinScript(request);
   if (url.pathname === "/guest/me") {
     if (request.method !== "GET") {
       return new Response("Method Not Allowed", {

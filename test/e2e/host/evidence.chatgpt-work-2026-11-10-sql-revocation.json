@@ -1,0 +1,65 @@
+{
+  "schemaVersion": 1,
+  "host": {
+    "product": "ChatGPT Work",
+    "surface": "Owner-authorized private MCP app Agent Table Test2",
+    "exposedBuild": "not-exposed-in-tested-host",
+    "eligibility": "eligible",
+    "origin": "actual-host"
+  },
+  "deployment": {
+    "endpoint": "https://agent-table-test.outliner-online.com/mcp",
+    "buildSha": null,
+    "isolated": true
+  },
+  "observedAt": "2026-11-10T05:54:32.033Z",
+  "syntheticRunTag": "chatgpt_work_20261110_sql_revocation",
+  "cases": {
+    "deniedConsent": {
+      "status": "not-run",
+      "clientObservationRef": null,
+      "serverObservationRef": null
+    },
+    "guestChoice": {
+      "status": "blocked",
+      "clientObservationRef": null,
+      "serverObservationRef": null
+    },
+    "approvedConsent": {
+      "status": "passed",
+      "clientObservationRef": "pr41_6759493658_host_reconnect",
+      "serverObservationRef": "pr41_6759493658_active_guest_sqlite"
+    },
+    "createdTable": {
+      "status": "passed",
+      "clientObservationRef": "pr41_6759493658_host_create",
+      "serverObservationRef": "pr41_6759493658_independent_creation_join"
+    },
+    "readTable": {
+      "status": "passed",
+      "clientObservationRef": "pr41_6759493658_host_get",
+      "serverObservationRef": "pr41_6759493658_independent_table_row"
+    },
+    "refreshedToken": {
+      "status": "not-run",
+      "clientObservationRef": null,
+      "serverObservationRef": null
+    },
+    "readAfterRefresh": {
+      "status": "not-run",
+      "clientObservationRef": null,
+      "serverObservationRef": null
+    },
+    "revokedInBrowser": {
+      "status": "passed",
+      "clientObservationRef": "pr41_6760062073_owner_revoke",
+      "serverObservationRef": "pr41_6760336421_sqlite_revoked_edge303"
+    },
+    "rejectedAfterRevocation": {
+      "status": "passed",
+      "clientObservationRef": "pr41_6760062073_host_invalid_grant",
+      "serverObservationRef": "pr41_6760336421_oauth_token400"
+    }
+  },
+  "disconnect": "not-run"
+}

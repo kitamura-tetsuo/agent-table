@@ -1,4 +1,8 @@
 import { DurableObject } from "cloudflare:workers";
+import {
+  requestFingerprint,
+  stagingEvidenceEnabled,
+} from "../evidence/staging";
 import { InboxHintStreams } from "../mcp/inbox-streams";
 import {
   type InboxSubscriptionCheck,
@@ -11,6 +15,7 @@ import {
   type VerifiedConnectionActor,
 } from "../shared/auth";
 import {
+  type CreationActor,
   creationRequestDigest,
   InvalidCreationRequestError,
   parseCreationRequest,
@@ -55,6 +60,7 @@ import {
   POST_WINDOW_MS,
   type PostReceipt,
   postDigest,
+  type ReadMessagesInput,
   type TranscriptPage,
   type TransientPeerUpdateHint,
   validPostInput,
@@ -197,6 +203,48 @@ export class TableDO extends DurableObject<Env> {
   // An application schema exists even when no table has ever been created.
   schemaVersion(): number {
     return readApplicationSchemaVersion(this.ctx.storage);
+  }
+
+  /**
+   * Internal DO-RPC only: reads persisted table SQLite authority independently
+   * of the HTTP create/get results, without any stored content or identifiers.
+   */
+  async readStagingEvidence(tableId: string, guestId: string) {
+    if (
+      !stagingEvidenceEnabled(this.env) ||
+      this.ctx.id.toString() !== this.env.TABLES.idFromName(tableId).toString()
+    ) {
+      throw new Error("Staging evidence is disabled");
+    }
+    const metadata = this.metadataRow();
+    const table = metadata?.table_id === tableId ? metadata : undefined;
+    const membership = table
+      ? this.ctx.storage.sql
+          .exec<Pick<MembershipRow, "guest_id" | "role" | "seat">>(
+            "SELECT guest_id, role, seat FROM table_memberships WHERE seat = 1 LIMIT 1",
+          )
+          .toArray()[0]
+      : undefined;
+    const tombstone = this.tombstoneRow();
+    return {
+      metadataExists: Boolean(table),
+      state: table?.state ?? null,
+      createdAt: table?.created_at ?? null,
+      expiresAt: table?.expires_at ?? null,
+      creatorMatchesGuest: table ? table.creator_guest_id === guestId : null,
+      seatOneCreatorMatchesGuest: table
+        ? membership?.guest_id === guestId &&
+          membership.role === "creator" &&
+          membership.seat === 1
+        : null,
+      requestFingerprint: table
+        ? await requestFingerprint(table.creation_request_id)
+        : null,
+      tombstoneState:
+        !table && tombstone?.table_id === tableId
+          ? tombstone.terminal_state
+          : null,
+    };
   }
 
   private metadataRow(): MetadataRow | undefined {
@@ -551,7 +599,7 @@ export class TableDO extends DurableObject<Env> {
    * No application table state is written until the local SQLite transaction.
    */
   async initializeTable(
-    actor: VerifiedConnectionActor,
+    actor: CreationActor,
     input: unknown,
     reservation: CreationReservation,
   ): Promise<TableResult<SafeTableMetadata>> {
@@ -564,9 +612,14 @@ export class TableDO extends DurableObject<Env> {
       }
       throw error;
     }
+    const actorAuthorized =
+      actor &&
+      typeof actor.guestId === "string" &&
+      ("kind" in actor
+        ? actor.kind === "verified-connection" && actor.scope === "tables:write"
+        : await this.verifyBrowserSession(actor));
     if (
-      actor?.kind !== "verified-connection" ||
-      actor.scope !== "tables:write" ||
+      !actorAuthorized ||
       !reservation ||
       typeof reservation.tableId !== "string" ||
       typeof actor.guestId !== "string" ||
@@ -711,6 +764,28 @@ export class TableDO extends DurableObject<Env> {
     ) {
       return { ok: false, code: "NOT_AUTHORIZED" };
     }
+    return this.issueInviteForGuest(actor.guestId, requestId);
+  }
+
+  /** Browser invitation authority is checked again inside TableDO. */
+  async issueBrowserInvite(
+    credential: BrowserDeletionCredential,
+    requestId: string,
+  ): Promise<InvitationResult> {
+    if (
+      !validInvitationOperationId(requestId) ||
+      !(await this.verifyBrowserSession(credential))
+    ) {
+      return { ok: false, code: "NOT_AUTHORIZED" };
+    }
+    return this.issueInviteForGuest(credential.guestId, requestId);
+  }
+
+  /** Both browser and MCP invitations use the identical durable receipt. */
+  private async issueInviteForGuest(
+    guestId: string,
+    requestId: string,
+  ): Promise<InvitationResult> {
     const inviteId = crypto.randomUUID();
     const secret = randomBase64Url(32);
     // The stable table ID comes from metadata, not an untrusted caller.
@@ -742,13 +817,13 @@ export class TableDO extends DurableObject<Env> {
     const snapshot = this.ctx.storage.transactionSync(() => {
       const now = Date.now();
       const current = this.metadataRow();
-      const creator = this.memberFor(actor.guestId);
+      const creator = this.memberFor(guestId);
       if (
         !current ||
         !creator ||
         creator.seat !== 1 ||
         creator.role !== "creator" ||
-        current.creator_guest_id !== actor.guestId
+        current.creator_guest_id !== guestId
       ) {
         return { kind: "error", code: "TABLE_NOT_FOUND" } as const;
       }
@@ -761,7 +836,7 @@ export class TableDO extends DurableObject<Env> {
       }
       const previous = this.inviteForRequest(requestId);
       if (previous) {
-        if (previous.issuer_guest_id !== actor.guestId) {
+        if (previous.issuer_guest_id !== guestId) {
           return { kind: "error", code: "IDEMPOTENCY_CONFLICT" } as const;
         }
         if (previous.expires_at <= now) {
@@ -786,7 +861,7 @@ export class TableDO extends DurableObject<Env> {
         "INSERT INTO table_invitations (invite_id, request_id, issuer_guest_id, secret_digest, response_envelope, issued_at, expires_at, state) VALUES (?, ?, ?, ?, ?, ?, ?, 'active')",
         inviteId,
         requestId,
-        actor.guestId,
+        guestId,
         digest,
         envelope,
         now,
@@ -836,12 +911,36 @@ export class TableDO extends DurableObject<Env> {
     };
   }
 
-  /**
-   * The seat insert, consumed receipt, and waiting-to-open transition commit
-   * in one SQLite transaction. Cross-DO grant validation precedes the lock.
-   */
+  /** Agent admission continues to require the current connection grant. */
   async redeemInvite(
     actor: VerifiedConnectionActor,
+    encoded: string,
+    requestId: string,
+  ): Promise<TableResult<SafeTableMetadata>> {
+    if (!(await this.verifyActor(actor, "tables:write"))) {
+      return { ok: false, code: "INVITATION_INVALID" };
+    }
+    return this.redeemInviteForGuest(actor.guestId, encoded, requestId);
+  }
+
+  /** Browser admission uses only the independently validated guest session. */
+  async redeemBrowserInvite(
+    credential: BrowserDeletionCredential,
+    encoded: string,
+    requestId: string,
+  ): Promise<TableResult<SafeTableMetadata>> {
+    if (!(await this.verifyBrowserSession(credential))) {
+      return { ok: false, code: "INVITATION_INVALID" };
+    }
+    return this.redeemInviteForGuest(credential.guestId, encoded, requestId);
+  }
+
+  /**
+   * Both entrypoints use the same durable invitation transaction: the seat
+   * insert, consumed receipt, and waiting-to-open transition commit atomically.
+   */
+  private async redeemInviteForGuest(
+    guestId: string,
     encoded: string,
     requestId: string,
   ): Promise<TableResult<SafeTableMetadata>> {
@@ -851,9 +950,6 @@ export class TableDO extends DurableObject<Env> {
       !validInvitationOperationId(requestId) ||
       !this.ctx.id.equals(this.env.TABLES.idFromName(parts.tableId))
     ) {
-      return { ok: false, code: "INVITATION_INVALID" };
-    }
-    if (!(await this.verifyActor(actor, "tables:write"))) {
       return { ok: false, code: "INVITATION_INVALID" };
     }
     const digest = await digestSessionSecret(parts.secret);
@@ -872,7 +968,7 @@ export class TableDO extends DurableObject<Env> {
       const receipt = this.ctx.storage.sql
         .exec<JoinReceiptRow>(
           "SELECT * FROM table_join_receipts WHERE guest_id = ? AND request_id = ?",
-          actor.guestId,
+          guestId,
           requestId,
         )
         .toArray()[0];
@@ -892,17 +988,17 @@ export class TableDO extends DurableObject<Env> {
       if (!invitation || invitation.secret_digest !== digest) {
         return { ok: false, code: "INVITATION_INVALID" } as const;
       }
-      const existing = this.memberFor(actor.guestId);
+      const existing = this.memberFor(guestId);
       if (
         invitation.state === "consumed" &&
-        invitation.consumed_by === actor.guestId &&
+        invitation.consumed_by === guestId &&
         existing?.seat === 2 &&
         table.state === "open"
       ) {
         if (!receipt) {
           this.ctx.storage.sql.exec(
             "INSERT INTO table_join_receipts (guest_id, request_id, invite_id, secret_digest, membership_id) VALUES (?, ?, ?, ?, ?)",
-            actor.guestId,
+            guestId,
             requestId,
             parts.inviteId,
             digest,
@@ -931,13 +1027,13 @@ export class TableDO extends DurableObject<Env> {
         "INSERT INTO table_memberships (membership_id, table_id, guest_id, seat, role, joined_at, latest_peer_seq) VALUES (?, ?, ?, 2, 'invitee', ?, ?)",
         membershipId,
         table.table_id,
-        actor.guestId,
+        guestId,
         now,
         table.last_seq,
       );
       this.ctx.storage.sql.exec(
         "UPDATE table_invitations SET state = 'consumed', consumed_by = ?, consumed_at = ?, response_envelope = NULL WHERE invite_id = ? AND state = 'active'",
-        actor.guestId,
+        guestId,
         now,
         parts.inviteId,
       );
@@ -946,14 +1042,14 @@ export class TableDO extends DurableObject<Env> {
       );
       this.ctx.storage.sql.exec(
         "INSERT INTO table_join_receipts (guest_id, request_id, invite_id, secret_digest, membership_id) VALUES (?, ?, ?, ?, ?)",
-        actor.guestId,
+        guestId,
         requestId,
         parts.inviteId,
         digest,
         membershipId,
       );
       const updated = this.metadataRow();
-      const member = this.memberFor(actor.guestId);
+      const member = this.memberFor(guestId);
       if (!updated || !member) throw new Error("Incomplete invitation claim");
       return { ok: true, value: this.publicMetadata(updated, member) } as const;
     });
@@ -993,6 +1089,29 @@ export class TableDO extends DurableObject<Env> {
           value: this.publicMetadata(access.value.table, access.value.member),
         }
       : access;
+  }
+
+  /** Browser reads check the independently held session, never an OAuth grant. */
+  async getBrowserMetadata(
+    credential: BrowserDeletionCredential,
+  ): Promise<TableResult<SafeTableMetadata>> {
+    if (!(await this.verifyBrowserSession(credential))) {
+      return { ok: false, code: "TABLE_NOT_FOUND" };
+    }
+    const table = this.metadataRow();
+    const member = this.memberFor(credential.guestId);
+    if (
+      !table ||
+      !member ||
+      member.table_id !== table.table_id ||
+      table.state === "deleted"
+    ) {
+      return { ok: false, code: "TABLE_NOT_FOUND" };
+    }
+    if (table.state === "expired" || table.expires_at <= Date.now()) {
+      return { ok: false, code: "TABLE_EXPIRED" };
+    }
+    return { ok: true, value: this.publicMetadata(table, member) };
   }
 
   async readOwnInbox(
@@ -1236,9 +1355,28 @@ export class TableDO extends DurableObject<Env> {
     if (!(await this.verifyActor(actor, "tables:read"))) {
       return { ok: false, code: "TABLE_NOT_FOUND" };
     }
+    return this.readMessagesForGuest(actor.guestId, input);
+  }
+
+  /** Browser and agent transcript reads share the exact snapshot/membership query. */
+  async readBrowserMessages(
+    credential: BrowserDeletionCredential,
+    input: unknown,
+  ): Promise<TableResult<TranscriptPage>> {
+    if (!validReadInput(input)) return { ok: false, code: "INVALID_REQUEST" };
+    if (!(await this.verifyBrowserSession(credential))) {
+      return { ok: false, code: "TABLE_NOT_FOUND" };
+    }
+    return this.readMessagesForGuest(credential.guestId, input);
+  }
+
+  private readMessagesForGuest(
+    guestId: string,
+    input: ReadMessagesInput,
+  ): TableResult<TranscriptPage> {
     return this.ctx.storage.transactionSync(() => {
       const table = this.metadataRow();
-      const member = this.memberFor(actor.guestId);
+      const member = this.memberFor(guestId);
       if (
         !table ||
         !member ||
@@ -1305,8 +1443,29 @@ export class TableDO extends DurableObject<Env> {
     if (!(await this.verifyActor(actor, "tables:write"))) {
       return { ok: false, code: "TABLE_NOT_FOUND" };
     }
+    return this.closeTableForGuest(actor.guestId, requestId);
+  }
+
+  /** Browser terminal actions use the real current guest session. */
+  async closeBrowserTable(
+    credential: BrowserDeletionCredential,
+    requestId: string,
+  ): Promise<TableResult<CloseTableReceipt>> {
+    if (!validInvitationOperationId(requestId))
+      return { ok: false, code: "INVALID_REQUEST" };
+    if (!(await this.verifyBrowserSession(credential)))
+      return { ok: false, code: "TABLE_NOT_FOUND" };
+    return this.closeTableForGuest(credential.guestId, requestId);
+  }
+
+  private async closeTableForGuest(
+    guestId: string,
+    _requestId: string,
+  ): Promise<
+    TableResult<CloseTableReceipt> & { terminalHint?: LifecycleInvalidation }
+  > {
     const existing = this.metadataRow();
-    if (!existing || !this.memberFor(actor.guestId))
+    if (!existing || !this.memberFor(guestId))
       return { ok: false, code: "TABLE_NOT_FOUND" };
     if (existing.expires_at <= Date.now())
       return { ok: false, code: "TABLE_EXPIRED" };
@@ -1316,7 +1475,7 @@ export class TableDO extends DurableObject<Env> {
         this.ctx.storage.transactionSync(() => {
           const now = Date.now();
           const table = this.metadataRow();
-          const member = this.memberFor(actor.guestId);
+          const member = this.memberFor(guestId);
           if (!table || !member)
             return { ok: false, code: "TABLE_NOT_FOUND" } as const;
           if (table.expires_at <= now || table.state === "expired") {
@@ -1428,7 +1587,7 @@ export class TableDO extends DurableObject<Env> {
   }
 
   /** Validate the real browser session independently of an agent token or URL. */
-  private async verifyDeletionBrowser(
+  private async verifyBrowserSession(
     credential: BrowserDeletionCredential,
   ): Promise<boolean> {
     if (
@@ -1549,7 +1708,7 @@ export class TableDO extends DurableObject<Env> {
     credential: BrowserDeletionCredential,
     requestId: string,
   ): Promise<TableResult<DeletionReceipt>> {
-    if (!(await this.verifyDeletionBrowser(credential))) {
+    if (!(await this.verifyBrowserSession(credential))) {
       return { ok: false, code: "NOT_AUTHORIZED" };
     }
     return this.startDeletion(credential.guestId, requestId);
@@ -1600,7 +1759,7 @@ export class TableDO extends DurableObject<Env> {
     ) {
       return { ok: false, code: "INVALID_REQUEST" };
     }
-    if (!(await this.verifyDeletionBrowser(credential))) {
+    if (!(await this.verifyBrowserSession(credential))) {
       return { ok: false, code: "NOT_AUTHORIZED" };
     }
     const guestId = credential.guestId;

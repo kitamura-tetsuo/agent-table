@@ -1,5 +1,6 @@
 import { allowNewTables } from "../shared/admission";
 import type { VerifiedConnectionActor } from "../shared/auth";
+import type { CreationActor } from "../shared/creation";
 import {
   InvalidCreationRequestError,
   parseCreationRequest,
@@ -72,7 +73,7 @@ function observeInvitation<T extends { ok: boolean }>(
  */
 export async function createTable(
   env: Env,
-  actor: VerifiedConnectionActor,
+  actor: CreationActor,
   input: unknown,
 ): Promise<PublicTableResult> {
   const started = Date.now();
