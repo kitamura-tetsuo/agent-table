@@ -4,13 +4,23 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
 const sha = "a".repeat(40);
+const configSha = "b".repeat(64);
 const gate = new URL("./require-release-approval.mjs", import.meta.url);
 
-function inspect(input, environment = "staging", buildSha = sha) {
-  return spawnSync(process.execPath, [gate.pathname, environment, buildSha], {
-    input,
-    encoding: "utf8",
-  });
+function inspect(
+  input,
+  environment = "staging",
+  buildSha = sha,
+  configDigest = configSha,
+) {
+  return spawnSync(
+    process.execPath,
+    [gate.pathname, environment, buildSha, configDigest],
+    {
+      input,
+      encoding: "utf8",
+    },
+  );
 }
 
 test("release gate refuses a merely valid preflight, missing approval or mismatched target", () => {
@@ -20,6 +30,7 @@ test("release gate refuses a merely valid preflight, missing approval or mismatc
     environment: "staging",
     profile: "manual",
     buildSha: sha,
+    configSha256: configSha,
   };
   for (const manifest of [
     valid,
@@ -28,6 +39,7 @@ test("release gate refuses a merely valid preflight, missing approval or mismatc
     { ...valid, deploymentApproved: true, environment: "production" },
     { ...valid, deploymentApproved: true, buildSha: "b".repeat(40) },
     { ...valid, deploymentApproved: true, profile: "events" },
+    { ...valid, deploymentApproved: true, configSha256: "c".repeat(64) },
   ]) {
     const result = inspect(
       `PREFLIGHT_MANIFEST_VALID ${JSON.stringify(manifest)}\n`,
@@ -94,7 +106,12 @@ test("current offline validator never manufactures a deployment approval", async
   assert.equal(result.preflightValid, true);
   assert.equal(result.deploymentApproved, false);
   assert.equal(
-    inspect(`PREFLIGHT_MANIFEST_VALID ${JSON.stringify(result)}\n`).status,
+    inspect(
+      `PREFLIGHT_MANIFEST_VALID ${JSON.stringify(result)}\n`,
+      "staging",
+      sha,
+      sha256,
+    ).status,
     1,
   );
 });
@@ -128,6 +145,10 @@ test("release workflows remain explicit main-only manual dispatches with environ
   assert.match(shared, /persist-credentials: false/);
   assert.match(shared, /require-release-approval\.mjs/);
   assert.match(shared, /wrangler deploy --dry-run/);
+  assert.match(shared, /config_sha=/);
+  assert.match(shared, /"\$TARGET_ENVIRONMENT" "\$GITHUB_SHA" "\$config_sha"/);
+  assert.match(shared, /sha256sum "\$config"/);
+  assert.match(shared, /wrangler deploy --config "\$config"/);
   assert.match(shared, /CLOUDFLARE_API_TOKEN/);
   assert.doesNotMatch(shared, /if:\s*always\(\)/);
 });

@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 
 // A successful offline preflight is not an independently approved deployment.
 // This gate consumes only the output of the in-job preflight command.
-const [environment, buildSha] = process.argv.slice(2);
+const [environment, buildSha, configSha256] = process.argv.slice(2);
 let approved = false;
 try {
   const line = readFileSync(0, "utf8").trim();
@@ -13,8 +13,10 @@ try {
       manifest.deploymentApproved === true &&
       manifest.environment === environment &&
       manifest.buildSha === buildSha &&
+      manifest.configSha256 === configSha256 &&
       manifest.profile === "manual" &&
-      /^[a-f0-9]{40}$/.test(buildSha);
+      /^[a-f0-9]{40}$/.test(buildSha) &&
+      /^[a-f0-9]{64}$/.test(configSha256);
   }
 } catch {
   // Invalid or incomplete evidence never unlocks a deployment.

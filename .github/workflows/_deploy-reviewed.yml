@@ -51,13 +51,15 @@ jobs:
           npm run test:integration
           npm run test:restore-runtime
           npm run build
-      - name: Validate release candidate and require independent approval
+      - name: Validate and publish only the same independently approved candidate
         env:
           TARGET_ENVIRONMENT: ${{ inputs.target_environment }}
           RELEASE_CONFIG_JSON: ${{ secrets.RELEASE_CONFIG_JSON }}
           PEER_CONFIG_JSON: ${{ secrets.PEER_CONFIG_JSON }}
           RELEASE_SECRET_INVENTORY_JSON: ${{ secrets.RELEASE_SECRET_INVENTORY_JSON }}
           RELEASE_EVIDENCE_JSON: ${{ secrets.RELEASE_EVIDENCE_JSON }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           set -euo pipefail
           umask 077
@@ -72,6 +74,7 @@ jobs:
           printf '%s' "$PEER_CONFIG_JSON" > "$scratch/peer.json"
           printf '%s' "$RELEASE_SECRET_INVENTORY_JSON" > "$scratch/secrets.json"
           printf '%s' "$RELEASE_EVIDENCE_JSON" > "$scratch/evidence.json"
+          config_sha="$(sha256sum "$config" | cut -d " " -f1)"
           manifest="$(
             node scripts/release-preflight.mjs \
               --environment "$TARGET_ENVIRONMENT" --profile manual \
@@ -85,18 +88,8 @@ jobs:
           # This must remain an error until independently authenticated release
           # evidence, environment protections, and operator decisions exist.
           printf '%s\n' "$manifest" | node scripts/require-release-approval.mjs \
-            "$TARGET_ENVIRONMENT" "$GITHUB_SHA"
-      - name: Publish only an independently approved manual profile
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          RELEASE_CONFIG_JSON: ${{ secrets.RELEASE_CONFIG_JSON }}
-        run: |
-          set -euo pipefail
-          umask 077
+            "$TARGET_ENVIRONMENT" "$GITHUB_SHA" "$config_sha"
           test -n "$CLOUDFLARE_API_TOKEN"
           test -n "$CLOUDFLARE_ACCOUNT_ID"
-          config="$(mktemp "$GITHUB_WORKSPACE/.release-XXXXXXXX.json")"
-          trap 'rm -f "$config"' EXIT
-          printf '%s' "$RELEASE_CONFIG_JSON" > "$config"
+          [[ "$(sha256sum "$config" | cut -d " " -f1)" == "$config_sha" ]]
           npx wrangler deploy --config "$config"
