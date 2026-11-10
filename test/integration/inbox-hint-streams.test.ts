@@ -135,7 +135,9 @@ describe("TableDO internal committed-peer hint streams (public MCP disabled)", (
   ] as const)("terminates idle streams on %s", async (reason) => {
     const f = await fixture();
     const result = await f.open(
-      reason === "token" ? Date.now() + 100 : undefined,
+      // Leave enough time for the asynchronous DO authorization handshake;
+      // the stream timer, not a pre-attach expiry, is the oracle here.
+      reason === "token" ? Date.now() + 2_000 : undefined,
     );
     if (!result.ok) throw new Error("No stream");
     const reader = result.value.stream.getReader();

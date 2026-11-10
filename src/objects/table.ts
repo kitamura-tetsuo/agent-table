@@ -9,12 +9,29 @@ import {
   MAX_INBOX_STREAM_LIFETIME_MS,
   parseCanonicalInboxFilter,
 } from "../mcp/subscriptions";
-import { callbackTransportReadiness } from "../notifications/egress";
+import {
+  type CallbackRequest,
+  type CallbackTransportOutcome,
+  callbackTransportReadiness,
+  reviewedCallbackTargets,
+  sendVerifiedHttps,
+} from "../notifications/egress";
 import {
   grantedSubscriptionTtlMs,
+  messageCreatedEvent,
   parseEventSubscriptionParams,
+  signWebhook,
   subscriptionIdentity,
 } from "../notifications/openai-events";
+import {
+  classifyAttemptOutcome,
+  expireOutboxWork,
+  OUTBOX_LEASE_MS,
+  OUTBOX_RETRY_HORIZON_MS,
+  releaseUnsentOutboxAttempt,
+  reserveOutboxAttempt,
+  settleOutboxAttempt,
+} from "../notifications/outbox";
 import { allowOutboundNotifications } from "../shared/admission";
 import {
   authorizeGuestConnection,
@@ -182,6 +199,18 @@ type EventResult<T> =
   | { ok: true; value: T }
   | { ok: false; code: EventFailure };
 
+type DispatchWork = EventSubscriptionRow & {
+  event_id: string;
+  message_id: string;
+  message_seq: number;
+  created_at: number;
+  table_id: string;
+  table_expires_at: number;
+  lease_token: string | null;
+};
+
+const OUTBOX_DISPATCH_BATCH = 4;
+const OUTBOX_AUTHORITY_RETRY_MS = 60_000;
 const EVENT_CANDIDATE_WINDOW_MS = 15_000;
 const EVENT_ROTATION_WINDOW_MS = 5 * 60_000;
 
@@ -352,12 +381,43 @@ export class TableDO extends DurableObject<Env> {
           "SELECT MIN(rotation_until) AS deadline FROM table_event_subscriptions WHERE previous_secret_envelope IS NOT NULL",
         )
         .one().deadline;
+      // Paused senders schedule only cleanup, never overdue dispatch work.
+      const dispatch = this.outboxDispatchEnabled()
+        ? this.ctx.storage.sql
+            .exec<{ deadline: number | null }>(
+              `SELECT MIN(CASE WHEN status = 'pending' THEN next_attempt_at
+                         ELSE lease_deadline END) AS deadline
+             FROM table_event_outbox WHERE status IN ('pending', 'in_flight')`,
+            )
+            .one().deadline
+        : null;
+      const outbox = this.ctx.storage.sql
+        .exec<{ deadline: number | null }>(
+          `SELECT MIN(next_cleanup_at) AS deadline FROM (
+            SELECT expires_at AS next_cleanup_at
+            FROM table_event_outbox WHERE status IN ('pending', 'in_flight')
+            UNION ALL
+            SELECT first_attempt_at + ? AS next_cleanup_at
+            FROM table_event_outbox
+            WHERE status IN ('pending', 'in_flight')
+              AND first_attempt_at IS NOT NULL
+            UNION ALL
+            SELECT lease_deadline AS next_cleanup_at
+            FROM table_event_outbox
+            WHERE status = 'in_flight' AND attempt_count >= 8
+              AND lease_deadline IS NOT NULL
+          )`,
+          OUTBOX_RETRY_HORIZON_MS,
+        )
+        .one().deadline;
       return Math.min(
         table.expires_at,
         pending ?? table.expires_at,
         candidate ?? table.expires_at,
         subscription ?? table.expires_at,
         rotation ?? table.expires_at,
+        outbox ?? table.expires_at,
+        dispatch ?? table.expires_at,
       );
     }
     return this.tombstoneRow()?.retain_until ?? null;
@@ -390,6 +450,7 @@ export class TableDO extends DurableObject<Env> {
       );
     }
     this.ctx.storage.sql.exec("DELETE FROM table_delete_confirmations");
+    this.ctx.storage.sql.exec("DELETE FROM table_event_outbox");
     this.ctx.storage.sql.exec("DELETE FROM table_event_candidates");
     this.ctx.storage.sql.exec("DELETE FROM table_event_subscriptions");
     this.ctx.storage.sql.exec("DELETE FROM table_post_receipts");
@@ -419,6 +480,14 @@ export class TableDO extends DurableObject<Env> {
     if (table) {
       const eventsProcessed = this.cleanupExpiredEvents(now, budget);
       if (eventsProcessed > 0) return eventsProcessed;
+      const expiredOutbox = expireOutboxWork(this.ctx.storage.sql, now, budget);
+      if (expiredOutbox > 0) {
+        recordFutureMetric({
+          name: "outbox.delivery_failure",
+          value: expiredOutbox,
+        });
+        return expiredOutbox;
+      }
       this.ctx.storage.sql.exec(
         `UPDATE table_delete_confirmations SET state = 'expired'
          WHERE rowid IN (
@@ -515,6 +584,11 @@ export class TableDO extends DurableObject<Env> {
       status,
       membershipId,
     );
+    // Terminal subscription authority also fences any undelivered work.
+    this.ctx.storage.sql.exec(
+      "UPDATE table_event_outbox SET status = 'cancelled', next_attempt_at = NULL, lease_token = NULL, lease_deadline = NULL WHERE recipient_membership_id = ? AND status IN ('pending', 'in_flight')",
+      membershipId,
+    );
   }
 
   private cleanupExpiredEvents(now: number, budget: number): number {
@@ -569,6 +643,18 @@ export class TableDO extends DurableObject<Env> {
         "UPDATE table_event_subscriptions SET previous_secret_envelope = NULL, rotation_until = NULL, generation = generation + 1, fence = fence + 1 WHERE membership_id = ?",
         rotation.membership_id,
       );
+      // Keep pending identity and original attempt budgets while fencing
+      // in-flight results signed with an obsolete generation.
+      this.ctx.storage.sql.exec(
+        `UPDATE table_event_outbox
+         SET subscription_generation = (
+           SELECT generation FROM table_event_subscriptions
+           WHERE membership_id = ?
+         )
+         WHERE recipient_membership_id = ? AND status IN ('pending', 'in_flight')`,
+        rotation.membership_id,
+        rotation.membership_id,
+      );
       processed++;
     }
     return processed;
@@ -585,10 +671,61 @@ export class TableDO extends DurableObject<Env> {
         : row.status === "expired" || (row.expires_at ?? 0) <= Date.now()
           ? "expired"
           : "active";
+    // A second connection belonging to the same guest must not observe this
+    // subscription's queue or outcome. Never query callback/secret columns.
+    if (!owned || !row?.subscription_id || status !== "active") {
+      return {
+        available: false as const,
+        reason: "delivery_not_ready" as const,
+        status,
+        pendingCount: 0,
+        lastAcceptedSeq: null,
+        lastErrorCategory: null,
+      };
+    }
+    const counts = this.ctx.storage.sql
+      .exec<{ pending_count: number; last_accepted_seq: number | null }>(
+        `SELECT COUNT(CASE WHEN status IN ('pending', 'in_flight') THEN 1 END) AS pending_count,
+                MAX(CASE WHEN status = 'accepted' THEN message_seq END) AS last_accepted_seq
+         FROM table_event_outbox
+         WHERE recipient_membership_id = ? AND subscription_id = ?`,
+        member.membership_id,
+        row.subscription_id,
+      )
+      .one();
+    const latestError = this.ctx.storage.sql
+      .exec<{ last_error_category: string }>(
+        `SELECT last_error_category FROM table_event_outbox
+         WHERE recipient_membership_id = ? AND subscription_id = ?
+           AND last_error_category IS NOT NULL
+         ORDER BY created_at DESC, message_seq DESC LIMIT 1`,
+        member.membership_id,
+        row.subscription_id,
+      )
+      .toArray()[0]?.last_error_category;
+    // Guard the public status boundary even if a future producer accidentally
+    // stores an exception string, HTTP body or destination as an error detail.
+    const safeErrors = new Set([
+      "transport-error",
+      "deadline",
+      "rate-limited",
+      "server-error",
+      "receiver-gone",
+      "payload-rejected",
+      "authorization-revoked",
+      "retry-exhausted",
+    ]);
     return {
       available: false as const,
       reason: "delivery_not_ready" as const,
       status,
+      pendingCount: counts.pending_count,
+      lastAcceptedSeq: counts.last_accepted_seq,
+      lastErrorCategory: latestError
+        ? safeErrors.has(latestError)
+          ? latestError
+          : "unknown"
+        : null,
     };
   }
 
@@ -893,6 +1030,15 @@ export class TableDO extends DurableObject<Env> {
             rotationUntil,
             expiresAt,
             currentMember.membership_id,
+          );
+          // Refresh retains the original event identity and retry budget.
+          // The generation change fences any pre-refresh completion.
+          this.ctx.storage.sql.exec(
+            "UPDATE table_event_outbox SET subscription_generation = ?, expires_at = ? WHERE recipient_membership_id = ? AND subscription_id = ? AND status IN ('pending', 'in_flight')",
+            generation,
+            expiresAt,
+            currentMember.membership_id,
+            pending.subscription_id,
           );
           this.ctx.storage.sql.exec(
             "DELETE FROM table_event_candidates WHERE membership_id = ?",
@@ -1749,6 +1895,7 @@ export class TableDO extends DurableObject<Env> {
     const digest = await postDigest(input);
     const bytes = new TextEncoder().encode(input.body).byteLength;
     const messageId = crypto.randomUUID();
+    const eventId = crypto.randomUUID();
     if (this.transcriptCommitBarrierEnabledForTest) {
       this.transcriptCommitBarrierArrivalsForTest++;
       if (this.transcriptCommitBarrierArrivalsForTest === 1) {
@@ -1772,7 +1919,7 @@ export class TableDO extends DurableObject<Env> {
       }
     }
     let newlyCommitted = false;
-    const result = this.ctx.storage.transactionSync(() => {
+    const mutation = () => {
       const table = this.metadataRow();
       const member = this.memberFor(actor.guestId);
       const now = Date.now();
@@ -1882,6 +2029,32 @@ export class TableDO extends DurableObject<Env> {
         digest,
         seq,
       );
+      if (peer) {
+        const subscription = this.eventSubscription(peer.membership_id);
+        if (
+          subscription?.status === "active" &&
+          subscription.subscription_id &&
+          subscription.expires_at !== null &&
+          subscription.expires_at > now
+        ) {
+          this.ctx.storage.sql.exec(
+            `INSERT INTO table_event_outbox
+              (event_id, message_id, message_seq, recipient_membership_id,
+               subscription_id, subscription_generation, next_attempt_at,
+               created_at, expires_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            eventId,
+            messageId,
+            seq,
+            peer.membership_id,
+            subscription.subscription_id,
+            subscription.generation,
+            now + 1_000,
+            now,
+            Math.min(subscription.expires_at, table.expires_at),
+          );
+        }
+      }
       newlyCommitted = true;
       return {
         ok: true,
@@ -1905,7 +2078,12 @@ export class TableDO extends DurableObject<Env> {
             }
           : {}),
       } as const;
-    });
+    };
+    // A failed alarm arm cannot commit a transcript row without its event.
+    const { value: result } = await this.deadlines.commitWithWakeup(
+      Date.now() + 1_000,
+      mutation,
+    );
     if (result.ok && newlyCommitted) {
       if (result.peerUpdateHint) {
         // The SQLite transaction has committed. Dispatch stays at the table
@@ -2451,6 +2629,269 @@ export class TableDO extends DurableObject<Env> {
     return committed.value;
   }
 
+  /** No configuration, RPC argument or stored record can override readiness. */
+  private outboxDispatchEnabled(): boolean {
+    return (
+      this.env.ENABLE_OPENAI_EVENTS === "true" &&
+      allowOutboundNotifications(this.env) &&
+      callbackTransportReadiness().enabled
+    );
+  }
+
+  /** Native transport seam; synthetic tests replace it only inside Workerd. */
+  private sendOutboxWebhook(
+    destination: string,
+    request: CallbackRequest,
+  ): Promise<CallbackTransportOutcome> {
+    return sendVerifiedHttps(
+      destination,
+      reviewedCallbackTargets(this.env.EVENTS_REVIEWED_CALLBACK_TARGETS),
+      request,
+    );
+  }
+
+  /** Read current local authority without reading any transcript body. */
+  private dispatchWork(eventId: string, now: number): DispatchWork | undefined {
+    const work = this.ctx.storage.sql
+      .exec<DispatchWork>(
+        `SELECT s.*, o.event_id, o.message_id, o.message_seq, o.created_at,
+              o.lease_token, t.table_id, t.expires_at AS table_expires_at
+       FROM table_event_outbox AS o
+       JOIN table_event_subscriptions AS s
+         ON s.membership_id = o.recipient_membership_id
+         AND s.subscription_id = o.subscription_id
+         AND s.generation = o.subscription_generation
+       JOIN table_memberships AS m ON m.membership_id = s.membership_id
+         AND m.guest_id = s.guest_id
+       JOIN table_metadata AS t ON t.table_id = m.table_id
+       JOIN table_messages AS msg ON msg.seq = o.message_seq
+         AND msg.message_id = o.message_id
+         AND msg.sender_membership_id <> m.membership_id
+       WHERE o.event_id = ? AND o.status IN ('pending', 'in_flight')
+         AND o.expires_at > ?
+         AND (o.first_attempt_at IS NULL OR o.first_attempt_at + ? > ?)
+         AND s.status = 'active' AND s.expires_at > ?
+         AND s.callback_url IS NOT NULL AND s.secret_envelope IS NOT NULL
+         AND s.guest_id IS NOT NULL AND s.connection_id IS NOT NULL
+         AND t.state IN ('waiting', 'open') AND t.expires_at > ?`,
+        eventId,
+        now,
+        OUTBOX_RETRY_HORIZON_MS,
+        now,
+        now,
+        now,
+      )
+      .toArray()[0];
+    return work &&
+      Number.isSafeInteger(work.expires_at) &&
+      Number.isSafeInteger(work.table_expires_at)
+      ? work
+      : undefined;
+  }
+
+  /** Bounded alarm consumer. Only persisted SQL work survives reconstruction. */
+  private async dispatchOutbox(): Promise<number> {
+    if (!this.outboxDispatchEnabled()) return 0;
+    const started = Date.now();
+    const due = this.ctx.storage.sql
+      .exec<{ event_id: string }>(
+        `SELECT event_id FROM table_event_outbox
+       WHERE (status = 'pending' AND next_attempt_at <= ?)
+          OR (status = 'in_flight' AND lease_deadline <= ?)
+       ORDER BY COALESCE(next_attempt_at, lease_deadline), event_id LIMIT ?`,
+        started,
+        started,
+        OUTBOX_DISPATCH_BATCH,
+      )
+      .toArray();
+    let processed = 0;
+    for (const row of due) {
+      if (
+        !this.outboxDispatchEnabled() ||
+        Date.now() - started >= OUTBOX_LEASE_MS
+      )
+        break;
+      const work = this.dispatchWork(row.event_id, Date.now());
+      if (!work) {
+        this.ctx.storage.sql.exec(
+          `UPDATE table_event_outbox SET status = 'cancelled',
+             last_error_category = 'authorization-revoked', next_attempt_at = NULL,
+             lease_token = NULL, lease_deadline = NULL
+           WHERE event_id = ? AND status IN ('pending', 'in_flight')`,
+          row.event_id,
+        );
+        processed++;
+        continue;
+      }
+      // Decryption precedes the final grant check and never confers authority.
+      let secrets: string[];
+      try {
+        secrets = [
+          await openSecret(
+            "callback-credential",
+            work.secret_envelope as string,
+            { recordId: `event:${work.subscription_id}` },
+            this.env,
+          ),
+        ];
+        if (
+          work.previous_secret_envelope &&
+          (work.rotation_until ?? 0) > Date.now()
+        )
+          secrets.push(
+            await openSecret(
+              "callback-credential",
+              work.previous_secret_envelope,
+              { recordId: `event:${work.subscription_id}` },
+              this.env,
+            ),
+          );
+      } catch {
+        // A missing key is an operational pause, not a charged delivery.
+        this.deferOutboxWork(work, false);
+        processed++;
+        continue;
+      }
+      const decision = await authorizeGuestConnection(
+        this.env,
+        work.guest_id as string,
+        work.connection_id as string,
+        "events:subscribe",
+      );
+      if (!decision.allowed) {
+        this.deferOutboxWork(work, decision.reason !== "unavailable");
+        processed++;
+        continue;
+      }
+      if (
+        !this.outboxDispatchEnabled() ||
+        !this.dispatchWork(row.event_id, Date.now())
+      )
+        continue;
+      // Alarm and reservation commit together, before the next external await.
+      const { value: lease } = await this.deadlines.commitWithWakeup(
+        Date.now() + OUTBOX_LEASE_MS,
+        () =>
+          reserveOutboxAttempt(
+            this.ctx.storage.sql,
+            work.event_id,
+            work.generation,
+            Date.now(),
+            decision.actor.expiresAt,
+          ),
+      );
+      if (!lease) continue;
+      // The durable commit can yield. Never reuse the earlier positive grant.
+      const finalGrant = await authorizeGuestConnection(
+        this.env,
+        work.guest_id as string,
+        work.connection_id as string,
+        "events:subscribe",
+      );
+      const now = Date.now();
+      const current = this.dispatchWork(work.event_id, now);
+      if (
+        !finalGrant.allowed ||
+        finalGrant.actor.expiresAt <= now ||
+        !this.outboxDispatchEnabled() ||
+        !current ||
+        current.generation !== work.generation ||
+        current.lease_token !== lease.leaseToken ||
+        current.callback_url !== work.callback_url ||
+        current.secret_envelope !== work.secret_envelope ||
+        current.previous_secret_envelope !== work.previous_secret_envelope ||
+        (work.previous_secret_envelope !== null &&
+          (work.rotation_until ?? 0) <= now) ||
+        now >= lease.leaseDeadline
+      ) {
+        this.ctx.storage.transactionSync(() =>
+          releaseUnsentOutboxAttempt(
+            this.ctx.storage.sql,
+            lease,
+            now + OUTBOX_AUTHORITY_RETRY_MS,
+            !finalGrant.allowed && finalGrant.reason !== "unavailable",
+          ),
+        );
+        processed++;
+        continue;
+      }
+      // No await between local authority checks, signing, and transport start.
+      let outcome: CallbackTransportOutcome;
+      try {
+        const signed = signWebhook(
+          messageCreatedEvent({
+            eventId: work.event_id,
+            tableId: work.table_id,
+            messageId: work.message_id,
+            seq: work.message_seq,
+            inboxUri: ownInboxUri(work.table_id, work.membership_id),
+            occurredAt: new Date(work.created_at),
+          }),
+          work.event_id,
+          work.subscription_id as string,
+          secrets,
+          new Date(now),
+        );
+        recordFutureMetric({ name: "outbox.attempt", value: 1 });
+        try {
+          outcome = await this.sendOutboxWebhook(work.callback_url as string, {
+            method: "POST",
+            ...signed,
+          });
+        } catch {
+          // Ambiguous transport failures keep their persisted attempt charge.
+          outcome = { ok: false, reason: "transport-error" };
+        }
+      } catch {
+        // Invalid provider serialization/signing is a permanent payload failure.
+        outcome = { ok: false, reason: "invalid-headers" };
+      }
+      const settled = this.ctx.storage.transactionSync(() =>
+        settleOutboxAttempt(
+          this.ctx.storage.sql,
+          lease,
+          Date.now(),
+          classifyAttemptOutcome(outcome),
+        ),
+      );
+      if (settled === "pending")
+        recordFutureMetric({ name: "outbox.retry", value: 1 });
+      if (settled === "failed")
+        recordFutureMetric({ name: "outbox.delivery_failure", value: 1 });
+      processed++;
+    }
+    return processed;
+  }
+
+  private recordOutboxBacklog(): void {
+    const row = this.ctx.storage.sql
+      .exec<{ pending: number; oldest: number | null }>(
+        `SELECT COUNT(*) AS pending, MIN(created_at) AS oldest
+       FROM table_event_outbox WHERE status IN ('pending', 'in_flight')`,
+      )
+      .one();
+    recordFutureMetric({ name: "outbox.pending", value: row.pending });
+    recordFutureMetric({
+      name: "outbox.oldest_age_ms",
+      value: row.oldest === null ? 0 : Math.max(0, Date.now() - row.oldest),
+    });
+  }
+
+  private deferOutboxWork(work: DispatchWork, cancelled: boolean): void {
+    this.ctx.storage.sql.exec(
+      `UPDATE table_event_outbox SET status = ?, next_attempt_at = ?,
+         lease_token = NULL, lease_deadline = NULL, last_error_category = ?
+       WHERE event_id = ? AND subscription_generation = ?
+         AND status IN ('pending', 'in_flight') AND lease_token IS ?`,
+      cancelled ? "cancelled" : "pending",
+      cancelled ? null : Date.now() + OUTBOX_AUTHORITY_RETRY_MS,
+      cancelled ? "authorization-revoked" : null,
+      work.event_id,
+      work.generation,
+      work.lease_token,
+    );
+  }
+
   /** Alarms are recoverable; no wakeup implies that content is readable. */
   async alarm(): Promise<void> {
     const started = Date.now();
@@ -2460,11 +2901,18 @@ export class TableDO extends DurableObject<Env> {
         () => this.earliestLifecycleDeadline(),
         (now, budget) => this.cleanupDueLifecycle(now, budget),
       );
+      const dispatched = await this.dispatchOutbox();
+      this.recordOutboxBacklog();
+      // Replace the temporary recovery wakeup with actual remaining deadlines.
+      await this.deadlines.drainDueWork(
+        () => this.earliestLifecycleDeadline(),
+        () => 0,
+      );
       emitOperationalEvent({
         kind: "alarm",
         component: "table",
         outcome: "committed",
-        processed: drained.processed,
+        processed: drained.processed + dispatched,
         backlogLagMs:
           earliest === null ? null : Math.max(0, started - earliest),
         durationMs: Date.now() - started,

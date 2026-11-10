@@ -8,9 +8,15 @@ import {
   Client,
   StreamableHTTPClientTransport,
 } from "@modelcontextprotocol/client";
+import { Webhook } from "standardwebhooks";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as z from "zod/v4";
 import worker from "../../src/index";
+import {
+  reserveOutboxAttempt,
+  settleOutboxAttempt,
+} from "../../src/notifications/outbox";
+import { allowOutboundNotifications } from "../../src/shared/admission";
 import { authorizeGuestConnection } from "../../src/shared/auth";
 import { openSecret } from "../../src/shared/secret-envelope";
 
@@ -248,6 +254,399 @@ function echoReceiver() {
 afterEach(() => vi.restoreAllMocks());
 
 describe("production MCP Events registration, OAuth and TableDO", () => {
+  it("atomically records eligible peer events without replay, duplicates, or self events", async () => {
+    const owner = await newPrincipal();
+    const peer = await newPrincipal();
+    const ownerClient = await clientFor(owner.token);
+    const peerClient = await clientFor(peer.token);
+    const receiver = echoReceiver();
+    try {
+      const tableId = await createTable(ownerClient);
+      const invite = toolOutput(
+        await ownerClient.callTool({
+          name: "create_invite",
+          arguments: { table_id: tableId, request_id: crypto.randomUUID() },
+        }),
+      );
+      const joined = await peerClient.callTool({
+        name: "join_table",
+        arguments: {
+          invitation: invite.invitation,
+          request_id: crypto.randomUUID(),
+        },
+      });
+      expect(joined.isError).not.toBe(true);
+      const post = (client: Client, requestId: string, body: string) =>
+        client.callTool({
+          name: "post_message",
+          arguments: { table_id: tableId, request_id: requestId, body },
+        });
+      const stub = env.TABLES.get(env.TABLES.idFromName(tableId));
+      const rows = () =>
+        runInDurableObject(stub, (_instance, state) =>
+          state.storage.sql
+            .exec<{
+              event_id: string;
+              message_id: string;
+              message_seq: number;
+              recipient_membership_id: string;
+              subscription_id: string;
+              subscription_generation: number;
+              status: string;
+              attempt_count: number;
+            }>(
+              "SELECT event_id, message_id, message_seq, recipient_membership_id, subscription_id, subscription_generation, status, attempt_count FROM table_event_outbox ORDER BY message_seq",
+            )
+            .toArray(),
+        );
+
+      const beforeSubscription = toolOutput(
+        await post(ownerClient, crypto.randomUUID(), "No history replay"),
+      );
+      expect(await rows()).toEqual([]);
+      const subscribed = (await callEvent(
+        peerClient,
+        "events/subscribe",
+        subscriptionParams(tableId),
+      )) as { id: string };
+      const key = crypto.randomUUID();
+      const committed = toolOutput(
+        await post(ownerClient, key, "Committed peer event"),
+      );
+      expect(committed.seq).toBe(2);
+      const eventRows = await rows();
+      expect(eventRows).toHaveLength(1);
+      expect(eventRows[0]).toMatchObject({
+        message_id: committed.message_id,
+        message_seq: committed.seq,
+        subscription_id: subscribed.id,
+        subscription_generation: 1,
+        status: "pending",
+        attempt_count: 0,
+      });
+      expect(eventRows[0].event_id).toMatch(/^[0-9a-f-]{36}$/);
+      expect(eventRows[0].recipient_membership_id).not.toBe(
+        beforeSubscription.sender_membership_id,
+      );
+      const receiverStatus = toolOutput(
+        await peerClient.callTool({
+          name: "get_table",
+          arguments: { table_id: tableId },
+        }),
+      ).notifications;
+      expect(receiverStatus).toEqual({
+        available: false,
+        reason: "delivery_not_ready",
+        status: "active",
+        pendingCount: 1,
+        lastAcceptedSeq: null,
+        lastErrorCategory: null,
+      });
+      const senderStatus = toolOutput(
+        await ownerClient.callTool({
+          name: "get_table",
+          arguments: { table_id: tableId },
+        }),
+      ).notifications;
+      expect(senderStatus).toMatchObject({
+        status: "disabled",
+        pendingCount: 0,
+        lastAcceptedSeq: null,
+        lastErrorCategory: null,
+      });
+      // Synthetic delivery outcome: status projection must not conflate a
+      // receiver-accepted sequence with the transcript's contiguous read cursor.
+      await runInDurableObject(stub, (_instance, state) =>
+        state.storage.sql.exec(
+          "UPDATE table_event_outbox SET status = 'accepted' WHERE event_id = ?",
+          eventRows[0].event_id,
+        ),
+      );
+      const acceptedStatus = toolOutput(
+        await peerClient.callTool({
+          name: "get_table",
+          arguments: { table_id: tableId },
+        }),
+      ).notifications;
+      expect(acceptedStatus).toMatchObject({
+        pendingCount: 0,
+        lastAcceptedSeq: committed.seq,
+        lastErrorCategory: null,
+      });
+      // A future faulty transport must not leak its callback URL or raw error.
+      await runInDurableObject(stub, (_instance, state) =>
+        state.storage.sql.exec(
+          "UPDATE table_event_outbox SET status = 'pending', last_error_category = ? WHERE event_id = ?",
+          `unexpected receiver exception: ${CALLBACK}`,
+          eventRows[0].event_id,
+        ),
+      );
+      const sanitized = toolOutput(
+        await peerClient.callTool({
+          name: "get_table",
+          arguments: { table_id: tableId },
+        }),
+      ).notifications;
+      expect(sanitized).toMatchObject({
+        pendingCount: 1,
+        lastAcceptedSeq: null,
+        lastErrorCategory: "unknown",
+      });
+      expect(JSON.stringify(sanitized)).not.toContain(CALLBACK);
+      await runInDurableObject(stub, (_instance, state) =>
+        state.storage.sql.exec(
+          "UPDATE table_event_outbox SET last_error_category = NULL WHERE event_id = ?",
+          eventRows[0].event_id,
+        ),
+      );
+      // Reconstruction must retain exactly the same immutable event identity.
+      await evictDurableObject(stub);
+      expect(await rows()).toEqual(eventRows);
+      expect(
+        toolOutput(await post(ownerClient, key, "Committed peer event")),
+      ).toEqual(committed);
+      const conflicting = await post(
+        ownerClient,
+        key,
+        "Conflicting retry body",
+      );
+      expect(conflicting.isError).toBe(true);
+      expect((await rows()).map((row) => row.event_id)).toEqual([
+        eventRows[0].event_id,
+      ]);
+
+      await post(peerClient, crypto.randomUUID(), "Peer self message");
+      expect(await rows()).toHaveLength(1);
+      const refreshed = (await callEvent(
+        peerClient,
+        "events/subscribe",
+        subscriptionParams(tableId, CALLBACK, REPLACEMENT_SECRET),
+      )) as { id: string };
+      expect(refreshed.id).toBe(subscribed.id);
+      const refreshedRows = await rows();
+      expect(refreshedRows).toHaveLength(1);
+      expect(refreshedRows[0]).toMatchObject({
+        event_id: eventRows[0].event_id,
+        subscription_generation: 2,
+        attempt_count: 0,
+      });
+
+      // Exercise the durable lease/retry ledger on the actual committed SQL
+      // row. This deliberately does NOT send HTTP or enable public Events:
+      // fresh external grant and connection-time egress proofs are separate.
+      const reservedAt = Date.now() + 2_000;
+      const firstLease = await runInDurableObject(stub, (_instance, state) =>
+        state.storage.transactionSync(() =>
+          reserveOutboxAttempt(
+            state.storage.sql,
+            eventRows[0].event_id,
+            2,
+            reservedAt,
+          ),
+        ),
+      );
+      expect(firstLease).toMatchObject({
+        eventId: eventRows[0].event_id,
+        generation: 2,
+        attemptCount: 1,
+      });
+      if (!firstLease) throw new Error("Expected first durable lease");
+      expect(
+        await runInDurableObject(stub, (_instance, state) =>
+          state.storage.transactionSync(() =>
+            reserveOutboxAttempt(
+              state.storage.sql,
+              eventRows[0].event_id,
+              2,
+              reservedAt + 1,
+            ),
+          ),
+        ),
+      ).toBeNull();
+      expect(
+        await runInDurableObject(stub, (_instance, state) =>
+          state.storage.transactionSync(() =>
+            settleOutboxAttempt(state.storage.sql, firstLease, reservedAt + 1, {
+              kind: "transient",
+              category: "server-error",
+            }),
+          ),
+        ),
+      ).toBe("pending");
+      const retryDue = await runInDurableObject(stub, (_instance, state) =>
+        state.storage.sql
+          .exec<{ next_attempt_at: number; first_attempt_at: number }>(
+            "SELECT next_attempt_at, first_attempt_at FROM table_event_outbox WHERE event_id = ?",
+            eventRows[0].event_id,
+          )
+          .one(),
+      );
+      expect(retryDue.first_attempt_at).toBe(firstLease.firstAttemptAt);
+      expect(retryDue.next_attempt_at).toBeGreaterThan(reservedAt + 1);
+      await evictDurableObject(stub);
+      const recoveredLease = await runInDurableObject(
+        stub,
+        (_instance, state) =>
+          state.storage.transactionSync(() =>
+            reserveOutboxAttempt(
+              state.storage.sql,
+              eventRows[0].event_id,
+              2,
+              retryDue.next_attempt_at,
+            ),
+          ),
+      );
+      expect(recoveredLease).toMatchObject({
+        attemptCount: 2,
+        firstAttemptAt: firstLease.firstAttemptAt,
+      });
+      if (!recoveredLease) throw new Error("Expected reconstructed retry");
+      expect(recoveredLease.leaseToken).not.toBe(firstLease.leaseToken);
+      expect(
+        await runInDurableObject(stub, (_instance, state) =>
+          state.storage.transactionSync(() =>
+            settleOutboxAttempt(
+              state.storage.sql,
+              firstLease,
+              retryDue.next_attempt_at + 1,
+              { kind: "accepted" },
+            ),
+          ),
+        ),
+      ).toBeNull();
+
+      // Refresh the same canonical subscription while an attempt is leased.
+      // The original event, first-attempt deadline and reserved budget survive;
+      // the old generation must not settle a post-refresh response.
+      const secondRefresh = (await callEvent(
+        peerClient,
+        "events/subscribe",
+        subscriptionParams(tableId, CALLBACK, SECRET),
+      )) as { id: string };
+      expect(secondRefresh.id).toBe(subscribed.id);
+      const migrated = await runInDurableObject(stub, (_instance, state) =>
+        state.storage.sql
+          .exec<{
+            event_id: string;
+            subscription_generation: number;
+            attempt_count: number;
+            first_attempt_at: number;
+          }>(
+            "SELECT event_id, subscription_generation, attempt_count, first_attempt_at FROM table_event_outbox WHERE event_id = ?",
+            eventRows[0].event_id,
+          )
+          .one(),
+      );
+      expect(migrated).toEqual({
+        event_id: firstLease.eventId,
+        subscription_generation: 3,
+        attempt_count: 2,
+        first_attempt_at: firstLease.firstAttemptAt,
+      });
+      expect(
+        await runInDurableObject(stub, (_instance, state) =>
+          state.storage.transactionSync(() =>
+            settleOutboxAttempt(
+              state.storage.sql,
+              recoveredLease,
+              retryDue.next_attempt_at + 2,
+              { kind: "accepted" },
+            ),
+          ),
+        ),
+      ).toBeNull();
+      const freshGenerationLease = await runInDurableObject(
+        stub,
+        (_instance, state) =>
+          state.storage.transactionSync(() =>
+            reserveOutboxAttempt(
+              state.storage.sql,
+              eventRows[0].event_id,
+              3,
+              recoveredLease.leaseDeadline + 1,
+            ),
+          ),
+      );
+      expect(freshGenerationLease).toMatchObject({
+        eventId: firstLease.eventId,
+        generation: 3,
+        attemptCount: 3,
+        firstAttemptAt: firstLease.firstAttemptAt,
+      });
+      if (!freshGenerationLease)
+        throw new Error("Expected fenced post-refresh retry");
+
+      await callEvent(
+        peerClient,
+        "events/unsubscribe",
+        unsubscribeParams(tableId),
+      );
+      const cancelled = await rows();
+      expect(cancelled[0]).toMatchObject({
+        status: "cancelled",
+        subscription_generation: 3,
+      });
+      // An in-flight HTTP result cannot resurrect a cancelled incarnation.
+      expect(
+        await runInDurableObject(stub, (_instance, state) =>
+          state.storage.transactionSync(() =>
+            settleOutboxAttempt(
+              state.storage.sql,
+              freshGenerationLease,
+              freshGenerationLease.leaseDeadline - 1,
+              { kind: "accepted" },
+            ),
+          ),
+        ),
+      ).toBeNull();
+      expect((await rows())[0].status).toBe("cancelled");
+      const unsubscribedStatus = toolOutput(
+        await peerClient.callTool({
+          name: "get_table",
+          arguments: { table_id: tableId },
+        }),
+      ).notifications;
+      expect(unsubscribedStatus).toMatchObject({
+        status: "disabled",
+        pendingCount: 0,
+        lastAcceptedSeq: null,
+        lastErrorCategory: null,
+      });
+      await post(
+        ownerClient,
+        crypto.randomUUID(),
+        "No event after unsubscribe",
+      );
+      expect(await rows()).toHaveLength(1);
+      await callEvent(
+        peerClient,
+        "events/subscribe",
+        subscriptionParams(tableId),
+      );
+      await post(ownerClient, crypto.randomUUID(), "Pending at table closure");
+      const beforeClose = await rows();
+      expect(beforeClose).toHaveLength(2);
+      expect(beforeClose[0].status).toBe("cancelled");
+      expect(beforeClose[1].status).toBe("pending");
+      const closed = await ownerClient.callTool({
+        name: "close_table",
+        arguments: { table_id: tableId, request_id: crypto.randomUUID() },
+      });
+      expect(closed.isError).not.toBe(true);
+      expect((await rows()).map((row) => row.status)).toEqual([
+        "cancelled",
+        "cancelled",
+      ]);
+      // These captured requests are subscription-control challenges, never
+      // application-message deliveries.
+      expect(receiver).toHaveBeenCalledTimes(4);
+    } finally {
+      await peerClient.close();
+      await ownerClient.close();
+      vi.restoreAllMocks();
+    }
+  });
+
   it("registers, encrypts, refreshes, reconstructs and unsubscribes an owned subscription", async () => {
     const principal = await newPrincipal();
     const client = await clientFor(principal.token);
@@ -333,6 +732,9 @@ describe("production MCP Events registration, OAuth and TableDO", () => {
         available: false,
         reason: "delivery_not_ready",
         status: "active",
+        pendingCount: 0,
+        lastAcceptedSeq: null,
+        lastErrorCategory: null,
       });
       expect(JSON.stringify(get)).not.toContain(CALLBACK);
       expect(JSON.stringify(get)).not.toContain(SECRET);
@@ -962,6 +1364,1781 @@ describe("production MCP Events registration, OAuth and TableDO", () => {
     } finally {
       release?.();
       await client.close();
+    }
+  });
+});
+
+describe("authenticated event producer through native alarm and HTTPS sender (controlled fetch)", () => {
+  it("retries a lost response with stable signed identity and treats 410 as terminal", async () => {
+    const owner = await newPrincipal();
+    const peer = await newPrincipal();
+    const ownerClient = await clientFor(owner.token);
+    const peerClient = await clientFor(peer.token);
+    const challengeReceiver = echoReceiver();
+    try {
+      const tableId = await createTable(ownerClient);
+      const invite = toolOutput(
+        await ownerClient.callTool({
+          name: "create_invite",
+          arguments: { table_id: tableId, request_id: crypto.randomUUID() },
+        }),
+      );
+      expect(
+        (
+          await peerClient.callTool({
+            name: "join_table",
+            arguments: {
+              invitation: invite.invitation,
+              request_id: crypto.randomUUID(),
+            },
+          })
+        ).isError,
+      ).not.toBe(true);
+      const subscription = (await callEvent(
+        peerClient,
+        "events/subscribe",
+        subscriptionParams(tableId),
+      )) as { id: string };
+      expect(challengeReceiver).toHaveBeenCalledTimes(1);
+      const message = toolOutput(
+        await ownerClient.callTool({
+          name: "post_message",
+          arguments: {
+            table_id: tableId,
+            request_id: crypto.randomUUID(),
+            body: "CONFIDENTIAL PEER MESSAGE NEVER INCLUDED IN EVENT",
+          },
+        }),
+      );
+      const stub = env.TABLES.get(env.TABLES.idFromName(tableId));
+      type DeliveryRow = {
+        event_id: string;
+        message_id: string;
+        message_seq: number;
+        status: string;
+        attempt_count: number;
+        first_attempt_at: number | null;
+        next_attempt_at: number | null;
+      };
+      const rows = () =>
+        runInDurableObject(stub, (_instance, state) =>
+          state.storage.sql
+            .exec<DeliveryRow>("SELECT * FROM table_event_outbox")
+            .toArray(),
+        );
+      const initial = (await rows())[0];
+      expect(initial).toMatchObject({
+        message_id: message.message_id,
+        message_seq: message.seq,
+        status: "pending",
+        attempt_count: 0,
+      });
+      // Arm a due retry deterministically without waiting for wall-clock time.
+      await runInDurableObject(stub, (_instance, state) =>
+        state.storage.sql.exec(
+          "UPDATE table_event_outbox SET next_attempt_at = ? WHERE event_id = ?",
+          Date.now() - 1,
+          initial.event_id,
+        ),
+      );
+      const captured: Array<{
+        url: string;
+        body: string;
+        headers: Record<string, string>;
+        redirect: RequestRedirect | undefined;
+      }> = [];
+      challengeReceiver.mockRestore();
+      let closeAfterSendStarts: (() => Promise<void>) | undefined;
+      vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+        const body = new TextDecoder().decode(init?.body as ArrayBuffer);
+        captured.push({
+          url: String(url),
+          body,
+          headers: Object.fromEntries(new Headers(init?.headers)),
+          redirect: init?.redirect,
+        });
+        if (captured.length === 1) {
+          // The receiver may commit the event while its HTTP reply is lost.
+          throw new Error("Synthetic response lost after receiver acceptance");
+        }
+        if (captured.length === 5) {
+          // HTTP bytes are already dispatched; close the canonical TableDO
+          // before the receiver acknowledges, using the real lifecycle method.
+          await closeAfterSendStarts?.();
+        }
+        return new Response(null, {
+          status:
+            captured.length === 3 ? 410 : captured.length === 4 ? 413 : 204,
+        });
+      });
+      const alarm = () =>
+        runInDurableObject(stub, async (instance) => {
+          // Only the test instance bypasses readiness. Production remains
+          // fail-closed until the connection-boundary evidence gate is met.
+          const harness = instance as unknown as {
+            env: Env;
+            outboxDispatchEnabled(): boolean;
+          };
+          harness.env = {
+            ...harness.env,
+            EVENTS_REVIEWED_CALLBACK_TARGETS: REVIEWED,
+          };
+          harness.outboxDispatchEnabled = () => true;
+          await instance.alarm();
+        });
+      await alarm();
+      expect(captured).toHaveLength(1);
+      const pending = (await rows())[0];
+      expect(pending).toMatchObject({
+        event_id: initial.event_id,
+        status: "pending",
+        attempt_count: 1,
+      });
+      expect(pending.first_attempt_at).toBeGreaterThan(0);
+      expect(pending.next_attempt_at).toBeGreaterThan(Date.now());
+      // Advance only the retry deadline, never the persisted attempt budget.
+      await runInDurableObject(stub, (_instance, state) =>
+        state.storage.sql.exec(
+          "UPDATE table_event_outbox SET next_attempt_at = ? WHERE event_id = ?",
+          Date.now() - 1,
+          initial.event_id,
+        ),
+      );
+      await evictDurableObject(stub);
+      await alarm();
+      expect(captured).toHaveLength(2);
+      for (const call of captured) {
+        expect(call.url).toBe(CALLBACK);
+        expect(call.redirect).toBe("manual");
+        expect(call.body).not.toContain("CONFIDENTIAL PEER MESSAGE");
+        expect(call.body).not.toContain(owner.guestId);
+        expect(call.headers["cache-control"]).toBe("no-store");
+        const verified = new Webhook(SECRET).verify(call.body, call.headers);
+        expect(verified).toMatchObject({
+          eventId: initial.event_id,
+          name: "table.message.created",
+          data: {
+            table_id: tableId,
+            message_id: message.message_id,
+            seq: message.seq,
+          },
+        });
+        expect(call.headers["x-mcp-subscription-id"]).toBe(subscription.id);
+      }
+      expect(captured[1].body).toBe(captured[0].body);
+      expect((await rows())[0]).toMatchObject({
+        event_id: initial.event_id,
+        status: "accepted",
+        attempt_count: 2,
+        first_attempt_at: pending.first_attempt_at,
+      });
+      await alarm();
+      expect(captured).toHaveLength(2);
+      const view = toolOutput(
+        await peerClient.callTool({
+          name: "get_table",
+          arguments: { table_id: tableId },
+        }),
+      );
+      expect(view.notifications).toMatchObject({
+        available: false,
+        pendingCount: 0,
+        lastAcceptedSeq: message.seq,
+      });
+
+      // A second authenticated post exercises the real 410 refusal path.
+      const rejectedPost = toolOutput(
+        await ownerClient.callTool({
+          name: "post_message",
+          arguments: {
+            table_id: tableId,
+            request_id: crypto.randomUUID(),
+            body: "PRIVATE BODY OF REJECTED EVENT",
+          },
+        }),
+      );
+      const rejected = (await rows()).find(
+        (row) => row.message_id === rejectedPost.message_id,
+      );
+      expect(rejected).toMatchObject({
+        status: "pending",
+        attempt_count: 0,
+      });
+      if (!rejected) throw new Error("Missing second committed event");
+      await runInDurableObject(stub, (_instance, state) =>
+        state.storage.sql.exec(
+          "UPDATE table_event_outbox SET next_attempt_at = ? WHERE event_id = ?",
+          Date.now() - 1,
+          rejected.event_id,
+        ),
+      );
+      await alarm();
+      expect(captured).toHaveLength(3);
+      expect(
+        new Webhook(SECRET).verify(captured[2].body, captured[2].headers),
+      ).toMatchObject({
+        eventId: rejected.event_id,
+        data: { message_id: rejectedPost.message_id, seq: rejectedPost.seq },
+      });
+      expect(captured[2].body).not.toContain("PRIVATE BODY OF REJECTED");
+      expect(
+        (await rows()).find((row) => row.event_id === rejected.event_id),
+      ).toMatchObject({ status: "failed", attempt_count: 1 });
+      await alarm();
+      expect(captured).toHaveLength(3);
+
+      // Inspect the actual MCP projection after native receiver refusal. The
+      // failed delivery must not hide committed transcript messages or disclose
+      // the peer's callback, credential, or delivery state to the sender.
+      const rejectedView = toolOutput(
+        await peerClient.callTool({
+          name: "get_table",
+          arguments: { table_id: tableId },
+        }),
+      );
+      expect(rejectedView.notifications).toMatchObject({
+        status: "active",
+        pendingCount: 0,
+        lastAcceptedSeq: message.seq,
+        lastErrorCategory: "receiver-gone",
+      });
+      expect(JSON.stringify(rejectedView.notifications)).not.toContain(
+        CALLBACK,
+      );
+      expect(JSON.stringify(rejectedView.notifications)).not.toContain(SECRET);
+      const ownerView = toolOutput(
+        await ownerClient.callTool({
+          name: "get_table",
+          arguments: { table_id: tableId },
+        }),
+      );
+      expect(ownerView.notifications).toMatchObject({
+        status: "disabled",
+        pendingCount: 0,
+        lastAcceptedSeq: null,
+        lastErrorCategory: null,
+      });
+      const readable = toolOutput(
+        await peerClient.callTool({
+          name: "read_messages",
+          arguments: { table_id: tableId, after_seq: message.seq },
+        }),
+      );
+      expect(readable.messages).toMatchObject([
+        { seq: rejectedPost.seq, body: "PRIVATE BODY OF REJECTED EVENT" },
+      ]);
+
+      // A third authenticated post exercises 413 without synthesizing a ledger verdict.
+      const tooLargePost = toolOutput(
+        await ownerClient.callTool({
+          name: "post_message",
+          arguments: {
+            table_id: tableId,
+            request_id: crypto.randomUUID(),
+            body: "SYNTHETIC TERMINAL PAYLOAD REJECTION",
+          },
+        }),
+      );
+      const tooLarge = (await rows()).find(
+        (row) => row.message_id === tooLargePost.message_id,
+      );
+      if (!tooLarge) throw new Error("Missing third committed event");
+      await runInDurableObject(stub, (_instance, state) =>
+        state.storage.sql.exec(
+          "UPDATE table_event_outbox SET next_attempt_at = ? WHERE event_id = ?",
+          Date.now() - 1,
+          tooLarge.event_id,
+        ),
+      );
+      await alarm();
+      expect(captured).toHaveLength(4);
+      expect(
+        new Webhook(SECRET).verify(captured[3].body, captured[3].headers),
+      ).toMatchObject({
+        eventId: tooLarge.event_id,
+        data: { message_id: tooLargePost.message_id },
+      });
+      expect(
+        (await rows()).find((row) => row.event_id === tooLarge.event_id),
+      ).toMatchObject({ status: "failed", attempt_count: 1 });
+      const oversizedView = toolOutput(
+        await peerClient.callTool({
+          name: "get_table",
+          arguments: { table_id: tableId },
+        }),
+      );
+      expect(oversizedView.notifications).toMatchObject({
+        pendingCount: 0,
+        lastAcceptedSeq: message.seq,
+        lastErrorCategory: "payload-rejected",
+      });
+      expect(JSON.stringify(oversizedView.notifications)).not.toContain(
+        CALLBACK,
+      );
+      expect(
+        toolOutput(
+          await peerClient.callTool({
+            name: "read_messages",
+            arguments: { table_id: tableId, after_seq: rejectedPost.seq },
+          }),
+        ).messages,
+      ).toMatchObject([
+        {
+          seq: tooLargePost.seq,
+          body: "SYNTHETIC TERMINAL PAYLOAD REJECTION",
+        },
+      ]);
+
+      // A fifth authenticated post is sent before an owner closes the table.
+      // The receiver's later 2xx is acceptance of bytes, not an authority to
+      // resurrect the cancelled outbox after the terminal decision.
+      const closingPost = toolOutput(
+        await ownerClient.callTool({
+          name: "post_message",
+          arguments: {
+            table_id: tableId,
+            request_id: crypto.randomUUID(),
+            body: "SYNTHETIC CLOSE AFTER DISPATCH BEFORE ACK",
+          },
+        }),
+      );
+      const closingEvent = (await rows()).find(
+        (row) => row.message_id === closingPost.message_id,
+      );
+      if (!closingEvent) throw new Error("Missing contested delivery event");
+      await runInDurableObject(stub, (_instance, state) =>
+        state.storage.sql.exec(
+          "UPDATE table_event_outbox SET next_attempt_at = ? WHERE event_id = ?",
+          Date.now() - 1,
+          closingEvent.event_id,
+        ),
+      );
+      await runInDurableObject(stub, async (instance) => {
+        const harness = instance as unknown as {
+          env: Env;
+          outboxDispatchEnabled(): boolean;
+          closeTableForGuest(
+            guestId: string,
+            requestId: string,
+          ): Promise<{ ok: boolean }>;
+        };
+        harness.env = {
+          ...harness.env,
+          EVENTS_REVIEWED_CALLBACK_TARGETS: REVIEWED,
+        };
+        harness.outboxDispatchEnabled = () => true;
+        closeAfterSendStarts = async () => {
+          const closed = await harness.closeTableForGuest(
+            owner.guestId,
+            crypto.randomUUID(),
+          );
+          expect(closed.ok).toBe(true);
+        };
+        await instance.alarm();
+      });
+      expect(captured).toHaveLength(5);
+      expect(
+        new Webhook(SECRET).verify(captured[4].body, captured[4].headers),
+      ).toMatchObject({
+        eventId: closingEvent.event_id,
+        data: { message_id: closingPost.message_id, seq: closingPost.seq },
+      });
+      expect(
+        (await rows()).find((row) => row.event_id === closingEvent.event_id),
+      ).toMatchObject({ status: "cancelled", attempt_count: 1 });
+      await evictDurableObject(stub);
+      await alarm();
+      expect(captured).toHaveLength(5);
+      expect(
+        (await rows()).find((row) => row.event_id === closingEvent.event_id),
+      ).toMatchObject({ status: "cancelled", attempt_count: 1 });
+    } finally {
+      await peerClient.close();
+      await ownerClient.close();
+    }
+  });
+
+  it("fences a reserved lease after authenticated unsubscribe without reviving work", async () => {
+    const owner = await newPrincipal();
+    const peer = await newPrincipal();
+    const ownerClient = await clientFor(owner.token);
+    const peerClient = await clientFor(peer.token);
+    const receiver = echoReceiver();
+    try {
+      const tableId = await createTable(ownerClient);
+      const invite = toolOutput(
+        await ownerClient.callTool({
+          name: "create_invite",
+          arguments: { table_id: tableId, request_id: crypto.randomUUID() },
+        }),
+      );
+      expect(
+        (
+          await peerClient.callTool({
+            name: "join_table",
+            arguments: {
+              invitation: invite.invitation,
+              request_id: crypto.randomUUID(),
+            },
+          })
+        ).isError,
+      ).not.toBe(true);
+      await callEvent(
+        peerClient,
+        "events/subscribe",
+        subscriptionParams(tableId),
+      );
+      const post = toolOutput(
+        await ownerClient.callTool({
+          name: "post_message",
+          arguments: {
+            table_id: tableId,
+            request_id: crypto.randomUUID(),
+            body: "SYNTHETIC CANCELLED LEASE",
+          },
+        }),
+      );
+      const stub = env.TABLES.get(env.TABLES.idFromName(tableId));
+      type Row = {
+        event_id: string;
+        message_id: string;
+        subscription_generation: number;
+        status: string;
+        attempt_count: number;
+        lease_token: string | null;
+      };
+      const rows = () =>
+        runInDurableObject(stub, (_instance, state) =>
+          state.storage.sql
+            .exec<Row>("SELECT * FROM table_event_outbox")
+            .toArray(),
+        );
+      const initial = (await rows())[0];
+      expect(initial).toMatchObject({
+        message_id: post.message_id,
+        status: "pending",
+        attempt_count: 0,
+      });
+      const lease = await runInDurableObject(stub, (_instance, state) => {
+        const now = Date.now();
+        state.storage.sql.exec(
+          "UPDATE table_event_outbox SET next_attempt_at = ? WHERE event_id = ?",
+          now - 1,
+          initial.event_id,
+        );
+        return reserveOutboxAttempt(
+          state.storage.sql,
+          initial.event_id,
+          initial.subscription_generation,
+          now,
+        );
+      });
+      expect(lease).not.toBeNull();
+      if (!lease) throw new Error("Expected reserved delivery lease");
+      expect((await rows())[0]).toMatchObject({
+        status: "in_flight",
+        attempt_count: 1,
+        lease_token: lease.leaseToken,
+      });
+      await callEvent(
+        peerClient,
+        "events/unsubscribe",
+        unsubscribeParams(tableId),
+      );
+      const cancelled = (await rows())[0];
+      expect(cancelled).toMatchObject({
+        event_id: initial.event_id,
+        status: "cancelled",
+        attempt_count: 1,
+        lease_token: null,
+      });
+      // A previously dispatched HTTP result has no authority to upsert rows.
+      const staleResult = await runInDurableObject(stub, (_instance, state) =>
+        settleOutboxAttempt(state.storage.sql, lease, Date.now(), {
+          kind: "accepted",
+        }),
+      );
+      expect(staleResult).toBeNull();
+      await evictDurableObject(stub);
+      expect((await rows())[0]).toMatchObject({
+        event_id: initial.event_id,
+        status: "cancelled",
+        attempt_count: 1,
+        lease_token: null,
+      });
+      expect(receiver).toHaveBeenCalledTimes(1);
+    } finally {
+      await peerClient.close();
+      await ownerClient.close();
+    }
+  });
+
+  it("delivers rotated credentials and fences contested refresh and deletion", async () => {
+    const owner = await newPrincipal(
+      "tables:read tables:write tables:delete events:subscribe",
+    );
+    const peer = await newPrincipal();
+    const ownerClient = await clientFor(owner.token);
+    const peerClient = await clientFor(peer.token);
+    const challengeReceiver = echoReceiver();
+    try {
+      const tableId = await createTable(ownerClient);
+      const invite = toolOutput(
+        await ownerClient.callTool({
+          name: "create_invite",
+          arguments: { table_id: tableId, request_id: crypto.randomUUID() },
+        }),
+      );
+      expect(
+        (
+          await peerClient.callTool({
+            name: "join_table",
+            arguments: {
+              invitation: invite.invitation,
+              request_id: crypto.randomUUID(),
+            },
+          })
+        ).isError,
+      ).not.toBe(true);
+      const subscription = (await callEvent(
+        peerClient,
+        "events/subscribe",
+        subscriptionParams(tableId),
+      )) as { id: string };
+      const post = toolOutput(
+        await ownerClient.callTool({
+          name: "post_message",
+          arguments: {
+            table_id: tableId,
+            request_id: crypto.randomUUID(),
+            body: "PRIVATE CONTENT NOT IN CALLBACK",
+          },
+        }),
+      );
+      const stub = env.TABLES.get(env.TABLES.idFromName(tableId));
+      type Row = {
+        event_id: string;
+        message_id: string;
+        subscription_generation: number;
+        status: string;
+        attempt_count: number;
+        first_attempt_at: number | null;
+      };
+      const rows = () =>
+        runInDurableObject(stub, (_instance, state) =>
+          state.storage.sql
+            .exec<Row>("SELECT * FROM table_event_outbox")
+            .toArray(),
+        );
+      const first = (await rows())[0];
+      expect(first).toMatchObject({
+        message_id: post.message_id,
+        subscription_generation: 1,
+        status: "pending",
+        attempt_count: 0,
+      });
+      const refreshed = (await callEvent(
+        peerClient,
+        "events/subscribe",
+        subscriptionParams(tableId, CALLBACK, REPLACEMENT_SECRET),
+      )) as { id: string };
+      expect(refreshed.id).toBe(subscription.id);
+      expect(challengeReceiver).toHaveBeenCalledTimes(2);
+      expect((await rows())[0]).toMatchObject({
+        event_id: first.event_id,
+        message_id: post.message_id,
+        subscription_generation: 2,
+        status: "pending",
+        attempt_count: 0,
+        first_attempt_at: null,
+      });
+
+      // Let the actual alarm/native signer choose the refreshed credential.
+      challengeReceiver.mockRestore();
+      let unsubscribeDuringSend: (() => Promise<void>) | undefined;
+      const applications: Array<{
+        body: string;
+        headers: Record<string, string>;
+      }> = [];
+      vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+        applications.push({
+          body: new TextDecoder().decode(init?.body as ArrayBuffer),
+          headers: Object.fromEntries(new Headers(init?.headers)),
+        });
+        if (applications.length === 2) await unsubscribeDuringSend?.();
+        return new Response(null, { status: 204 });
+      });
+      await runInDurableObject(stub, (_instance, state) =>
+        state.storage.sql.exec(
+          "UPDATE table_event_outbox SET next_attempt_at = ? WHERE event_id = ?",
+          Date.now() - 1,
+          first.event_id,
+        ),
+      );
+      await evictDurableObject(stub);
+      const alarm = () =>
+        runInDurableObject(stub, async (instance) => {
+          const harness = instance as unknown as {
+            env: Env;
+            outboxDispatchEnabled(): boolean;
+          };
+          harness.env = {
+            ...harness.env,
+            EVENTS_REVIEWED_CALLBACK_TARGETS: REVIEWED,
+          };
+          harness.outboxDispatchEnabled = () => true;
+          await instance.alarm();
+        });
+      await alarm();
+      expect(applications).toHaveLength(1);
+      expect(
+        new Webhook(REPLACEMENT_SECRET).verify(
+          applications[0].body,
+          applications[0].headers,
+        ),
+      ).toMatchObject({
+        eventId: first.event_id,
+        data: { message_id: post.message_id, seq: post.seq },
+      });
+      expect(applications[0].headers["x-mcp-subscription-id"]).toBe(
+        subscription.id,
+      );
+      expect(applications[0].body).not.toContain("PRIVATE CONTENT");
+      expect((await rows())[0]).toMatchObject({
+        event_id: first.event_id,
+        subscription_generation: 2,
+        status: "accepted",
+        attempt_count: 1,
+      });
+      await evictDurableObject(stub);
+      await alarm();
+      expect(applications).toHaveLength(1);
+
+      // An HTTP 204 arriving after a real authenticated unsubscribe must not
+      // turn an already-dispatched, generation-fenced lease into acceptance.
+      const contestedPost = toolOutput(
+        await ownerClient.callTool({
+          name: "post_message",
+          arguments: {
+            table_id: tableId,
+            request_id: crypto.randomUUID(),
+            body: "SYNTHETIC UNSUBSCRIBE AFTER DISPATCH",
+          },
+        }),
+      );
+      const contested = (await rows()).find(
+        (row) => row.message_id === contestedPost.message_id,
+      );
+      if (!contested) throw new Error("Missing contested authenticated event");
+      await runInDurableObject(stub, (_instance, state) =>
+        state.storage.sql.exec(
+          "UPDATE table_event_outbox SET next_attempt_at = ? WHERE event_id = ?",
+          Date.now() - 1,
+          contested.event_id,
+        ),
+      );
+      const grant = await authorizeGuestConnection(
+        env,
+        peer.guestId,
+        peer.connectionId,
+        "events:subscribe",
+      );
+      expect(grant.allowed).toBe(true);
+      if (!grant.allowed) throw new Error("Missing verified peer connection");
+      await runInDurableObject(stub, async (instance) => {
+        const harness = instance as unknown as {
+          env: Env;
+          outboxDispatchEnabled(): boolean;
+          unsubscribeEvent(
+            actor: Extract<typeof grant, { allowed: true }>["actor"],
+            input: unknown,
+          ): Promise<{ ok: boolean }>;
+        };
+        harness.env = {
+          ...harness.env,
+          EVENTS_REVIEWED_CALLBACK_TARGETS: REVIEWED,
+        };
+        harness.outboxDispatchEnabled = () => true;
+        unsubscribeDuringSend = async () => {
+          const result = await harness.unsubscribeEvent(
+            grant.actor,
+            unsubscribeParams(tableId),
+          );
+          expect(result.ok).toBe(true);
+        };
+        await instance.alarm();
+      });
+      expect(applications).toHaveLength(2);
+      expect(
+        new Webhook(REPLACEMENT_SECRET).verify(
+          applications[1].body,
+          applications[1].headers,
+        ),
+      ).toMatchObject({
+        eventId: contested.event_id,
+        data: { message_id: contestedPost.message_id },
+      });
+      expect(
+        (await rows()).find((row) => row.event_id === contested.event_id),
+      ).toMatchObject({
+        status: "cancelled",
+        attempt_count: 1,
+      });
+      await evictDurableObject(stub);
+      await alarm();
+      expect(applications).toHaveLength(2);
+      expect(
+        (await rows()).find((row) => row.event_id === contested.event_id),
+      ).toMatchObject({ status: "cancelled", attempt_count: 1 });
+
+      // A later subscription to the identical destination is a new
+      // incarnation: it receives only subsequently committed peer messages.
+      vi.restoreAllMocks();
+      const nextChallenge = echoReceiver();
+      const newSubscription = (await callEvent(
+        peerClient,
+        "events/subscribe",
+        subscriptionParams(tableId, CALLBACK, REPLACEMENT_SECRET),
+      )) as { id: string };
+      expect(newSubscription.id).toBe(subscription.id);
+      expect(nextChallenge).toHaveBeenCalledTimes(1);
+      nextChallenge.mockRestore();
+      const laterPost = toolOutput(
+        await ownerClient.callTool({
+          name: "post_message",
+          arguments: {
+            table_id: tableId,
+            request_id: crypto.randomUUID(),
+            body: "SYNTHETIC POST AFTER RESUBSCRIBE",
+          },
+        }),
+      );
+      const later = (await rows()).find(
+        (row) => row.message_id === laterPost.message_id,
+      );
+      if (!later) throw new Error("Missing post-resubscribe event");
+      expect(later.event_id).not.toBe(contested.event_id);
+      expect(later.status).toBe("pending");
+      expect(
+        (await rows()).find((row) => row.event_id === contested.event_id),
+      ).toMatchObject({ status: "cancelled", attempt_count: 1 });
+      await runInDurableObject(stub, (_instance, state) =>
+        state.storage.sql.exec(
+          "UPDATE table_event_outbox SET next_attempt_at = ? WHERE event_id = ?",
+          Date.now() - 1,
+          later.event_id,
+        ),
+      );
+      const subsequentDeliveries: string[] = [];
+      vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+        const body = new TextDecoder().decode(init?.body as ArrayBuffer);
+        const headers = Object.fromEntries(new Headers(init?.headers));
+        const event = new Webhook(REPLACEMENT_SECRET).verify(body, headers) as {
+          eventId: string;
+        };
+        subsequentDeliveries.push(event.eventId);
+        return new Response(null, { status: 204 });
+      });
+      await evictDurableObject(stub);
+      await alarm();
+      expect(subsequentDeliveries).toEqual([later.event_id]);
+
+      // Reuse these independently authorized OAuth connections for the
+      // additional real-entry cases. New DCR registrations here would exhaust
+      // the integration fixture's deliberately bounded registration budget.
+      vi.restoreAllMocks();
+      await exerciseContestedRefresh(ownerClient, peerClient);
+      vi.restoreAllMocks();
+      await exerciseBrowserDeletion(owner, ownerClient, peerClient);
+      expect(
+        (await rows()).find((row) => row.event_id === contested.event_id),
+      ).toMatchObject({ status: "cancelled", attempt_count: 1 });
+      expect(
+        (await rows()).find((row) => row.event_id === later.event_id),
+      ).toMatchObject({ status: "accepted", attempt_count: 1 });
+      await evictDurableObject(stub);
+      await alarm();
+      expect(subsequentDeliveries).toEqual([later.event_id]);
+    } finally {
+      await peerClient.close();
+      await ownerClient.close();
+      vi.restoreAllMocks();
+    }
+  });
+
+  async function exerciseContestedRefresh(
+    ownerClient: Client,
+    peerClient: Client,
+  ) {
+    const challengeReceiver = echoReceiver();
+    try {
+      const tableId = await createTable(ownerClient);
+      const invite = toolOutput(
+        await ownerClient.callTool({
+          name: "create_invite",
+          arguments: { table_id: tableId, request_id: crypto.randomUUID() },
+        }),
+      );
+      expect(
+        (
+          await peerClient.callTool({
+            name: "join_table",
+            arguments: {
+              invitation: invite.invitation,
+              request_id: crypto.randomUUID(),
+            },
+          })
+        ).isError,
+      ).not.toBe(true);
+      const subscription = (await callEvent(
+        peerClient,
+        "events/subscribe",
+        subscriptionParams(tableId),
+      )) as { id: string };
+      expect(challengeReceiver).toHaveBeenCalledTimes(1);
+      const post = toolOutput(
+        await ownerClient.callTool({
+          name: "post_message",
+          arguments: {
+            table_id: tableId,
+            request_id: crypto.randomUUID(),
+            body: "PRIVATE IN-FLIGHT REFRESH TEST CONTENT",
+          },
+        }),
+      );
+      const stub = env.TABLES.get(env.TABLES.idFromName(tableId));
+      type Row = {
+        event_id: string;
+        message_id: string;
+        subscription_generation: number;
+        status: string;
+        attempt_count: number;
+        first_attempt_at: number | null;
+        lease_token: string | null;
+        lease_deadline: number | null;
+        next_attempt_at: number | null;
+      };
+      const rows = () =>
+        runInDurableObject(stub, (_instance, state) =>
+          state.storage.sql
+            .exec<Row>("SELECT * FROM table_event_outbox")
+            .toArray(),
+        );
+      const initial = (await rows())[0];
+      expect(initial).toMatchObject({
+        message_id: post.message_id,
+        subscription_generation: 1,
+        status: "pending",
+        attempt_count: 0,
+      });
+      await runInDurableObject(stub, (_instance, state) =>
+        state.storage.sql.exec(
+          "UPDATE table_event_outbox SET next_attempt_at = ? WHERE event_id = ?",
+          Date.now() - 1,
+          initial.event_id,
+        ),
+      );
+      challengeReceiver.mockRestore();
+      let currentSql: DurableObjectStorage["sql"] | undefined;
+      const applications: Array<{
+        body: string;
+        headers: Record<string, string>;
+      }> = [];
+      let contestedLease: Row | undefined;
+      let challengeCount = 1;
+      vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+        const body = new TextDecoder().decode(init?.body as ArrayBuffer);
+        const payload = JSON.parse(body) as {
+          type?: string;
+          challenge?: string;
+        };
+        if (payload.type === "verification") {
+          challengeCount++;
+          return new Response(JSON.stringify({ challenge: payload.challenge }));
+        }
+        const headers = Object.fromEntries(new Headers(init?.headers));
+        applications.push({ body, headers });
+        if (applications.length === 1) {
+          // Capture the persisted lease before the old receiver returns 204.
+          contestedLease = currentSql
+            ?.exec<Row>(
+              "SELECT * FROM table_event_outbox WHERE event_id = ?",
+              initial.event_id,
+            )
+            .one();
+          expect(contestedLease).toMatchObject({
+            event_id: initial.event_id,
+            subscription_generation: 1,
+            status: "in_flight",
+            attempt_count: 1,
+          });
+          expect(contestedLease?.lease_token).not.toBeNull();
+          const refreshed = (await callEvent(
+            peerClient,
+            "events/subscribe",
+            subscriptionParams(tableId, CALLBACK, REPLACEMENT_SECRET),
+          )) as { id: string };
+          expect(refreshed.id).toBe(subscription.id);
+        }
+        return new Response(null, { status: 204 });
+      });
+      const alarm = () =>
+        runInDurableObject(stub, async (instance, state) => {
+          const harness = instance as unknown as {
+            env: Env;
+            outboxDispatchEnabled(): boolean;
+          };
+          harness.env = {
+            ...harness.env,
+            EVENTS_REVIEWED_CALLBACK_TARGETS: REVIEWED,
+          };
+          harness.outboxDispatchEnabled = () => true;
+          currentSql = state.storage.sql;
+          try {
+            await instance.alarm();
+          } finally {
+            currentSql = undefined;
+          }
+        });
+      await alarm();
+      expect(challengeCount).toBe(2);
+      expect(applications).toHaveLength(1);
+      expect(
+        new Webhook(SECRET).verify(
+          applications[0].body,
+          applications[0].headers,
+        ),
+      ).toMatchObject({
+        eventId: initial.event_id,
+        data: { message_id: post.message_id, seq: post.seq },
+      });
+      const fenced = (await rows())[0];
+      expect(fenced).toMatchObject({
+        event_id: initial.event_id,
+        message_id: post.message_id,
+        subscription_generation: 2,
+        status: "in_flight",
+        attempt_count: 1,
+        first_attempt_at: contestedLease?.first_attempt_at,
+      });
+      expect(fenced.lease_token).toBe(contestedLease?.lease_token);
+      // A newly reconstructed DO must not send the event early or treat the
+      // old generation's 204 as acceptance.
+      await evictDurableObject(stub);
+      await alarm();
+      expect(applications).toHaveLength(1);
+      expect((await rows())[0]).toMatchObject({
+        status: "in_flight",
+        attempt_count: 1,
+        first_attempt_at: contestedLease?.first_attempt_at,
+      });
+      // Reclaim only after the persisted original lease's recovery deadline.
+      await runInDurableObject(stub, (_instance, state) =>
+        state.storage.sql.exec(
+          "UPDATE table_event_outbox SET lease_deadline = ? WHERE event_id = ?",
+          Date.now() - 1,
+          initial.event_id,
+        ),
+      );
+      await evictDurableObject(stub);
+      await alarm();
+      expect(applications).toHaveLength(2);
+      expect(
+        new Webhook(REPLACEMENT_SECRET).verify(
+          applications[1].body,
+          applications[1].headers,
+        ),
+      ).toMatchObject({
+        eventId: initial.event_id,
+        data: { message_id: post.message_id, seq: post.seq },
+      });
+      expect(applications[1].body).not.toContain("PRIVATE IN-FLIGHT");
+      expect((await rows())[0]).toMatchObject({
+        event_id: initial.event_id,
+        message_id: post.message_id,
+        subscription_generation: 2,
+        status: "accepted",
+        attempt_count: 2,
+        first_attempt_at: contestedLease?.first_attempt_at,
+      });
+      await evictDurableObject(stub);
+      await alarm();
+      expect(applications).toHaveLength(2);
+    } finally {
+      vi.restoreAllMocks();
+    }
+  }
+
+  async function exerciseBrowserDeletion(
+    owner: Awaited<ReturnType<typeof newPrincipal>>,
+    ownerClient: Client,
+    peerClient: Client,
+  ) {
+    const challengeReceiver = echoReceiver();
+    try {
+      const tableId = await createTable(ownerClient);
+      const invite = toolOutput(
+        await ownerClient.callTool({
+          name: "create_invite",
+          arguments: { table_id: tableId, request_id: crypto.randomUUID() },
+        }),
+      );
+      expect(
+        (
+          await peerClient.callTool({
+            name: "join_table",
+            arguments: {
+              invitation: invite.invitation,
+              request_id: crypto.randomUUID(),
+            },
+          })
+        ).isError,
+      ).not.toBe(true);
+      await callEvent(
+        peerClient,
+        "events/subscribe",
+        subscriptionParams(tableId),
+      );
+      expect(challengeReceiver).toHaveBeenCalledTimes(1);
+      const post = toolOutput(
+        await ownerClient.callTool({
+          name: "post_message",
+          arguments: {
+            table_id: tableId,
+            request_id: crypto.randomUUID(),
+            body: "PRIVATE CONTENT ERASED BY BROWSER CONFIRMATION",
+          },
+        }),
+      );
+      const stub = env.TABLES.get(env.TABLES.idFromName(tableId));
+      type Row = {
+        event_id: string;
+        message_id: string;
+        status: string;
+        attempt_count: number;
+        lease_token: string | null;
+      };
+      const before = await runInDurableObject(stub, (_instance, state) =>
+        state.storage.sql.exec<Row>("SELECT * FROM table_event_outbox").one(),
+      );
+      expect(before).toMatchObject({
+        message_id: post.message_id,
+        status: "pending",
+        attempt_count: 0,
+      });
+
+      // Agent deletion is only a request. The authenticated guest must open
+      // the actual browser form and approve with its matching CSRF cookie.
+      const requestId = crypto.randomUUID();
+      const pending = toolOutput(
+        await ownerClient.callTool({
+          name: "delete_table",
+          arguments: { table_id: tableId, request_id: requestId },
+        }),
+      );
+      expect(pending.confirmation_required).toBe(true);
+      const preview = await dispatch(
+        new Request(String(pending.confirmation_url), {
+          headers: { Cookie: owner.cookie },
+        }),
+      );
+      expect(preview.status).toBe(200);
+      const page = await preview.text();
+      expect(page).toContain("Permanently delete shared content");
+      const csrf = page.match(/name="csrf" value="([A-Za-z0-9_-]{43})"/)?.[1];
+      const csrfCookie = preview.headers
+        .getSetCookie()
+        .find((line) => line.startsWith("__Host-agent_table_csrf="))
+        ?.split(";")[0];
+      if (!csrf || !csrfCookie) throw new Error("Missing browser CSRF proof");
+      expect(
+        await runInDurableObject(
+          stub,
+          (_instance, state) =>
+            state.storage.sql
+              .exec<Row>("SELECT * FROM table_event_outbox")
+              .one().status,
+        ),
+      ).toBe("pending");
+
+      await runInDurableObject(stub, (_instance, state) =>
+        state.storage.sql.exec(
+          "UPDATE table_event_outbox SET next_attempt_at = ? WHERE event_id = ?",
+          Date.now() - 1,
+          before.event_id,
+        ),
+      );
+      challengeReceiver.mockRestore();
+      let currentSql: DurableObjectStorage["sql"] | undefined;
+      let heldLease: Row | undefined;
+      const captured: Array<{ body: string; headers: Record<string, string> }> =
+        [];
+      vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+        const body = new TextDecoder().decode(init?.body as ArrayBuffer);
+        const headers = Object.fromEntries(new Headers(init?.headers));
+        captured.push({ body, headers });
+        heldLease = currentSql
+          ?.exec<Row>(
+            "SELECT * FROM table_event_outbox WHERE event_id = ?",
+            before.event_id,
+          )
+          .one();
+        expect(heldLease).toMatchObject({
+          event_id: before.event_id,
+          status: "in_flight",
+          attempt_count: 1,
+        });
+        expect(heldLease?.lease_token).not.toBeNull();
+        const approved = await dispatch(
+          new Request(`${ORIGIN}/guest/delete`, {
+            method: "POST",
+            headers: {
+              Origin: ORIGIN,
+              "Sec-Fetch-Site": "same-origin",
+              "Content-Type": "application/x-www-form-urlencoded",
+              Cookie: `${owner.cookie}; ${csrfCookie}`,
+            },
+            body: new URLSearchParams({
+              table_id: tableId,
+              request_id: requestId,
+              csrf,
+              decision: "approve",
+            }),
+          }),
+        );
+        expect(approved.status).toBe(200);
+        expect(await approved.text()).toContain("Deletion committed");
+        // The original sender has not yet observed this 204 response.
+        expect(
+          currentSql?.exec<Row>("SELECT * FROM table_event_outbox").toArray(),
+        ).toEqual([]);
+        return new Response(null, { status: 204 });
+      });
+      const alarm = () =>
+        runInDurableObject(stub, async (instance, state) => {
+          const harness = instance as unknown as {
+            env: Env;
+            outboxDispatchEnabled(): boolean;
+          };
+          harness.env = {
+            ...harness.env,
+            EVENTS_REVIEWED_CALLBACK_TARGETS: REVIEWED,
+          };
+          harness.outboxDispatchEnabled = () => true;
+          currentSql = state.storage.sql;
+          try {
+            await instance.alarm();
+          } finally {
+            currentSql = undefined;
+          }
+        });
+      await alarm();
+      expect(captured).toHaveLength(1);
+      expect(
+        new Webhook(SECRET).verify(captured[0].body, captured[0].headers),
+      ).toMatchObject({
+        eventId: before.event_id,
+        data: { message_id: post.message_id, seq: post.seq },
+      });
+      expect(captured[0].body).not.toContain("PRIVATE CONTENT");
+      const persisted = () =>
+        runInDurableObject(stub, (_instance, state) => ({
+          events: state.storage.sql
+            .exec<Row>("SELECT * FROM table_event_outbox")
+            .toArray(),
+          messages: state.storage.sql
+            .exec<{ message_id: string }>(
+              "SELECT message_id FROM table_messages",
+            )
+            .toArray(),
+          receipts: state.storage.sql
+            .exec<{ message_seq: number }>(
+              "SELECT message_seq FROM table_post_receipts",
+            )
+            .toArray(),
+          terminal: state.storage.sql
+            .exec<{ terminal_state: string }>(
+              "SELECT terminal_state FROM table_tombstones",
+            )
+            .one().terminal_state,
+        }));
+      expect(await persisted()).toEqual({
+        events: [],
+        messages: [],
+        receipts: [],
+        terminal: "deleted",
+      });
+      await evictDurableObject(stub);
+      await alarm();
+      expect(captured).toHaveLength(1);
+      expect((await persisted()).events).toEqual([]);
+    } finally {
+      vi.restoreAllMocks();
+    }
+  }
+
+  it("fences native alarm delivery after real grant revocation or table closure", async () => {
+    for (const intervention of ["revoke", "close"] as const) {
+      const owner = await newPrincipal();
+      const peer = await newPrincipal();
+      const ownerClient = await clientFor(owner.token);
+      const peerClient = await clientFor(peer.token);
+      const challengeReceiver = echoReceiver();
+      try {
+        const tableId = await createTable(ownerClient);
+        const invite = toolOutput(
+          await ownerClient.callTool({
+            name: "create_invite",
+            arguments: { table_id: tableId, request_id: crypto.randomUUID() },
+          }),
+        );
+        expect(
+          (
+            await peerClient.callTool({
+              name: "join_table",
+              arguments: {
+                invitation: invite.invitation,
+                request_id: crypto.randomUUID(),
+              },
+            })
+          ).isError,
+        ).not.toBe(true);
+        await callEvent(
+          peerClient,
+          "events/subscribe",
+          subscriptionParams(tableId),
+        );
+        expect(challengeReceiver).toHaveBeenCalledTimes(1);
+        const post = toolOutput(
+          await ownerClient.callTool({
+            name: "post_message",
+            arguments: {
+              table_id: tableId,
+              request_id: crypto.randomUUID(),
+              body: "SYNTHETIC TERMINAL AUTHORITY TEST",
+            },
+          }),
+        );
+        const stub = env.TABLES.get(env.TABLES.idFromName(tableId));
+        type Row = {
+          event_id: string;
+          message_id: string;
+          attempt_count: number;
+          status: string;
+          lease_token: string | null;
+          next_attempt_at: number | null;
+        };
+        const rows = () =>
+          runInDurableObject(stub, (_instance, state) =>
+            state.storage.sql
+              .exec<Row>("SELECT * FROM table_event_outbox")
+              .toArray(),
+          );
+        const initial = (await rows())[0];
+        expect(initial).toMatchObject({
+          message_id: post.message_id,
+          status: "pending",
+          attempt_count: 0,
+        });
+        await runInDurableObject(stub, (_instance, state) =>
+          state.storage.sql.exec(
+            "UPDATE table_event_outbox SET next_attempt_at = ? WHERE event_id = ?",
+            Date.now() - 1,
+            initial.event_id,
+          ),
+        );
+
+        // Exercise the actual authority mutation, not a fabricated SQL verdict.
+        if (intervention === "revoke") {
+          const parts = peer.cookie.split("=")[1]?.split(".") ?? [];
+          expect(
+            (
+              await peer.guest.revokeConnection(
+                parts[2] ?? "",
+                parts[3] ?? "",
+                peer.connectionId,
+              )
+            ).status,
+          ).toBe("revoked");
+        } else {
+          const close = await ownerClient.callTool({
+            name: "close_table",
+            arguments: { table_id: tableId, request_id: crypto.randomUUID() },
+          });
+          expect(close.isError).not.toBe(true);
+        }
+
+        // No application callback may start after the terminal decision.
+        challengeReceiver.mockRestore();
+        const applications: string[] = [];
+        vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+          applications.push(String(url));
+          return new Response(null, { status: 204 });
+        });
+        const alarm = () =>
+          runInDurableObject(stub, async (instance) => {
+            const harness = instance as unknown as {
+              env: Env;
+              outboxDispatchEnabled(): boolean;
+            };
+            harness.env = {
+              ...harness.env,
+              EVENTS_REVIEWED_CALLBACK_TARGETS: REVIEWED,
+            };
+            harness.outboxDispatchEnabled = () => true;
+            await instance.alarm();
+          });
+        await alarm();
+        expect(applications).toHaveLength(0);
+        expect((await rows())[0]).toMatchObject({
+          event_id: initial.event_id,
+          message_id: post.message_id,
+          status: "cancelled",
+          attempt_count: 0,
+          lease_token: null,
+          next_attempt_at: null,
+        });
+        await evictDurableObject(stub);
+        await alarm();
+        expect(applications).toHaveLength(0);
+        expect((await rows())[0]).toMatchObject({
+          event_id: initial.event_id,
+          status: "cancelled",
+          attempt_count: 0,
+        });
+      } finally {
+        await peerClient.close();
+        await ownerClient.close();
+        vi.restoreAllMocks();
+      }
+    }
+  });
+
+  it("charges eight real alarm transports across eviction and never starts a ninth", async () => {
+    const owner = await newPrincipal();
+    const peer = await newPrincipal();
+    const ownerClient = await clientFor(owner.token);
+    const peerClient = await clientFor(peer.token);
+    const challengeReceiver = echoReceiver();
+    try {
+      const tableId = await createTable(ownerClient);
+      const invite = toolOutput(
+        await ownerClient.callTool({
+          name: "create_invite",
+          arguments: { table_id: tableId, request_id: crypto.randomUUID() },
+        }),
+      );
+      expect(
+        (
+          await peerClient.callTool({
+            name: "join_table",
+            arguments: {
+              invitation: invite.invitation,
+              request_id: crypto.randomUUID(),
+            },
+          })
+        ).isError,
+      ).not.toBe(true);
+      await callEvent(
+        peerClient,
+        "events/subscribe",
+        subscriptionParams(tableId),
+      );
+      const post = toolOutput(
+        await ownerClient.callTool({
+          name: "post_message",
+          arguments: {
+            table_id: tableId,
+            request_id: crypto.randomUUID(),
+            body: "SYNTHETIC REPEATED TRANSIENT ERROR",
+          },
+        }),
+      );
+      const stub = env.TABLES.get(env.TABLES.idFromName(tableId));
+      type Row = {
+        event_id: string;
+        message_id: string;
+        status: string;
+        attempt_count: number;
+        first_attempt_at: number | null;
+        next_attempt_at: number | null;
+        last_error_category: string | null;
+      };
+      const rows = () =>
+        runInDurableObject(stub, (_instance, state) =>
+          state.storage.sql
+            .exec<Row>("SELECT * FROM table_event_outbox")
+            .toArray(),
+        );
+      const initial = (await rows())[0];
+      expect(initial.message_id).toBe(post.message_id);
+      challengeReceiver.mockRestore();
+      const deliveredIds: string[] = [];
+      vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+        expect(String(url)).toBe(CALLBACK);
+        const headers = Object.fromEntries(new Headers(init?.headers));
+        const body = new TextDecoder().decode(init?.body as ArrayBuffer);
+        const event = new Webhook(SECRET).verify(body, headers) as {
+          eventId: string;
+        };
+        deliveredIds.push(event.eventId);
+        return new Response(null, {
+          // Exercise the native 429 header parser and its 15-minute cap
+          // before the remaining attempts exercise transient 5xx responses.
+          status: deliveredIds.length === 1 ? 429 : 503,
+          headers: {
+            "Retry-After": deliveredIds.length === 1 ? "3600" : "1",
+          },
+        });
+      });
+      const alarm = (outboundAllowed = true) =>
+        runInDurableObject(stub, async (instance) => {
+          const harness = instance as unknown as {
+            env: Env;
+            outboxDispatchEnabled(): boolean;
+          };
+          harness.env = {
+            ...harness.env,
+            EVENTS_REVIEWED_CALLBACK_TARGETS: REVIEWED,
+            ALLOW_OUTBOUND_NOTIFICATIONS: outboundAllowed ? "true" : "false",
+          };
+          // Only public Events readiness is bypassed for the controlled
+          // receiver; the real operator outbound predicate remains active.
+          harness.outboxDispatchEnabled = () =>
+            allowOutboundNotifications(harness.env);
+          await instance.alarm();
+        });
+      await runInDurableObject(stub, (_instance, state) =>
+        state.storage.sql.exec(
+          "UPDATE table_event_outbox SET next_attempt_at = ? WHERE event_id = ?",
+          Date.now() - 1,
+          initial.event_id,
+        ),
+      );
+      await alarm(false);
+      expect(deliveredIds).toHaveLength(0);
+      expect((await rows())[0]).toMatchObject({
+        status: "pending",
+        attempt_count: 0,
+        first_attempt_at: null,
+      });
+      await evictDurableObject(stub);
+      await alarm(false);
+      expect(deliveredIds).toHaveLength(0);
+      expect((await rows())[0].attempt_count).toBe(0);
+
+      let firstAttemptAt: number | null = null;
+      for (let attempt = 1; attempt <= 8; attempt++) {
+        // Change only the scheduling deadline: never reset persisted identity or budget.
+        await runInDurableObject(stub, (_instance, state) =>
+          state.storage.sql.exec(
+            "UPDATE table_event_outbox SET next_attempt_at = ? WHERE event_id = ?",
+            Date.now() - 1,
+            initial.event_id,
+          ),
+        );
+        await evictDurableObject(stub);
+        await alarm();
+        const row = (await rows())[0];
+        expect(row.event_id).toBe(initial.event_id);
+        expect(row.attempt_count).toBe(attempt);
+        firstAttemptAt ??= row.first_attempt_at;
+        expect(row.first_attempt_at).toBe(firstAttemptAt);
+        expect(row.status).toBe(attempt === 8 ? "failed" : "pending");
+        expect(deliveredIds).toHaveLength(attempt);
+        if (attempt === 1) {
+          expect(row.last_error_category).toBe("rate-limited");
+          // The provider requested one hour, but the transport must clamp
+          // this to a bounded 15-minute backoff without an immediate loop.
+          expect(row.next_attempt_at).toBeGreaterThanOrEqual(
+            Date.now() + 900_000 - 5_000,
+          );
+          expect(row.next_attempt_at).toBeLessThanOrEqual(
+            Date.now() + 900_000 + 5_000,
+          );
+        }
+        if (attempt === 8) {
+          expect(row.last_error_category).toBe("retry-exhausted");
+          expect(row.next_attempt_at).toBeNull();
+        }
+      }
+      await evictDurableObject(stub);
+      await alarm();
+      expect(deliveredIds).toEqual(Array(8).fill(initial.event_id));
+      expect((await rows())[0]).toMatchObject({
+        status: "failed",
+        attempt_count: 8,
+      });
+
+      const horizonPost = toolOutput(
+        await ownerClient.callTool({
+          name: "post_message",
+          arguments: {
+            table_id: tableId,
+            request_id: crypto.randomUUID(),
+            body: "SYNTHETIC ORIGINAL RETRY HORIZON",
+          },
+        }),
+      );
+      const horizonEvent = (await rows()).find(
+        (row) => row.message_id === horizonPost.message_id,
+      );
+      if (!horizonEvent) throw new Error("Missing second authenticated event");
+      await runInDurableObject(stub, (_instance, state) =>
+        state.storage.sql.exec(
+          "UPDATE table_event_outbox SET next_attempt_at = ? WHERE event_id = ?",
+          Date.now() - 1,
+          horizonEvent.event_id,
+        ),
+      );
+      await evictDurableObject(stub);
+      await alarm();
+      expect(deliveredIds).toHaveLength(9);
+      expect(deliveredIds[8]).toBe(horizonEvent.event_id);
+      const charged = (await rows()).find(
+        (row) => row.event_id === horizonEvent.event_id,
+      );
+      expect(charged).toMatchObject({
+        status: "pending",
+        attempt_count: 1,
+        last_error_category: "server-error",
+      });
+      expect(charged?.first_attempt_at).toBeGreaterThan(0);
+      // Exercise elapsed-time cleanup without changing the original budget.
+      await runInDurableObject(stub, (_instance, state) =>
+        state.storage.sql.exec(
+          "UPDATE table_event_outbox SET first_attempt_at = ?, next_attempt_at = ? WHERE event_id = ?",
+          Date.now() - 60 * 60_000 - 1,
+          Date.now() - 1,
+          horizonEvent.event_id,
+        ),
+      );
+      await evictDurableObject(stub);
+      await alarm();
+      expect(deliveredIds).toHaveLength(9);
+      expect(
+        (await rows()).find((row) => row.event_id === horizonEvent.event_id),
+      ).toMatchObject({
+        status: "failed",
+        attempt_count: 1,
+        last_error_category: "retry-exhausted",
+        next_attempt_at: null,
+      });
+
+      // An actual committed post is never delivered after table expiry.
+      const expiredPost = toolOutput(
+        await ownerClient.callTool({
+          name: "post_message",
+          arguments: {
+            table_id: tableId,
+            request_id: crypto.randomUUID(),
+            body: "SYNTHETIC TABLE EXPIRY EVENT",
+          },
+        }),
+      );
+      expect(
+        (await rows()).some((row) => row.message_id === expiredPost.message_id),
+      ).toBe(true);
+      await runInDurableObject(stub, (_instance, state) =>
+        state.storage.sql.exec(
+          "UPDATE table_metadata SET expires_at = ? WHERE singleton = 1",
+          Date.now() - 1,
+        ),
+      );
+      await evictDurableObject(stub);
+      await alarm();
+      expect(deliveredIds).toHaveLength(9);
+      expect(await rows()).toHaveLength(0);
+      await runInDurableObject(stub, (_instance, state) => {
+        expect(
+          state.storage.sql
+            .exec<{ terminal_state: string }>(
+              "SELECT terminal_state FROM table_tombstones",
+            )
+            .one().terminal_state,
+        ).toBe("expired");
+      });
+    } finally {
+      await peerClient.close();
+      await ownerClient.close();
+    }
+  });
+
+  it("rolls back authenticated post/outbox on alarm-arm or commit faults and recovers once", async () => {
+    const owner = await newPrincipal();
+    const peer = await newPrincipal();
+    const ownerClient = await clientFor(owner.token);
+    const peerClient = await clientFor(peer.token);
+    const challengeReceiver = echoReceiver();
+    try {
+      const tableId = await createTable(ownerClient);
+      const invite = toolOutput(
+        await ownerClient.callTool({
+          name: "create_invite",
+          arguments: { table_id: tableId, request_id: crypto.randomUUID() },
+        }),
+      );
+      expect(
+        (
+          await peerClient.callTool({
+            name: "join_table",
+            arguments: {
+              invitation: invite.invitation,
+              request_id: crypto.randomUUID(),
+            },
+          })
+        ).isError,
+      ).not.toBe(true);
+      await callEvent(
+        peerClient,
+        "events/subscribe",
+        subscriptionParams(tableId),
+      );
+      expect(challengeReceiver).toHaveBeenCalledTimes(1);
+      const stub = env.TABLES.get(env.TABLES.idFromName(tableId));
+      const requestId = crypto.randomUUID();
+      const post = () =>
+        ownerClient.callTool({
+          name: "post_message",
+          arguments: {
+            table_id: tableId,
+            request_id: requestId,
+            body: "SYNTHETIC ATOMIC POST WITH INJECTED STORAGE FAILURE",
+          },
+        });
+      const persisted = () =>
+        runInDurableObject(stub, (_instance, state) => ({
+          messages: state.storage.sql
+            .exec<{ message_id: string }>(
+              "SELECT message_id FROM table_messages",
+            )
+            .toArray(),
+          receipts: state.storage.sql
+            .exec<{ message_seq: number }>(
+              "SELECT message_seq FROM table_post_receipts",
+            )
+            .toArray(),
+          events: state.storage.sql
+            .exec<{
+              event_id: string;
+              message_id: string;
+              status: string;
+              attempt_count: number;
+            }>(
+              "SELECT event_id, message_id, status, attempt_count FROM table_event_outbox",
+            )
+            .toArray(),
+          alarm: state.storage.getAlarm(),
+        }));
+      for (const phase of ["after-arm", "after-mutation"] as const) {
+        await runInDurableObject(stub, (instance) => {
+          const harness = instance as unknown as {
+            deadlines: { checkpoint(checkpoint: string): Promise<void> };
+          };
+          harness.deadlines.checkpoint = async (checkpoint) => {
+            if (checkpoint === phase)
+              throw new Error("Injected atomic append fault");
+          };
+        });
+        let failed = false;
+        try {
+          const result = await post();
+          failed = result.isError === true;
+        } catch {
+          failed = true;
+        }
+        expect(failed).toBe(true);
+        await evictDurableObject(stub);
+        const snapshot = await persisted();
+        expect(snapshot.messages).toHaveLength(0);
+        expect(snapshot.receipts).toHaveLength(0);
+        expect(snapshot.events).toHaveLength(0);
+        expect(challengeReceiver).toHaveBeenCalledTimes(1);
+      }
+      const committed = toolOutput(await post());
+      const snapshot = await persisted();
+      expect(snapshot.messages).toHaveLength(1);
+      expect(snapshot.receipts).toHaveLength(1);
+      expect(snapshot.events).toHaveLength(1);
+      expect(snapshot.events[0]).toMatchObject({
+        message_id: committed.message_id,
+        status: "pending",
+        attempt_count: 0,
+      });
+      expect(await snapshot.alarm).not.toBeNull();
+      const repeated = toolOutput(await post());
+      expect(repeated.message_id).toBe(committed.message_id);
+      expect((await persisted()).events).toHaveLength(1);
+      challengeReceiver.mockRestore();
+      const captured: string[] = [];
+      vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+        expect(String(url)).toBe(CALLBACK);
+        const body = new TextDecoder().decode(init?.body as ArrayBuffer);
+        const payload = new Webhook(SECRET).verify(
+          body,
+          Object.fromEntries(new Headers(init?.headers)),
+        ) as { eventId: string };
+        captured.push(payload.eventId);
+        return new Response(null, { status: 204 });
+      });
+      await runInDurableObject(stub, (_instance, state) =>
+        state.storage.sql.exec(
+          "UPDATE table_event_outbox SET next_attempt_at = ?",
+          Date.now() - 1,
+        ),
+      );
+      await evictDurableObject(stub);
+      await runInDurableObject(stub, async (instance, state) => {
+        const harness = instance as unknown as {
+          env: Env;
+          outboxDispatchEnabled(): boolean;
+          deadlines: { checkpoint(phase: string): Promise<void> };
+        };
+        harness.env = {
+          ...harness.env,
+          EVENTS_REVIEWED_CALLBACK_TARGETS: REVIEWED,
+        };
+        harness.outboxDispatchEnabled = () => true;
+        harness.deadlines.checkpoint = async (phase) => {
+          if (
+            phase === "after-mutation" &&
+            state.storage.sql
+              .exec<{ status: string }>("SELECT status FROM table_event_outbox")
+              .one().status === "in_flight"
+          )
+            throw new Error("Injected durable lease fault");
+        };
+        await expect(instance.alarm()).rejects.toThrow(
+          "Table cleanup unavailable",
+        );
+      });
+      expect(captured).toHaveLength(0);
+      expect((await persisted()).events[0]).toMatchObject({
+        status: "pending",
+        attempt_count: 0,
+      });
+      expect(await (await persisted()).alarm).not.toBeNull();
+      await evictDurableObject(stub);
+      await runInDurableObject(stub, async (instance) => {
+        const harness = instance as unknown as {
+          env: Env;
+          outboxDispatchEnabled(): boolean;
+        };
+        harness.env = {
+          ...harness.env,
+          EVENTS_REVIEWED_CALLBACK_TARGETS: REVIEWED,
+        };
+        harness.outboxDispatchEnabled = () => true;
+        await instance.alarm();
+      });
+      expect(captured).toEqual([snapshot.events[0].event_id]);
+      expect((await persisted()).events[0]).toMatchObject({
+        status: "accepted",
+        attempt_count: 1,
+      });
+    } finally {
+      await peerClient.close();
+      await ownerClient.close();
     }
   });
 });
