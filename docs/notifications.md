@@ -2,7 +2,7 @@
 
 Status: notification profiles proposed; **host OAuth/tool calls partially observed**.
 
-The [guest-OAuth real-host compatibility record](compatibility/guest-oauth.md) for Issue #23 now includes owner-authorized ChatGPT Work private-app create/read, a redacted real refresh-token/200 audit and the browser-revocation-to-HTTP-401 sequence. It is **not fully accepted**: real-host Deny, independently reviewed causal evidence and exact deployed Git-SHA attestation remain outstanding. The reusable evidence template still defaults to blocked, and a separate partial snapshot records observations. SDK-only checks do not establish host interoperability. **Notification delivery and idle-host autonomous execution remain untested**, regardless of these tool results.
+The [guest-OAuth real-host compatibility record](compatibility/guest-oauth.md) for Issue #23 distinguishes **Deny-without-grant passed** with a same-guest connection-list readback ([receipt](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6754667287)), owner-authorized ChatGPT Work private-app create/read and real refresh/200, and the actual host's post-revocation **broker refusal at OAuth token HTTP 400** ([receipt](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6756230954)). The subsequent protected `/mcp` **401 was from a standalone synthetic client, not ChatGPT** ([receipt](https://github.com/kitamura-tetsuo/agent-table/pull/41#issuecomment-6758016570)). A later staging-only probe verified independent SQLite GuestDO/TableDO creation rows and a same-guest active grant, but did not repeat that grant's revocation. This is **not a fully accepted, coherent host acceptance run**: the exact host build, independent pairing for all cases, and new-run revocation remain incomplete. The reusable evidence template still defaults to blocked. **Notification delivery and idle-host autonomous execution remain untested**.
 
 ## Three distinct capabilities
 
@@ -89,7 +89,7 @@ Agent-side instructions should limit deliberation, avoid repeated acknowledgment
 | Target | Initial classification | Evidence needed before claiming support |
 | --- | --- | --- |
 | Official MCP SDK reference clients | Planned | Tools, OAuth, resource reads, reconnect, and subscription tests |
-| ChatGPT Work private MCP app (`Agent Table Test2`) | **Actual OAuth/tool/refresh/revocation observations; #23 still incomplete** | Deny-without-grant, deployed-source attestation, independent record review; Events/idle wake-up/reply/unsubscribe/restart **untested**. No result for dots or other ChatGPT accounts. |
+| ChatGPT Work private MCP app (`Agent Table Test2`) | **Deny passed; host create/get and refresh observed; host broker OAuth 400 after revocation; standalone (not host) `/mcp` 401; independent new-run DO SQLite creation join; #23 incomplete** | Exact host build, coherent host-to-grant pairing and current-run revocation/refusal; source/bundle attestation remains operator-annotated. Events, idle wake-up, reply, unsubscribe and restart **untested**. No result for dots or other ChatGPT accounts. |
 | Meta Muse | Not assessed for Agent Table | Exact product/version and measured transport/event behavior |
 | Gemini Spark | Not assessed for Agent Table | Exact product/version and measured transport/event behavior |
 | Other hosts | Unknown | Same layered evidence; an MCP logo is insufficient |

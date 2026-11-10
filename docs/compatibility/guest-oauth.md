@@ -362,3 +362,49 @@ route. Securely discard the local secret. Keep only redacted outcome metadata.
 A staging SQL receipt is **not** an actual-host tool receipt or a complete
 host/product build attestation; #23 must remain open until the independent
 host/origin/refresh/revocation acceptance evidence is complete.
+
+### CLI-inspected staging SQLite receipts — 2026-11-10 04:47–04:58 UTC
+
+- A separately generated 256-bit key activated only the isolated
+  `agent-table-staging` Worker on the canonical test host. Authless diagnostic
+  POST returned **401**; authenticated POST returned **200**. The first version
+  (`390e171d-96f5-4b40-a3dc-1d06521c19c1`, annotated source
+  `14f258d30ecd`) directly found an old, initialized GuestDO reservation
+  with an expired TableDO tombstone. Because the table body had already been
+  purged, this old result **does not** establish a persisted-row join.
+- Under an owner-authorized reconnection of the **actual ChatGPT Work private
+  MCP app**, the host made a fresh synthetic `create_table` followed by
+  `get_table`; both returned the same metadata for a one-hour waiting table.
+  The new grant was created at **04:51:35.627 UTC**, followed by the table
+  creation at **04:52:06.146 UTC**. The host did not expose an exact
+  SaaS client build or durable request-level trace ID.
+- A second temporary staging version
+  `ddd0e763-ad29-4b38-82fe-9fbc1e511ba8`
+  (operator-annotated source `756c21b9ee6e`) read the **independent SQLite**
+  rows at **04:55:15.770 UTC**. GuestDO reported the creator identity present,
+  an `initialized` reservation, and request fingerprint
+  `4610bca73dd2bd4a84a8db7e`. TableDO reported persisted `waiting`
+  metadata, matching created/expiry timestamps, matching fingerprint,
+  matching creator guest, and Seat 1 creator membership. This is a direct
+  cross-DO creation-request join, not an HTTP-success inference.
+- The same GuestDO read showed a most-recent **active** grant with fingerprint
+  `0d804cfcce827de1052d34bd`, creation time
+  **04:51:35.627 UTC**, and exactly the bounded scopes
+  `tables:read`, `tables:write`, `tables:delete`,
+  `events:subscribe`. Four older grants were `revoked` in independent
+  SQLite storage. This provides independent same-guest, time-correlated
+  grant state but **not** a per-call cryptographic match of that grant to the
+  host broker's token or a post-revocation refusal in this new run.
+- The operator restored `STAGING_EVIDENCE_MODE=off` in staging version
+  `63d7d80a-c17c-4d37-8cfa-fd1e769c3250`, deleted the one-time
+  Cloudflare secret (which produced version
+  `a5eb0215-eb2e-4968-b840-a846f3c185da`), removed the local key and
+  temporary enabled configuration, and verified the probe returned
+  **404** afterward. No production Worker was deployed.
+- **Still incomplete:** The newly active grant was not browser-revoked and
+  retested in this bounded run, host SaaS build identity is unavailable,
+  older refresh/denial/revocation windows remain separate, and actual host
+  Disconnect remains not run. Version-to-source mappings above are operator
+  deployment annotations, not cryptographic bundle attestations. Retain
+  Draft PR #41 and open Issue #23; do not mark notifications or autonomous
+  execution verified.
