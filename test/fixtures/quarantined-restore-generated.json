@@ -1,0 +1,60 @@
+{
+  "name": "agent-table-staging",
+  "account_id": "ffffffffffffffffffffffffffffffff",
+  "workers_dev": false,
+  "preview_urls": false,
+  "main": "src/index.ts",
+  "compatibility_flags": ["global_fetch_strictly_public", "nodejs_compat"],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "TABLES",
+        "class_name": "TableDO"
+      },
+      {
+        "name": "GUESTS",
+        "class_name": "GuestDO"
+      },
+      {
+        "name": "OAUTH_SERIALIZER",
+        "class_name": "OAuthTokenDO"
+      },
+      {
+        "name": "ADMISSION",
+        "class_name": "AdmissionDO"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["TableDO", "GuestDO"]
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": ["OAuthTokenDO"]
+    },
+    {
+      "tag": "v3",
+      "new_sqlite_classes": ["AdmissionDO"]
+    }
+  ],
+  "kv_namespaces": [
+    {
+      "binding": "OAUTH_KV",
+      "id": "11111111111111111111111111111111"
+    }
+  ],
+  "vars": {
+    "RELEASE_ENVIRONMENT": "staging",
+    "RELEASE_BUILD_SHA": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "RELEASE_PROFILE": "manual",
+    "RESTORE_QUARANTINE": "true",
+    "PUBLIC_ORIGIN": "https://staging.service.test",
+    "ENABLE_MCP_SUBSCRIPTIONS": "false",
+    "ENABLE_OPENAI_EVENTS": "false",
+    "ALLOW_NEW_GUESTS": "false",
+    "ALLOW_NEW_TABLES": "false",
+    "ALLOW_OUTBOUND_NOTIFICATIONS": "false"
+  }
+}

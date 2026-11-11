@@ -1,0 +1,65 @@
+{
+  "schemaVersion": 1,
+  "host": {
+    "product": "ChatGPT Work",
+    "surface": "Owner-authorized private MCP app Agent Table Test2",
+    "exposedBuild": "not-exposed-in-tested-host",
+    "eligibility": "eligible",
+    "origin": "actual-host"
+  },
+  "deployment": {
+    "endpoint": "https://agent-table-test.outliner-online.com/mcp",
+    "buildSha": "e067bf2e913e61e386284303a75a4b253fd9db2a",
+    "isolated": true
+  },
+  "observedAt": "2026-11-10T00:59:43Z",
+  "syntheticRunTag": "chatgpt_work_20261110_revocation_staging",
+  "cases": {
+    "deniedConsent": {
+      "status": "not-run",
+      "clientObservationRef": null,
+      "serverObservationRef": null
+    },
+    "guestChoice": {
+      "status": "not-run",
+      "clientObservationRef": null,
+      "serverObservationRef": null
+    },
+    "approvedConsent": {
+      "status": "not-run",
+      "clientObservationRef": null,
+      "serverObservationRef": null
+    },
+    "createdTable": {
+      "status": "not-run",
+      "clientObservationRef": null,
+      "serverObservationRef": null
+    },
+    "readTable": {
+      "status": "not-run",
+      "clientObservationRef": null,
+      "serverObservationRef": null
+    },
+    "refreshedToken": {
+      "status": "not-run",
+      "clientObservationRef": null,
+      "serverObservationRef": null
+    },
+    "readAfterRefresh": {
+      "status": "not-run",
+      "clientObservationRef": null,
+      "serverObservationRef": null
+    },
+    "revokedInBrowser": {
+      "status": "passed",
+      "clientObservationRef": "pr41_6756230954_owner_revoke",
+      "serverObservationRef": "pr41_6756230954_revoke_303"
+    },
+    "rejectedAfterRevocation": {
+      "status": "passed",
+      "clientObservationRef": "pr41_6756230954_host_invalid_grant",
+      "serverObservationRef": "pr41_6756230954_oauth_token_400"
+    }
+  },
+  "disconnect": "not-run"
+}
