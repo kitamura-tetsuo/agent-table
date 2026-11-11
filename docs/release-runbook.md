@@ -134,6 +134,17 @@ secrets contain no credential values in their **key/value manifests**; actual
 Cloudflare Worker secret values are injected through its protected secret
 mechanism and never committed to a repository, workflow log or issue.
 
+Before approving either deployment, run the corresponding **no-publish**
+`verify-staging-config.yml` or `verify-production-config.yml` from the
+current `main` commit with `expected_sha` set to that commit's full SHA.
+The owner must approve access to that environment's protected inputs. These
+jobs intentionally carry no Cloudflare tokens, check the exact private config
+bytes and peer/environment identity, and require `RELEASE_OPERATIONS_JSON` to
+remain `pending` with unverified retention, cost, restore and rollback claims.
+They cannot satisfy the later deployment gate. After any `main` change,
+regenerate both environments' private config SHA-bound evidence rather than
+reusing an earlier approval or an obsolete build identity.
+
 ## 2. Assemble exact immutable release inputs
 
 Use a dedicated operator host and secret manager, not a public terminal log.
@@ -342,12 +353,12 @@ can change, and privacy data cannot be guaranteed erased by rollback.
 | Acceptance item | Current proof | State |
 | --- | --- | --- |
 | Structural preflight, fail-closed checks and generated-restore local oracle | Local and CI tests, PR #46 | Implemented code; not hosted approval |
-| Staging secret access | [read-only settings check](https://github.com/kitamura-tetsuo/agent-table/actions/runs/42969129958) | Partial: not a deploy |
-| Separate configured protected Environments | Repository policy readback on 2026-11-11 | Requires current approval |
-| Both true Cloudflare Worker/DO/KV identities, origins, inventories | Not supplied for this release | **Blocked** |
+| Staging secret/config access | [protected config readback #43115024418](https://github.com/kitamura-tetsuo/agent-table/actions/runs/43115024418), commit `70cfe1c`, SHA-256 `22b619dd3af71bce1688a7f3ec2e451654cea0a28ac6e166f70bfa98513bb867` | Verified no-publish only; stale after new `main` commit |
+| Separate configured protected Environments | Human reviewer and `main` branch protection readback 2026-11-11; staging and production Cloudflare GET access [#43104683889](https://github.com/kitamura-tetsuo/agent-table/actions/runs/43104683889), [#43104688167](https://github.com/kitamura-tetsuo/agent-table/actions/runs/43104688167) | Verified read-only; each deployment still needs a separate approval |
+| Both true Cloudflare Worker/DO/KV identities, origins, inventories | Read-only Worker/domain/namespace/version/secret-name checks recorded on [Issue #50](https://github.com/kitamura-tetsuo/agent-table/issues/50) | Staging active Worker is missing `RELEASE_*` bindings and needs separately reviewed bootstrap; production active Worker already has them |
 | Staging protected deploy, host smoke, retained-state update/rollback | No #50 approved live run | **Not run** |
-| Production origin, scoped tokens, protected deploy and host smoke | No #50 approved live run | **Not run** |
-| Measured hosted CPU/requests/DO/KV/logs plus current pricing | No authenticated measurement receipt | **Not measured** |
+| Production origin, scoped tokens, protected deploy and host smoke | `agent-table.outliner-online.com` domain/HTTPS health verified; production no-publish config still required | **No deployment** |
+| Measured hosted CPU/requests/DO/KV/logs plus current pricing | Cloudflare GraphQL for 2026-11-04–11 UTC: staging Worker 5,293 requests/0 errors, production Worker 271/0, temporary PR46 Worker 33/0, DO invocation group 2,090 requests; account billing usage GET returned 403 (`insufficient_permissions`), DO storage groups returned no records; Workers Logs `logpush=false` and settings `observability=null` | **Partial measurement; billed usage, retention and actual DO/KV storage unresolved** |
 | Post-snapshot independent authority reconciliation | [Issue #51](https://github.com/kitamura-tetsuo/agent-table/issues/51) | **Out of scope; quarantined** |
 
 Record each actual deployment in a separate staging/production issue comment
