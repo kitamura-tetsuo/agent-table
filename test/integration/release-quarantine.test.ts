@@ -104,6 +104,25 @@ describe("restore quarantine ingress (actual Worker handler)", () => {
       ).not.toBeNull();
     }
   });
+
+  it("publishes only the approved non-secret build/profile on health readback", async () => {
+    const response = await dispatchWithBindings("/health", {
+      ...env,
+      RELEASE_ENVIRONMENT: "staging",
+      RESTORE_QUARANTINE: "false",
+      ...manualStagingRelease,
+    } as Env);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+    expect(await response.json()).toEqual({
+      status: "ok",
+      release: {
+        environment: "staging",
+        profile: "manual",
+        buildSha: "a".repeat(40),
+      },
+    });
+  });
 });
 
 async function storedPrivateTable() {
