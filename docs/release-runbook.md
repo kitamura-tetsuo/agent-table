@@ -79,6 +79,18 @@ reviewed change/receipt; it is not permission to release or unquarantine.
    tokens using read-only operations first. GitHub's `GITHUB_TOKEN` for the
    approved workflow requires Actions Read to authenticate exact-main CI.
 
+To verify the newly configured read tokens without publishing, dispatch
+`Protected release read credential verification` from `main` once for each
+`target_environment` (`staging` and `production`), supplying the exact current
+`main` SHA. After the owner explicitly approves each protected Environment,
+the job uses **only** that Environment's `CLOUDFLARE_READ_TOKEN` and reads
+both Workers' settings, subdomain exposure, secret names, deployed versions,
+KV namespace metadata, and account domain/SQLite namespace lists. A green
+result proves the required GET access is available; it **does not prove the
+token lacks write privileges**, nor does it authorize a release. Failed
+probes must be resolved by changing token scope through the standard owner
+approval process, never by temporarily enabling public routes or publishing.
+
 The following protected Environment secrets are required for **each**
 environment; the two sets must not share credentials or private resources:
 
