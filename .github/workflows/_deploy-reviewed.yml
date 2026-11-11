@@ -9,6 +9,14 @@ on:
       expected_sha:
         required: true
         type: string
+      bootstrap_staging:
+        required: false
+        type: boolean
+        default: false
+      expected_active_version_id:
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -92,6 +100,8 @@ jobs:
         env:
           TARGET_ENVIRONMENT: ${{ inputs.target_environment }}
           EXPECTED_CONFIG_SHA: ${{ steps.candidate.outputs.config_sha }}
+          BOOTSTRAP_STAGING: ${{ inputs.bootstrap_staging }}
+          EXPECTED_ACTIVE_VERSION_ID: ${{ inputs.expected_active_version_id }}
           CLOUDFLARE_READ_TOKEN: ${{ secrets.CLOUDFLARE_READ_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           GITHUB_TOKEN: ${{ github.token }}
@@ -112,7 +122,9 @@ jobs:
               --peer-config "$scratch/peer.json" \
               --secret-inventory "$scratch/secrets.json" \
               --evidence "$scratch/evidence.json" \
-              --operations "$scratch/operations.json" > "$scratch/approval.txt"
+              --operations "$scratch/operations.json" \
+              --bootstrap-staging "$BOOTSTRAP_STAGING" \
+              --expected-active-version-id "$EXPECTED_ACTIVE_VERSION_ID" > "$scratch/approval.txt"
           node scripts/require-release-approval.mjs \
             "$TARGET_ENVIRONMENT" "$GITHUB_SHA" "$EXPECTED_CONFIG_SHA" \
             < "$scratch/approval.txt"
@@ -121,7 +133,10 @@ jobs:
         if: steps.gate.outputs.approved == 'true'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_READ_TOKEN: ${{ secrets.CLOUDFLARE_READ_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          BOOTSTRAP_STAGING: ${{ inputs.bootstrap_staging }}
+          EXPECTED_ACTIVE_VERSION_ID: ${{ inputs.expected_active_version_id }}
           EXPECTED_CONFIG_SHA: ${{ steps.gate.outputs.config_sha }}
           GITHUB_TOKEN: ${{ github.token }}
         run: |
@@ -136,6 +151,28 @@ jobs:
             import { githubReader, verifyCurrentMainHead } from "./scripts/release-authorization.mjs";
             await verifyCurrentMainHead(process.env.GITHUB_SHA, githubReader(process.env.GITHUB_TOKEN));
           '
+          if [[ "$BOOTSTRAP_STAGING" == "true" ]]; then
+            scratch="$RUNNER_TEMP/agent-table-release-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+            CONFIG_PATH="$config" PEER_PATH="$scratch/peer.json" node --input-type=module -e '
+              import { readFileSync } from "node:fs";
+              import { cloudflareReader, readCloudflareDeployment } from "./scripts/release-provider.mjs";
+              try {
+                const config = JSON.parse(readFileSync(process.env.CONFIG_PATH, "utf8"));
+                const peer = JSON.parse(readFileSync(process.env.PEER_PATH, "utf8"));
+                const live = await readCloudflareDeployment(
+                  config, peer, cloudflareReader(process.env.CLOUDFLARE_READ_TOKEN),
+                  { bootstrapStaging: true },
+                );
+                if (live.targetState.versionId !== process.env.EXPECTED_ACTIVE_VERSION_ID) {
+                  throw Error("active-version-changed");
+                }
+                process.stdout.write("STAGING_BOOTSTRAP_PREWRITE_VALID\n");
+              } catch {
+                process.stderr.write("STAGING_BOOTSTRAP_PREWRITE_BLOCKED\n");
+                process.exitCode = 1;
+              }
+            '
+          fi
           npx wrangler deploy --config "$config"
       - name: Read back exact deployed Worker, namespaces, route, and build
         if: steps.gate.outputs.approved == 'true'

@@ -7,6 +7,16 @@ on:
         description: Exact reviewed main commit SHA (40 lowercase hex digits)
         required: true
         type: string
+      bootstrap_staging:
+        description: First-time staging identity bootstrap; disables new guest/table intake and preserves existing DO/KV
+        type: boolean
+        required: true
+        default: false
+      expected_active_version_id:
+        description: Current deployed staging Worker version UUID, mandatory for first-time bootstrap
+        type: string
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -18,4 +28,6 @@ jobs:
     with:
       target_environment: staging
       expected_sha: ${{ inputs.expected_sha }}
+      bootstrap_staging: ${{ inputs.bootstrap_staging }}
+      expected_active_version_id: ${{ inputs.expected_active_version_id }}
     secrets: inherit

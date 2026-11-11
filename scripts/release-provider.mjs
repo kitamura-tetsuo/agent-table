@@ -28,6 +28,14 @@ const RELEASE_VARS = [
   "ALLOW_NEW_GUESTS",
   "ALLOW_NEW_TABLES",
 ];
+// The only initial staging exception is four absent identity bindings.
+// Never permit missing data-resource, exposure, or safety bindings.
+const LEGACY_STAGING_ABSENT = [
+  "RELEASE_ENVIRONMENT",
+  "RELEASE_BUILD_SHA",
+  "RELEASE_PROFILE",
+  "RESTORE_QUARANTINE",
+];
 
 export class ProviderVerificationError extends Error {
   constructor(code) {
@@ -55,7 +63,13 @@ function validateAccountWorker(config) {
  * Inspect one existing deployment, including the currently deployed version.
  * It is deliberately not a bootstrap path for an unknown production Worker.
  */
-export async function inspectWorker(config, request, domains, namespaces) {
+export async function inspectWorker(
+  config,
+  request,
+  domains,
+  namespaces,
+  { bootstrapStaging = false } = {},
+) {
   validateAccountWorker(config);
   const prefix = `/client/v4/accounts/${config.account_id}/workers/scripts/${config.name}`;
   const kvId = config.kv_namespaces[0].id.toLowerCase();
@@ -225,14 +239,34 @@ export async function inspectWorker(config, request, domains, namespaces) {
       .filter((binding) => binding?.type === "plain_text")
       .map((binding) => [binding.name, binding.text]),
   );
+  const missingIdentity = [];
   for (const name of RELEASE_VARS) {
+    if (
+      bootstrapStaging &&
+      config.name === "agent-table-staging" &&
+      LEGACY_STAGING_ABSENT.includes(name) &&
+      textBindings[name] === undefined &&
+      versionText[name] === undefined
+    ) {
+      missingIdentity.push(name);
+      continue;
+    }
     ensure(
       typeof textBindings[name] === "string" &&
         versionText[name] === textBindings[name],
       "provider-version-config-unverified",
     );
   }
+  if (bootstrapStaging) {
+    ensure(
+      config.name === "agent-table-staging" &&
+        missingIdentity.length === LEGACY_STAGING_ABSENT.length &&
+        LEGACY_STAGING_ABSENT.every((name) => missingIdentity.includes(name)),
+      "staging-bootstrap-identity-state-unverified",
+    );
+  }
   return {
+    missingIdentity,
     accountId: config.account_id.toLowerCase(),
     workerName: config.name,
     origin: config.vars.PUBLIC_ORIGIN,
@@ -348,7 +382,12 @@ export function cloudflareReader(token, fetchImpl = fetch) {
   };
 }
 
-export async function readCloudflareDeployment(config, peer, reader) {
+export async function readCloudflareDeployment(
+  config,
+  peer,
+  reader,
+  { bootstrapStaging = false } = {},
+) {
   const accounts = new Map();
   for (const value of [config, peer]) {
     if (accounts.has(value.account_id)) continue;
@@ -373,6 +412,7 @@ export async function readCloudflareDeployment(config, peer, reader) {
       reader,
       accounts.get(config.account_id).domains,
       accounts.get(config.account_id).namespaces,
+      { bootstrapStaging },
     ),
     inspectWorker(
       peer,

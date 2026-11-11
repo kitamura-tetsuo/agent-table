@@ -41,6 +41,51 @@ test("authenticated readback joins a Worker, SQLite DOs, KV, secrets, origin and
   );
 });
 
+test("legacy staging identity exception only accepts exactly four absent release bindings", async () => {
+  const names = [
+    "RELEASE_ENVIRONMENT",
+    "RELEASE_BUILD_SHA",
+    "RELEASE_PROFILE",
+    "RESTORE_QUARANTINE",
+  ];
+  const mock = makeProviderMock(config, peer);
+  const prefix =
+    `/client/v4/accounts/${config.account_id}/workers/scripts/${config.name}`;
+  const settings = mock.routes.get(`${prefix}/settings`);
+  const version = mock.routes.get(
+    `${prefix}/versions/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb`,
+  );
+  settings.bindings = settings.bindings.filter((value) => !names.includes(value.name));
+  version.resources.bindings = version.resources.bindings.filter(
+    (value) => !names.includes(value.name),
+  );
+  await assert.rejects(
+    readCloudflareDeployment(config, peer, mock.read),
+    /provider-version-config-unverified/,
+  );
+  const result = await readCloudflareDeployment(config, peer, mock.read, {
+    bootstrapStaging: true,
+  });
+  assert.deepEqual(result.targetState.missingIdentity, names);
+  assert.deepEqual(result.peerState.missingIdentity, []);
+
+  settings.bindings = settings.bindings.filter(
+    (value) => value.name !== "ALLOW_NEW_TABLES",
+  );
+  version.resources.bindings = version.resources.bindings.filter(
+    (value) => value.name !== "ALLOW_NEW_TABLES",
+  );
+  await assert.rejects(
+    readCloudflareDeployment(config, peer, mock.read, { bootstrapStaging: true }),
+    /provider-version-config-unverified/,
+  );
+  const clean = makeProviderMock(config, peer);
+  await assert.rejects(
+    readCloudflareDeployment(config, peer, clean.read, { bootstrapStaging: true }),
+    /staging-bootstrap-identity-state-unverified/,
+  );
+});
+
 test("does not accept fabricated target or peer resource ownership", async () => {
   const checks = [
     [
