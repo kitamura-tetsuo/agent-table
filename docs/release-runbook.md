@@ -47,8 +47,9 @@ reviewed change/receipt; it is not permission to release or unquarantine.
    Never reuse an existing legacy KV-backed OAuth serializer as a new SQLite
    class; review the deployed migration tags before any change.
 2. Create independent Workers and domain bindings with `workers_dev: false`
-   and `preview_urls: false`. Confirm these **live** settings, not just the
-   JSON. The release gate checks the active Worker version and SQLite exports,
+   and `preview_urls: false`. Confirm these **live** settings and the paginated
+   account namespace owner list, not just JSON. The release gate checks the
+   active Worker version and SQLite exports,
    an exclusive enabled domain route, and both exposure switches; missing
    settings fail closed. A valid custom domain must already resolve over
    HTTPS with a certificate for the intended host. Verify Host/Origin behavior

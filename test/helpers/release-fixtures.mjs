@@ -142,6 +142,7 @@ const namespace = (env, index) =>
 
 export function makeProviderMock(config, peer) {
   const routes = new Map();
+  const namespaces = [];
   const domains = [config, peer].map((worker) => ({
     service: worker.name,
     hostname: new URL(worker.vars.PUBLIC_ORIGIN).hostname,
@@ -150,6 +151,15 @@ export function makeProviderMock(config, peer) {
   }));
   for (const worker of [config, peer]) {
     const env = worker.vars.RELEASE_ENVIRONMENT;
+    namespaces.push(
+      ...DO_CLASSES.map(([, className], index) => ({
+        id: namespace(env, index),
+        class: className,
+        name: className,
+        script: worker.name,
+        use_sqlite: true,
+      })),
+    );
     const base = `/client/v4/accounts/${worker.account_id}/workers/scripts/${worker.name}`;
     const bindings = [
       ...DO_CLASSES.map(([name, class_name], i) => ({
@@ -221,6 +231,18 @@ export function makeProviderMock(config, peer) {
         per_page: 100,
         total_pages: 1,
         total_count: domains.length,
+      },
+    },
+  );
+  routes.set(
+    `/client/v4/accounts/${config.account_id}/workers/durable_objects/namespaces?page=1&per_page=100`,
+    {
+      result: namespaces,
+      resultInfo: {
+        page: 1,
+        per_page: 100,
+        total_pages: 1,
+        total_count: namespaces.length,
       },
     },
   );

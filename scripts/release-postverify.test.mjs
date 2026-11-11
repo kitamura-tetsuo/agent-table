@@ -62,6 +62,12 @@ test("changed private namespace refuses success after a seemingly healthy releas
     .get(path)
     .bindings.find((x) => x.name === "TABLES").namespace_id =
     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  const nsPath = `/client/v4/accounts/${config.account_id}/workers/durable_objects/namespaces?page=1&per_page=100`;
+  provider.routes
+    .get(nsPath)
+    .result.find(
+      (entry) => entry.script === config.name && entry.class === "TableDO",
+    ).id = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
   await assert.rejects(
     verifyPublishedRelease({
       config,

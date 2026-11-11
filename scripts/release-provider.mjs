@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 const API_ORIGIN = "https://api.cloudflare.com";
 const ACCOUNT_ID = /^[a-f0-9]{32}$/i;
 const WORKER_NAME = /^[a-z0-9][a-z0-9-]{0,62}$/;
-const NAMESPACE_ID = /^[a-f0-9-]{32,36}$/i;
+const NAMESPACE_ID = /^[a-f0-9]{32}$/i;
 const REQUIRED_DOS = new Map([
   ["TABLES", "TableDO"],
   ["GUESTS", "GuestDO"],
@@ -43,7 +43,7 @@ function validateAccountWorker(config) {
  * Inspect one existing deployment, including the currently deployed version.
  * It is deliberately not a bootstrap path for an unknown production Worker.
  */
-export async function inspectWorker(config, request, domains) {
+export async function inspectWorker(config, request, domains, namespaces) {
   validateAccountWorker(config);
   const prefix = `/client/v4/accounts/${config.account_id}/workers/scripts/${config.name}`;
   const kvId = config.kv_namespaces[0].id.toLowerCase();
@@ -59,6 +59,7 @@ export async function inspectWorker(config, request, domains) {
     ]);
 
   ensure(Array.isArray(settings?.bindings), "provider-bindings-unavailable");
+  ensure(Array.isArray(namespaces), "provider-do-list-unavailable");
   const doNamespaces = {};
   for (const [name, className] of REQUIRED_DOS) {
     const binding = readBinding(
@@ -66,14 +67,21 @@ export async function inspectWorker(config, request, domains) {
       name,
       "durable_object_namespace",
     );
+    const owned = namespaces.filter(
+      (item) => item?.script === config.name && item?.class === className,
+    );
     ensure(
       binding.class_name === className &&
         !binding.script_name &&
         !binding.dispatch_namespace &&
-        NAMESPACE_ID.test(binding.namespace_id),
+        owned.length === 1 &&
+        NAMESPACE_ID.test(owned[0].id) &&
+        owned[0].use_sqlite === true &&
+        (!binding.namespace_id ||
+          binding.namespace_id.toLowerCase() === owned[0].id.toLowerCase()),
       "provider-do-ownership-unverified",
     );
-    doNamespaces[name] = binding.namespace_id.toLowerCase();
+    doNamespaces[name] = owned[0].id.toLowerCase();
   }
   ensure(
     new Set(Object.values(doNamespaces)).size === REQUIRED_DOS.size,
@@ -277,30 +285,56 @@ export async function readCloudflareDeployment(config, peer, reader) {
   const accounts = new Map();
   for (const value of [config, peer]) {
     if (accounts.has(value.account_id)) continue;
-    const base = `/client/v4/accounts/${value.account_id}/workers/domains`;
-    const domains = [];
-    let totalPages = 1;
-    for (let page = 1; page <= totalPages; page++) {
-      const response = await reader(`${base}?page=${page}&per_page=100`, true);
-      const info = response?.resultInfo;
-      ensure(
-        Array.isArray(response?.result) &&
-          info?.page === page &&
-          Number.isSafeInteger(info.total_pages) &&
-          info.total_pages >= 1 &&
-          info.total_pages <= 20 &&
-          (page === 1 || info.total_pages === totalPages),
+    const prefix = `/client/v4/accounts/${value.account_id}`;
+    const [domains, namespaces] = await Promise.all([
+      readAllPages(
+        reader,
+        `${prefix}/workers/domains`,
         "provider-domain-pagination-unverified",
-      );
-      totalPages = info.total_pages;
-      domains.push(...response.result);
-    }
-    accounts.set(value.account_id, domains);
+      ),
+      readAllPages(
+        reader,
+        `${prefix}/workers/durable_objects/namespaces`,
+        "provider-do-pagination-unverified",
+      ),
+    ]);
+    accounts.set(value.account_id, { domains, namespaces });
   }
   const [targetState, peerState] = await Promise.all([
-    inspectWorker(config, reader, accounts.get(config.account_id)),
-    inspectWorker(peer, reader, accounts.get(peer.account_id)),
+    inspectWorker(
+      config,
+      reader,
+      accounts.get(config.account_id).domains,
+      accounts.get(config.account_id).namespaces,
+    ),
+    inspectWorker(
+      peer,
+      reader,
+      accounts.get(peer.account_id).domains,
+      accounts.get(peer.account_id).namespaces,
+    ),
   ]);
   verifyProviderIsolation(targetState, peerState, config, peer);
   return { targetState, peerState };
+}
+
+async function readAllPages(reader, path, code) {
+  const items = [];
+  let totalPages = 1;
+  for (let page = 1; page <= totalPages; page++) {
+    const response = await reader(`${path}?page=${page}&per_page=100`, true);
+    const info = response?.resultInfo;
+    ensure(
+      Array.isArray(response?.result) &&
+        info?.page === page &&
+        Number.isSafeInteger(info.total_pages) &&
+        info.total_pages >= 1 &&
+        info.total_pages <= 20 &&
+        (page === 1 || info.total_pages === totalPages),
+      code,
+    );
+    totalPages = info.total_pages;
+    items.push(...response.result);
+  }
+  return items;
 }

@@ -64,7 +64,7 @@ test("does not accept fabricated target or peer resource ownership", async () =>
       (value) =>
         (value.bindings.find(
           (binding) => binding.name === "TABLES",
-        ).namespace_id = ""),
+        ).namespace_id = "a".repeat(32)),
       "provider-do-ownership-unverified",
     ],
     [
@@ -121,6 +121,13 @@ test("mismatched public origin and recycled peer namespace deny release", async 
     targetSettings.bindings.find(
       (value) => value.name === "TABLES",
     ).namespace_id;
+  const nsPath = `/client/v4/accounts/${config.account_id}/workers/durable_objects/namespaces?page=1&per_page=100`;
+  const namespaces = reused.routes.get(nsPath).result;
+  namespaces.find(
+    (value) => value.script === peer.name && value.class === "TableDO",
+  ).id = namespaces.find(
+    (value) => value.script === config.name && value.class === "TableDO",
+  ).id;
   await assert.rejects(
     readCloudflareDeployment(config, peer, reused.read),
     /provider-environment-shared-do/,
@@ -135,11 +142,37 @@ test("post-deploy readback must match all exact release vars", async () => {
     mock.routes.get(
       `/client/v4/accounts/${config.account_id}/workers/domains?page=1&per_page=100`,
     ).result,
+    mock.routes.get(
+      `/client/v4/accounts/${config.account_id}/workers/durable_objects/namespaces?page=1&per_page=100`,
+    ).result,
   );
   state.textBindings.RELEASE_BUILD_SHA = "b".repeat(40);
   assert.throws(
     () => verifyDeployedConfiguration(state, config),
     /provider-deployed-config-mismatch/,
+  );
+});
+
+test("DO ownership is read from the account namespace list if settings omit its ID", async () => {
+  const mock = makeProviderMock(config, peer);
+  const settings = mock.routes.get(
+    `/client/v4/accounts/${config.account_id}/workers/scripts/${config.name}/settings`,
+  );
+  delete settings.bindings.find((binding) => binding.name === "TABLES")
+    .namespace_id;
+  const result = await readCloudflareDeployment(config, peer, mock.read);
+  assert.equal(result.targetState.doNamespaces.TABLES.length, 32);
+
+  const nsPath = `/client/v4/accounts/${config.account_id}/workers/durable_objects/namespaces?page=1&per_page=100`;
+  const listEntry = mock.routes
+    .get(nsPath)
+    .result.find(
+      (item) => item.script === config.name && item.class === "TableDO",
+    );
+  listEntry.use_sqlite = false;
+  await assert.rejects(
+    readCloudflareDeployment(config, peer, mock.read),
+    /provider-do-ownership-unverified/,
   );
 });
 
@@ -163,6 +196,20 @@ test("domain readback requires all pages and refuses incomplete pagination", asy
   await assert.rejects(
     readCloudflareDeployment(config, peer, paginated.read),
     /provider-domain-pagination-unverified/,
+  );
+});
+
+test("missing Durable Object namespace listing page fails closed", async () => {
+  const mock = makeProviderMock(config, peer);
+  const nsPath = `/client/v4/accounts/${config.account_id}/workers/durable_objects/namespaces?page=1&per_page=100`;
+  mock.routes.get(nsPath).resultInfo.total_pages = 2;
+  mock.routes.set(
+    `/client/v4/accounts/${config.account_id}/workers/durable_objects/namespaces?page=2&per_page=100`,
+    { result: [], resultInfo: { page: 1, total_pages: 2 } },
+  );
+  await assert.rejects(
+    readCloudflareDeployment(config, peer, mock.read),
+    /provider-do-pagination-unverified/,
   );
 });
 
