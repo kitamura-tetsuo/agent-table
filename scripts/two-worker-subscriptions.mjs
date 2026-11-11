@@ -438,9 +438,15 @@ try {
     slow.setNotificationHandler("notifications/resources/updated", (note) => {
       slowHints.push(note.params.uri);
     });
-    const pendingSlow = slow.listen({
-      resourceSubscriptions: [created.ownInboxUri],
-    });
+    // Attach both outcomes immediately: a slow consumer may be closed before
+    // the withheld HTTP response reaches the SDK, and Node must not see an
+    // unhandled rejection while the peer commits the unread burst.
+    const pendingSlow = slow
+      .listen({ resourceSubscriptions: [created.ownInboxUri] })
+      .then(
+        (subscription) => ({ kind: "active", subscription }),
+        (error) => ({ kind: "closed", error }),
+      );
     await deadline(responsePrepared);
     assert.equal(await deadline(resumed.closed), "graceful");
     for (let i = 0; i < 4; i++) {
@@ -454,13 +460,23 @@ try {
       });
     }
     releaseResponse();
-    const slowSubscription = await deadline(pendingSlow);
-    assert.deepEqual(slowSubscription.honoredFilter, {
-      resourceSubscriptions: [created.ownInboxUri],
-    });
-    assert.equal(await deadline(slowSubscription.closed), "graceful");
+    const slowResult = await deadline(pendingSlow);
+    if (slowResult.kind === "active") {
+      assert.deepEqual(slowResult.subscription.honoredFilter, {
+        resourceSubscriptions: [created.ownInboxUri],
+      });
+      assert.equal(await deadline(slowResult.subscription.closed), "graceful");
+      await slowResult.subscription.close();
+    } else {
+      // Deliberate response withholding permits the server to close a slow
+      // listener before its acknowledgement arrives. Only the SDK's stream-end
+      // error is expected; the retained unread gap is verified below.
+      assert.match(
+        slowResult.error?.message ?? "",
+        /^subscriptions\/listen: stream ended$/,
+      );
+    }
     assert(slowHints.length <= 4, "unread SSE output must remain bounded");
-    await slowSubscription.close();
     await slow.close();
     console.log(
       "PASS unread cross-edge consumer: bounded SDK frames and cleanup",
