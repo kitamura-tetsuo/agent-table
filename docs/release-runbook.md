@@ -94,6 +94,11 @@ token lacks write privileges**, nor does it authorize a release. Failed
 probes must be resolved by changing token scope through the standard owner
 approval process, never by temporarily enabling public routes or publishing.
 
+The verifier creates a GitHub Environment deployment **record** to make
+reviewer approvals work with the deployment review API. This record is only
+an approval audit trail: the workflow does not deploy or modify a Cloudflare
+Worker, and this record is not staging or production release evidence.
+
 The following protected Environment secrets are required for **each**
 environment; the two sets must not share credentials or private resources:
 

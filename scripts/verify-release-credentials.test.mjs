@@ -110,7 +110,7 @@ test("manual read-token job is pinned to main, protected and never exposes a wri
   assert.match(workflow, /type: choice\s+options: \[staging, production\]/);
   assert.match(workflow, /github\.ref == 'refs\/heads\/main'/);
   assert.match(workflow, /name: \$\{\{ inputs\.target_environment \}\}/);
-  assert.match(workflow, /deployment: false/);
+  assert.match(workflow, /deployment: true/);
   assert.match(workflow, /permissions:\s+contents: read/);
   assert.doesNotMatch(workflow, /contents: write|actions: write/);
   assert.match(workflow, /EXPECTED_SHA.*GITHUB_SHA/);
