@@ -1,0 +1,94 @@
+name: Protected staging config verification (no publish)
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: Exact reviewed main commit SHA (40 lowercase hex digits)
+        required: true
+        type: string
+
+# This offline check has no Cloudflare credentials or write permissions.
+permissions:
+  contents: read
+
+jobs:
+  verify-staging-config:
+    if: >-
+      github.repository == 'kitamura-tetsuo/agent-table' &&
+      github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/main'
+    environment:
+      name: staging
+      deployment: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+      - name: Verify protected main identity
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_SHA" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$EXPECTED_SHA" == "$GITHUB_SHA" ]]
+          [[ "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]]
+      - name: Validate encrypted Environment inputs without publishing
+        shell: bash
+        env:
+          RELEASE_CONFIG_JSON: ${{ secrets.RELEASE_CONFIG_JSON }}
+          PEER_CONFIG_JSON: ${{ secrets.PEER_CONFIG_JSON }}
+          RELEASE_SECRET_INVENTORY_JSON: ${{ secrets.RELEASE_SECRET_INVENTORY_JSON }}
+          RELEASE_EVIDENCE_JSON: ${{ secrets.RELEASE_EVIDENCE_JSON }}
+          RELEASE_OPERATIONS_JSON: ${{ secrets.RELEASE_OPERATIONS_JSON }}
+        run: |
+          set -euo pipefail
+          umask 077
+          for name in RELEASE_CONFIG_JSON PEER_CONFIG_JSON RELEASE_SECRET_INVENTORY_JSON RELEASE_EVIDENCE_JSON RELEASE_OPERATIONS_JSON; do
+            [[ -n "${!name}" ]] || { printf 'Missing protected input: %s\n' "$name" >&2; exit 1; }
+          done
+          scratch="$(mktemp -d "$RUNNER_TEMP/agent-table-staging-config.XXXXXXXX")"
+          trap 'rm -f "$scratch/config.json" "$scratch/peer.json" "$scratch/inventory.json" "$scratch/evidence.json" "$scratch/operations.json" "$scratch/preflight.txt"; rmdir "$scratch"' EXIT
+          printf '%s' "$RELEASE_CONFIG_JSON" > "$scratch/config.json"
+          printf '%s' "$PEER_CONFIG_JSON" > "$scratch/peer.json"
+          printf '%s' "$RELEASE_SECRET_INVENTORY_JSON" > "$scratch/inventory.json"
+          printf '%s' "$RELEASE_EVIDENCE_JSON" > "$scratch/evidence.json"
+          printf '%s' "$RELEASE_OPERATIONS_JSON" > "$scratch/operations.json"
+          node scripts/release-preflight.mjs \
+            --environment staging --profile manual --build-sha "$GITHUB_SHA" \
+            --config "$scratch/config.json" --peer-config "$scratch/peer.json" \
+            --secret-inventory "$scratch/inventory.json" \
+            --evidence "$scratch/evidence.json" > "$scratch/preflight.txt"
+          node --input-type=module - "$scratch" <<'NODE'
+          import { createHash } from "node:crypto";
+          import { readFileSync } from "node:fs";
+
+          const directory = process.argv[2];
+          const configText = readFileSync(`${directory}/config.json`, "utf8");
+          const config = JSON.parse(configText);
+          const evidence = JSON.parse(readFileSync(`${directory}/evidence.json`, "utf8"));
+          const operations = JSON.parse(readFileSync(`${directory}/operations.json`, "utf8"));
+          const digest = createHash("sha256").update(configText).digest("hex");
+          if (config.name !== "agent-table-staging" ||
+              config.vars.RELEASE_BUILD_SHA !== process.env.GITHUB_SHA ||
+              evidence.configSha256 !== digest ||
+              operations.configSha256 !== digest ||
+              operations.environment !== "staging") {
+            throw Error("Protected input identity mismatch");
+          }
+          if (operations.review?.decision === "approve" ||
+              operations.retention?.backup?.status === "operator-verified" ||
+              operations.retention?.logs?.status === "operator-verified" ||
+              operations.cost?.usageObserved === true ||
+              operations.schema?.nonDestructiveRollback === true ||
+              operations.restore?.independentlyReviewed === true) {
+            throw Error("Operational evidence unexpectedly asserted");
+          }
+          process.stdout.write(`STAGING_CONFIG_VERIFIED build=${process.env.GITHUB_SHA} configSha256=${digest} releaseApproved=false\n`);
+          NODE
