@@ -85,18 +85,12 @@ test("a GitHub Environment label or claimed operator approval is not a review", 
       (routes.get(`${prefix}/approvals`)[0].environments[0].name =
         "production"),
     (routes) =>
-      (routes.get(`${prefix}/approvals`)[0].user.login =
-        "release-dispatcher"),
-    (routes) =>
-      (routes.get(`${prefix}/approvals`)[0].user.type = "Bot"),
-    (routes) =>
-      (routes.get(prefix).head_sha = "b".repeat(40)),
-    (routes) =>
-      (routes.get(prefix).path = ".github/workflows/other.yml"),
-    (routes) =>
-      (routes.get(prefix).status = "completed"),
-    (routes) =>
-      (routes.get(prefix).run_attempt = 2),
+      (routes.get(`${prefix}/approvals`)[0].user.login = "release-dispatcher"),
+    (routes) => (routes.get(`${prefix}/approvals`)[0].user.type = "Bot"),
+    (routes) => (routes.get(prefix).head_sha = "b".repeat(40)),
+    (routes) => (routes.get(prefix).path = ".github/workflows/other.yml"),
+    (routes) => (routes.get(prefix).status = "completed"),
+    (routes) => (routes.get(prefix).run_attempt = 2),
   ];
   for (const mutate of cases) {
     const { fixture, cloudflare, github } = harness();
