@@ -4,17 +4,38 @@
  * It must be set to false only after independently authorized release.
  */
 export function isRestoreQuarantined(
-  env: Pick<Env, "RELEASE_ENVIRONMENT" | "RESTORE_QUARANTINE">,
+  env: Partial<
+    Pick<
+      Env,
+      | "RELEASE_ENVIRONMENT"
+      | "RESTORE_QUARANTINE"
+      | "RELEASE_BUILD_SHA"
+      | "RELEASE_PROFILE"
+      | "ENABLE_MCP_SUBSCRIPTIONS"
+      | "ENABLE_OPENAI_EVENTS"
+      | "ALLOW_OUTBOUND_NOTIFICATIONS"
+    >
+  >,
 ): boolean {
   const knownEnvironment =
     env.RELEASE_ENVIRONMENT === "local" ||
     env.RELEASE_ENVIRONMENT === "staging" ||
     env.RELEASE_ENVIRONMENT === "production";
-  return !(knownEnvironment && env.RESTORE_QUARANTINE === "false");
+  if (!knownEnvironment || env.RESTORE_QUARANTINE !== "false") return true;
+  if (env.RELEASE_ENVIRONMENT === "local") return false;
+  // The initial public profile is manual-only. A feature flag or old Worker
+  // configuration must not promote unverified live or autonomous capability.
+  return !(
+    env.RELEASE_PROFILE === "manual" &&
+    /^[a-f0-9]{40}$/.test(env.RELEASE_BUILD_SHA ?? "") &&
+    env.ENABLE_MCP_SUBSCRIPTIONS === "false" &&
+    env.ENABLE_OPENAI_EVENTS === "false" &&
+    env.ALLOW_OUTBOUND_NOTIFICATIONS === "false"
+  );
 }
 
 export function rejectRestoredAccess(
-  env: Pick<Env, "RELEASE_ENVIRONMENT" | "RESTORE_QUARANTINE">,
+  env: Parameters<typeof isRestoreQuarantined>[0],
 ): Response | null {
   if (!isRestoreQuarantined(env)) return null;
   return new Response("Service unavailable during recovery", {
@@ -33,7 +54,7 @@ export function rejectRestoredAccess(
 export const RESTORE_QUARANTINE_RECHECK_MS = 6 * 60 * 60_000;
 
 export async function deferQuarantinedAlarm(
-  env: Pick<Env, "RELEASE_ENVIRONMENT" | "RESTORE_QUARANTINE">,
+  env: Parameters<typeof isRestoreQuarantined>[0],
   storage: DurableObjectStorage,
 ): Promise<boolean> {
   if (!isRestoreQuarantined(env)) return false;

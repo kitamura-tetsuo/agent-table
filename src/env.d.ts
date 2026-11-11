@@ -14,6 +14,8 @@ declare global {
       OAUTH_KV: KVNamespace;
       PUBLIC_ORIGIN: string;
       RELEASE_ENVIRONMENT?: string;
+      RELEASE_BUILD_SHA?: string;
+      RELEASE_PROFILE?: string;
       RESTORE_QUARANTINE?: string;
       ENABLE_MCP_SUBSCRIPTIONS: string;
       ENABLE_OPENAI_EVENTS: string;

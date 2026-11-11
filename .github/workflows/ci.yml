@@ -3,6 +3,8 @@ name: Validation
 on:
   pull_request:
   workflow_dispatch:
+  push:
+    branches: [main]
 
 permissions:
   contents: read
@@ -18,23 +20,31 @@ jobs:
           node-version-file: .node-version
           cache: npm
       - run: npm ci
-      - run: npm run typecheck
-      - run: npm run lint
-      - run: npx biome check scripts/manage-ingress-waf.mjs scripts/manage-ingress-waf.test.mjs scripts/wrangler-sqlite.test.mjs scripts/release-preflight.mjs scripts/release-preflight.test.mjs scripts/require-release-approval.mjs scripts/require-release-approval.test.mjs scripts/inbox-streams-workerd.test.mjs scripts/two-worker-subscriptions.mjs scripts/restore-transition-workerd.test.mjs
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Lint
+        run: npm run lint
+      - name: Validate release scripts
+        run: npx biome check scripts/manage-ingress-waf.mjs scripts/manage-ingress-waf.test.mjs scripts/wrangler-sqlite.test.mjs scripts/release-preflight.mjs scripts/release-preflight.test.mjs scripts/require-release-approval.mjs scripts/require-release-approval.test.mjs scripts/release-authorization.mjs scripts/release-authorization.test.mjs scripts/release-provider.mjs scripts/release-provider.test.mjs scripts/release-postverify.mjs scripts/release-postverify.test.mjs scripts/inbox-streams-workerd.test.mjs scripts/two-worker-subscriptions.mjs scripts/restore-transition-workerd.test.mjs
       - run: node --test scripts/*.test.mjs
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
       - run: python -m pip install --disable-pip-version-check pytest==8.4.2 loguru==0.7.3
       - run: python -m pytest -q test/unit/test_egress_experiments.py
-      - run: npm test
-      - run: npm run test:integration
-      - run: npm run test:restore-runtime
+      - name: Application unit tests
+        run: npm test
+      - name: Worker integration tests
+        run: npm run test:integration
+      - name: Restore runtime tests
+        run: npm run test:restore-runtime
       - run: npm run probe:subscriptions:sdk
       - run: npm run probe:subscriptions:table
       - run: npm run probe:subscriptions:two-worker
       - run: node scripts/verify-oauth-redemption-mutant.mjs
-      - run: npm run build
+      - name: Wrangler dry-run
+        run: npm run build
       - run: npx wrangler deploy --dry-run --config test/egress/wrangler.jsonc --outdir ../../dist/egress-probe
       - run: npx playwright install --with-deps chromium
-      - run: npm run test:e2e
+      - name: Browser E2E tests
+        run: npm run test:e2e

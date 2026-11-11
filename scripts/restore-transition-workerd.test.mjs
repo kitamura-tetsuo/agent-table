@@ -33,6 +33,9 @@ function workerOptions(quarantined) {
     ? candidate.vars
     : {
         ...candidate.vars,
+        // The synthetic pre-snapshot workload predates the manual-only
+        // staging release profile; exercise it under local test authority.
+        RELEASE_ENVIRONMENT: "local",
         RESTORE_QUARANTINE: "false",
         ALLOW_NEW_GUESTS: "true",
         ALLOW_NEW_TABLES: "true",

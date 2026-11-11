@@ -12,6 +12,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   candidate:
@@ -52,13 +53,14 @@ jobs:
           npm run test:restore-runtime
           npm run build
       - name: Validate candidate without access to deployment credentials
-        id: gate
+        id: candidate
         env:
           TARGET_ENVIRONMENT: ${{ inputs.target_environment }}
           RELEASE_CONFIG_JSON: ${{ secrets.RELEASE_CONFIG_JSON }}
           PEER_CONFIG_JSON: ${{ secrets.PEER_CONFIG_JSON }}
           RELEASE_SECRET_INVENTORY_JSON: ${{ secrets.RELEASE_SECRET_INVENTORY_JSON }}
           RELEASE_EVIDENCE_JSON: ${{ secrets.RELEASE_EVIDENCE_JSON }}
+          RELEASE_OPERATIONS_JSON: ${{ secrets.RELEASE_OPERATIONS_JSON }}
         run: |
           set -euo pipefail
           umask 077
@@ -66,50 +68,89 @@ jobs:
           test -n "$PEER_CONFIG_JSON"
           test -n "$RELEASE_SECRET_INVENTORY_JSON"
           test -n "$RELEASE_EVIDENCE_JSON"
-          scratch="$(mktemp -d "$RUNNER_TEMP/agent-table-release.XXXXXXXX")"
-          config="$GITHUB_WORKSPACE/.release-candidate-${GITHUB_RUN_ID}.json"
+          test -n "$RELEASE_OPERATIONS_JSON"
+          scratch="$RUNNER_TEMP/agent-table-release-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          mkdir -m 700 "$scratch"
+          config="$GITHUB_WORKSPACE/.release-candidate-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.json"
           test ! -e "$config"
-          validated=false
-          cleanup() {
-            rm -rf "$scratch"
-            if [[ "$validated" != true ]]; then rm -f "$config"; fi
-          }
-          trap cleanup EXIT
           printf '%s' "$RELEASE_CONFIG_JSON" > "$config"
           printf '%s' "$PEER_CONFIG_JSON" > "$scratch/peer.json"
           printf '%s' "$RELEASE_SECRET_INVENTORY_JSON" > "$scratch/secrets.json"
           printf '%s' "$RELEASE_EVIDENCE_JSON" > "$scratch/evidence.json"
+          printf '%s' "$RELEASE_OPERATIONS_JSON" > "$scratch/operations.json"
           config_sha="$(sha256sum "$config" | cut -d " " -f1)"
-          manifest="$(
-            node scripts/release-preflight.mjs \
-              --environment "$TARGET_ENVIRONMENT" --profile manual \
-              --build-sha "$GITHUB_SHA" \
-              --config "$config" --peer-config "$scratch/peer.json" \
-              --secret-inventory "$scratch/secrets.json" \
-              --evidence "$scratch/evidence.json"
-          )"
+          node scripts/release-preflight.mjs \
+            --environment "$TARGET_ENVIRONMENT" --profile manual \
+            --build-sha "$GITHUB_SHA" \
+            --config "$config" --peer-config "$scratch/peer.json" \
+            --secret-inventory "$scratch/secrets.json" \
+            --evidence "$scratch/evidence.json" > "$scratch/preflight.txt"
           npx wrangler deploy --dry-run --config "$config" --outdir "$scratch/dry-run"
-          # No publish credentials are supplied to this step. The validator
-          # returns deploymentApproved:false until independent proof exists.
-          printf '%s\n' "$manifest" | node scripts/require-release-approval.mjs \
-            "$TARGET_ENVIRONMENT" "$GITHUB_SHA" "$config_sha"
-          validated=true
-          printf 'approved=true\nconfig_sha=%s\n' "$config_sha" >> "$GITHUB_OUTPUT"
+          printf 'config_sha=%s\n' "$config_sha" >> "$GITHUB_OUTPUT"
+      - name: Authenticate provider ownership and release evidence
+        id: gate
+        env:
+          TARGET_ENVIRONMENT: ${{ inputs.target_environment }}
+          EXPECTED_CONFIG_SHA: ${{ steps.candidate.outputs.config_sha }}
+          CLOUDFLARE_READ_TOKEN: ${{ secrets.CLOUDFLARE_READ_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          umask 077
+          scratch="$RUNNER_TEMP/agent-table-release-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          config="$GITHUB_WORKSPACE/.release-candidate-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.json"
+          test -n "$CLOUDFLARE_READ_TOKEN"
+          test -n "$CLOUDFLARE_ACCOUNT_ID"
+          [[ "$EXPECTED_CONFIG_SHA" =~ ^[a-f0-9]{64}$ ]]
+          [[ "$(sha256sum "$config" | cut -d " " -f1)" == "$EXPECTED_CONFIG_SHA" ]]
+          # The only producer of an approved manifest performs live authenticated
+          # Cloudflare + exact-main CI reads inside the approved Environment.
+          node scripts/release-authorization.mjs \
+              --environment "$TARGET_ENVIRONMENT" --profile manual \
+              --build-sha "$GITHUB_SHA" --config "$config" \
+              --peer-config "$scratch/peer.json" \
+              --secret-inventory "$scratch/secrets.json" \
+              --evidence "$scratch/evidence.json" \
+              --operations "$scratch/operations.json" > "$scratch/approval.txt"
+          node scripts/require-release-approval.mjs \
+            "$TARGET_ENVIRONMENT" "$GITHUB_SHA" "$EXPECTED_CONFIG_SHA" \
+            < "$scratch/approval.txt"
+          printf 'approved=true\nconfig_sha=%s\n' "$EXPECTED_CONFIG_SHA" >> "$GITHUB_OUTPUT"
       - name: Publish only the same independently approved config bytes
         if: steps.gate.outputs.approved == 'true'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           EXPECTED_CONFIG_SHA: ${{ steps.gate.outputs.config_sha }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          config="$GITHUB_WORKSPACE/.release-candidate-${GITHUB_RUN_ID}.json"
-          trap 'rm -f "$config"' EXIT
+          config="$GITHUB_WORKSPACE/.release-candidate-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.json"
           test -n "$CLOUDFLARE_API_TOKEN"
           test -n "$CLOUDFLARE_ACCOUNT_ID"
           [[ "$EXPECTED_CONFIG_SHA" =~ ^[a-f0-9]{64}$ ]]
           [[ "$(sha256sum "$config" | cut -d " " -f1)" == "$EXPECTED_CONFIG_SHA" ]]
+          # Recheck the latest main head immediately before any write.
+          node --input-type=module -e '
+            import { githubReader, verifyCurrentMainHead } from "./scripts/release-authorization.mjs";
+            await verifyCurrentMainHead(process.env.GITHUB_SHA, githubReader(process.env.GITHUB_TOKEN));
+          '
           npx wrangler deploy --config "$config"
+      - name: Read back exact deployed Worker, namespaces, route, and build
+        if: steps.gate.outputs.approved == 'true'
+        env:
+          CLOUDFLARE_READ_TOKEN: ${{ secrets.CLOUDFLARE_READ_TOKEN }}
+        run: |
+          set -euo pipefail
+          scratch="$RUNNER_TEMP/agent-table-release-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          config="$GITHUB_WORKSPACE/.release-candidate-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.json"
+          node scripts/release-postverify.mjs \
+            --config "$config" --peer-config "$scratch/peer.json" \
+            --approval "$scratch/approval.txt"
       - name: Remove ephemeral candidate after every outcome
         if: always()
-        run: rm -f "$GITHUB_WORKSPACE/.release-candidate-${GITHUB_RUN_ID}.json"
+        run: |
+          set -euo pipefail
+          rm -f "$GITHUB_WORKSPACE/.release-candidate-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.json"
+          rm -rf "$RUNNER_TEMP/agent-table-release-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
