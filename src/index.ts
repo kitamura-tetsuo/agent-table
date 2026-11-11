@@ -147,8 +147,18 @@ const handleRequest: ExportedHandler<Env>["fetch"] = async (
     });
   }
   if (url.pathname === "/health") {
+    const release =
+      env.RELEASE_ENVIRONMENT === "local"
+        ? undefined
+        : {
+            environment: env.RELEASE_ENVIRONMENT,
+            profile: env.RELEASE_PROFILE,
+            buildSha: env.RELEASE_BUILD_SHA,
+          };
     return new Response(
-      request.method === "HEAD" ? null : JSON.stringify({ status: "ok" }),
+      request.method === "HEAD"
+        ? null
+        : JSON.stringify({ status: "ok", ...(release ? { release } : {}) }),
       {
         headers: {
           "Content-Type": "application/json; charset=utf-8",

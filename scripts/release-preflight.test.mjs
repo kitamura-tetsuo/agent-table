@@ -21,6 +21,7 @@ import {
 const buildSha = "a".repeat(40);
 const makeConfig = (environment, overrides = {}) => ({
   name: `agent-table-${environment}`,
+  account_id: "f".repeat(32),
   workers_dev: false,
   preview_urls: false,
   main: "src/index.ts",
@@ -46,6 +47,8 @@ const makeConfig = (environment, overrides = {}) => ({
   ],
   vars: {
     RELEASE_ENVIRONMENT: environment,
+    RELEASE_BUILD_SHA: buildSha,
+    RELEASE_PROFILE: "manual",
     RESTORE_QUARANTINE: "true",
     PUBLIC_ORIGIN: `https://${environment}.service.test`,
     ENABLE_MCP_SUBSCRIPTIONS: "false",
@@ -62,6 +65,8 @@ function fixture({
   peer = makeConfig("production"),
   profile = "manual",
 } = {}) {
+  config = structuredClone(config);
+  config.vars.RELEASE_PROFILE = profile;
   const configText = JSON.stringify(config);
   const configSha256 = createHash("sha256").update(configText).digest("hex");
   return {
@@ -125,6 +130,28 @@ test("eligible isolated manual profile requires exact build/config-bound evidenc
   blocked(
     { ...args, configText: `${args.configText} ` },
     "evidence-target-mismatch",
+  );
+});
+
+test("fails closed on absent account or build/profile identity", () => {
+  const args = fixture();
+  const target = JSON.parse(args.configText);
+  delete target.account_id;
+  blocked(
+    { ...args, configText: JSON.stringify(target) },
+    "account-id-missing",
+  );
+  target.account_id = "f".repeat(32);
+  target.vars.RELEASE_BUILD_SHA = "b".repeat(40);
+  blocked(
+    { ...args, configText: JSON.stringify(target) },
+    "release-identity-mismatch",
+  );
+  const peer = JSON.parse(args.peerText);
+  delete peer.vars.RELEASE_PROFILE;
+  blocked(
+    { ...args, peerText: JSON.stringify(peer) },
+    "peer-release-identity-missing",
   );
 });
 

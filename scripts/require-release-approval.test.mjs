@@ -51,6 +51,41 @@ test("release gate refuses a merely valid preflight, missing approval or mismatc
       /^DEPLOYMENT_BLOCKED independent-approval-unavailable\n$/,
     );
   }
+  const independentlyVerified = {
+    ...valid,
+    deploymentApproved: true,
+    approvalSource: "protected-environment-and-live-provider-readback",
+    workflowRunId: "2345",
+    workflowRunAttempt: "1",
+    ciRunId: "1234",
+    providerReceiptSha256: "c".repeat(64),
+    providerReceipt: {
+      environment: "staging",
+      workerName: "agent-table-staging",
+    },
+  };
+  assert.equal(
+    inspect(`RELEASE_APPROVAL_VALID ${JSON.stringify(independentlyVerified)}\n`)
+      .status,
+    0,
+  );
+  for (const manifest of [
+    { ...independentlyVerified, approvalSource: "offline" },
+    { ...independentlyVerified, providerReceiptSha256: "bad" },
+    { ...independentlyVerified, workflowRunAttempt: "0" },
+    {
+      ...independentlyVerified,
+      providerReceipt: {
+        ...independentlyVerified.providerReceipt,
+        environment: "production",
+      },
+    },
+  ]) {
+    assert.equal(
+      inspect(`RELEASE_APPROVAL_VALID ${JSON.stringify(manifest)}\n`).status,
+      1,
+    );
+  }
   for (const input of [
     "",
     "{",
@@ -146,7 +181,10 @@ test("release workflows remain explicit main-only manual dispatches with environ
   assert.match(shared, /require-release-approval\.mjs/);
   assert.match(shared, /wrangler deploy --dry-run/);
   assert.match(shared, /config_sha=/);
-  assert.match(shared, /"\$TARGET_ENVIRONMENT" "\$GITHUB_SHA" "\$config_sha"/);
+  assert.match(
+    shared,
+    /"\$TARGET_ENVIRONMENT" "\$GITHUB_SHA" "\$EXPECTED_CONFIG_SHA"/,
+  );
   assert.match(shared, /sha256sum "\$config"/);
   assert.match(shared, /wrangler deploy --config "\$config"/);
   assert.match(shared, /CLOUDFLARE_API_TOKEN/);
@@ -156,6 +194,13 @@ test("release workflows remain explicit main-only manual dispatches with environ
     .split(
       "- name: Validate candidate without access to deployment credentials",
     )[1]
-    .split("- name: Publish only")[0];
+    .split("- name: Authenticate provider ownership and release evidence")[0];
   assert.doesNotMatch(gateStep, /CLOUDFLARE_API_TOKEN/);
+  assert.doesNotMatch(gateStep, /CLOUDFLARE_READ_TOKEN/);
+  const liveApproval = shared
+    .split("- name: Authenticate provider ownership and release evidence")[1]
+    .split("- name: Publish only")[0];
+  assert.match(liveApproval, /release-authorization\.mjs/);
+  assert.match(liveApproval, /CLOUDFLARE_READ_TOKEN/);
+  assert.match(liveApproval, /RELEASE_OPERATIONS_JSON|operations\.json/);
 });

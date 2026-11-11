@@ -78,6 +78,9 @@ const REQUIRED_SECRETS = [
   "INVITATION_RESPONSE_KEYRING",
   "CALLBACK_CREDENTIAL_KEYRING",
 ];
+const ACCOUNT_ID = /^[a-f0-9]{32}$/i;
+const BUILD_SHA = /^[a-f0-9]{40}$/;
+const RELEASE_PROFILES = new Set(["manual", "live", "events", "autonomous"]);
 const EVIDENCE_CHECKS = {
   manual: ["application", "security", "browser"],
   live: ["application", "security", "browser", "live_runtime"],
@@ -264,6 +267,10 @@ function validatePeerIsolation(config, peer, environment) {
     "peer-environment-marker-mismatch",
   );
   requireCondition(
+    ACCOUNT_ID.test(peer?.account_id) && !/^0+$/.test(peer.account_id),
+    "peer-account-id-missing",
+  );
+  requireCondition(
     typeof peer.name === "string" && peer.name !== config.name,
     "shared-worker-name",
   );
@@ -286,6 +293,11 @@ function validatePeerIsolation(config, peer, environment) {
     peer?.vars?.RESTORE_QUARANTINE === "true" ||
       peer?.vars?.RESTORE_QUARANTINE === "false",
     "peer-restore-quarantine-mode-missing",
+  );
+  requireCondition(
+    BUILD_SHA.test(peer?.vars?.RELEASE_BUILD_SHA) &&
+      RELEASE_PROFILES.has(peer?.vars?.RELEASE_PROFILE),
+    "peer-release-identity-missing",
   );
   requireCondition(
     [
@@ -343,8 +355,16 @@ export function validateRelease({
   requireReviewedWorkerExposure(config);
   const vars = config?.vars ?? {};
   requireCondition(
+    ACCOUNT_ID.test(config?.account_id) && !/^0+$/.test(config.account_id),
+    "account-id-missing",
+  );
+  requireCondition(
     vars.RELEASE_ENVIRONMENT === environment,
     "environment-marker-mismatch",
+  );
+  requireCondition(
+    vars.RELEASE_BUILD_SHA === buildSha && vars.RELEASE_PROFILE === profile,
+    "release-identity-mismatch",
   );
   requireCondition(
     typeof config.name === "string" && config.name.endsWith(`-${environment}`),
@@ -426,6 +446,10 @@ export function prepareQuarantinedRestoreConfig(configText, peerText) {
       source.main === "src/index.ts" &&
       source.compatibility_flags?.includes("global_fetch_strictly_public"),
     "invalid-restore-worker",
+  );
+  requireCondition(
+    ACCOUNT_ID.test(source.account_id) && !/^0+$/.test(source.account_id),
+    "account-id-missing",
   );
   parseOrigin(source.vars.PUBLIC_ORIGIN, environment);
   kvId(source);

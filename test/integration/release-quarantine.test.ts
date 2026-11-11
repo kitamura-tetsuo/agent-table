@@ -21,6 +21,13 @@ import {
 import generatedRestore from "../fixtures/quarantined-restore-generated.json";
 
 const origin = "http://localhost:8787";
+const manualStagingRelease = {
+  RELEASE_BUILD_SHA: "a".repeat(40),
+  RELEASE_PROFILE: "manual",
+  ENABLE_MCP_SUBSCRIPTIONS: "false",
+  ENABLE_OPENAI_EVENTS: "false",
+  ALLOW_OUTBOUND_NOTIFICATIONS: "false",
+};
 
 describe("restore quarantine ingress (actual Worker handler)", () => {
   it("denies all ordinary and protocol access in a quarantined release", async () => {
@@ -71,6 +78,7 @@ describe("restore quarantine ingress (actual Worker handler)", () => {
       rejectRestoredAccess({
         RELEASE_ENVIRONMENT: "staging",
         RESTORE_QUARANTINE: "false",
+        ...manualStagingRelease,
       }),
     ).toBeNull();
     expect(
@@ -79,6 +87,22 @@ describe("restore quarantine ingress (actual Worker handler)", () => {
         RESTORE_QUARANTINE: "true",
       }),
     ).not.toBeNull();
+    for (const invalid of [
+      { RELEASE_BUILD_SHA: undefined },
+      { RELEASE_PROFILE: "events" },
+      { ENABLE_MCP_SUBSCRIPTIONS: "true" },
+      { ENABLE_OPENAI_EVENTS: "true" },
+      { ALLOW_OUTBOUND_NOTIFICATIONS: "true" },
+    ]) {
+      expect(
+        rejectRestoredAccess({
+          RELEASE_ENVIRONMENT: "staging",
+          RESTORE_QUARANTINE: "false",
+          ...manualStagingRelease,
+          ...invalid,
+        }),
+      ).not.toBeNull();
+    }
   });
 });
 
@@ -201,6 +225,7 @@ describe("retained private state under recovery and normal admission pause", () 
     const stored = await storedPrivateTable();
     const paused: Env = {
       ...env,
+      ...manualStagingRelease,
       RELEASE_ENVIRONMENT: "staging",
       RESTORE_QUARANTINE: "false",
       ALLOW_NEW_GUESTS: "false",
@@ -365,7 +390,12 @@ describe("retained-state rollback and independent quarantine decisions", () => {
     const path = `/guest/table?table_id=${stored.tableId}`;
     const allowed = await dispatchWithBindings(
       path,
-      { ...env, RELEASE_ENVIRONMENT: "staging", RESTORE_QUARANTINE: "false" },
+      {
+        ...env,
+        ...manualStagingRelease,
+        RELEASE_ENVIRONMENT: "staging",
+        RESTORE_QUARANTINE: "false",
+      },
       { headers: { Cookie: stored.cookie } },
     );
     expect(allowed.status).toBe(200);
@@ -413,7 +443,12 @@ describe("retained-state rollback and independent quarantine decisions", () => {
     const path = `/guest/table?table_id=${stored.tableId}`;
     const permitted = await dispatchWithBindings(
       path,
-      { ...env, RELEASE_ENVIRONMENT: "staging", RESTORE_QUARANTINE: "false" },
+      {
+        ...env,
+        ...manualStagingRelease,
+        RELEASE_ENVIRONMENT: "staging",
+        RESTORE_QUARANTINE: "false",
+      },
       { headers: { Cookie: stored.cookie } },
     );
     expect(permitted.status).toBe(200);

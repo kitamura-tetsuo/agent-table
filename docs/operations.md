@@ -130,38 +130,31 @@ The GitHub Actions PR workflow repeats clean `npm ci`, type checking, linting, w
 
 New guest admission is disabled by default (`ALLOW_NEW_GUESTS=false`). For a temporary, isolated local browser session test, start `npm run dev -- --var ALLOW_NEW_GUESTS:true`; the Playwright web server uses that override, while the standard `npm run dev` does not. Browser routes are `/guest` (explicit choice UI), `/guest/session` (same-origin CSRF-protected POST only), `/guest/me` (read-only validated session check), and `/guest/connections` (session-protected connection list) with POST-only `/guest/connections/revoke`. The `__Host-` session cookie needs HTTPS except on loopback during development. Version 2 of the application schema adds guest identity/session tables **only in GuestDO**. It migrates existing version 1 objects transactionally and rejects unsupported newer versions without clearing state. The SHA-256 session digests remain durable across instance eviction; raw session credentials must never enter SQL, logs, or diagnostic artifacts.
 
-### Manual deployment workflow scaffold (Issue #22, fail-closed)
+### Authenticated, reviewed deployment workflow (Issue #50)
 
-The repository has **manual-only** dispatch entries `.github/workflows/deploy-staging.yml`
-and `deploy-production.yml`, sharing a bounded reviewed source and release
-preflight. They accept an exact expected **main** SHA, require the repository and
-branch identity, use the selected GitHub `staging` or `production` environment,
-re-run application and Workerd checks, and consume private configuration and
-evidence files only from that environment's secrets. The Worker config is written
-with owner-only permissions for the duration of the job. Pull requests never
-trigger publication. GitHub API readback on 2026-11-11 confirmed that both
-`staging` and `production` Environments have owner-required review and
-protected-branch restrictions. This is evidence of the configured policy, not
-an approval of a particular run; verify it again before release. The separate
-[staging-only credential validation #42969129958](https://github.com/kitamura-tetsuo/agent-table/actions/runs/42969129958)
-succeeded at reading Worker settings but did not authorize publishing.
+The repository has **manual-only** dispatch entries
+`.github/workflows/deploy-staging.yml` and `deploy-production.yml`. An exact
+expected **main** SHA, successful fresh CI run, configured protected GitHub
+Environment with an independent human reviewer, and an in-job authenticated
+Cloudflare identity/readback manifest are all required **before** the same
+reviewed config bytes can be deployed. The post-deploy gate verifies the active
+Worker version, four SQLite DO namespaces, OAuth KV ID, actual secret names,
+domain, release vars and HTTPS `/health` build/profile. PR CI never receives
+release credentials; approval from a repository collaborator or a Slack DM
+alone does not bypass the protected Environment. The restricted implementation
+supports the `manual` profile only. Worker deployment is **not authorized**
+until all missing operator inputs and explicit approvals are provided.
 
-Environment secrets: `RELEASE_CONFIG_JSON`, `PEER_CONFIG_JSON`,
-`RELEASE_SECRET_INVENTORY_JSON`, `RELEASE_EVIDENCE_JSON`,
-`CLOUDFLARE_API_TOKEN`, and `CLOUDFLARE_ACCOUNT_ID`. Supply real values only
-from an authorized secret store, never source files or issue comments. Scope the
-Cloudflare token to the reviewed Worker/namespace and required operations.
-The offline preflight deliberately returns `deploymentApproved:false` even
-when its structural and self-reported evidence checks succeed; the distinct
-`require-release-approval.mjs` gate therefore **stops before the publish
-step**. These workflows do not grant approval, attest evidence, provision a
-production deployment, or make an unsafe quarantine-clear path. A future
-independent authenticated approval producer and externally configured protected
-environments are prerequisites to enabling a real publication.
+The full operator inputs, separate read/write Cloudflare tokens, private
+environment-scoped secrets, evidence schemas, rollback and measured hosted
+acceptance checklist are in [release-runbook.md](release-runbook.md). It
+records **not run** for staging and production actual #50 deployments; the
+previous settings-only [credential read](https://github.com/kitamura-tetsuo/agent-table/actions/runs/42969129958)
+did not authorize release or verify private DO/KV ownership.
 
 ## Deployment procedure after implementation
 
-After the guest/OAuth and later application stages have been implemented, separately approve staging publication, provision the OAuth KV binding if the selected library requires it, and set real staging origin/namespace configuration outside the committed local scaffold. Store encryption keyrings with `wrangler secret put`, not in committed configuration, shell history, deployment logs or test artifacts. Configure additional secrets from the chosen OAuth library's pinned documentation. The following commands are a future **interactive** operator workflow, **not** part of PR CI:
+After the guest/OAuth and later application stages have been implemented, separately approve staging publication, provision the OAuth KV binding if the selected library requires it, and set real staging origin/namespace configuration outside the committed local scaffold. Store encryption keyrings with `wrangler secret put`, not in committed configuration, shell history, deployment logs or test artifacts. Configure additional secrets from the chosen OAuth library's pinned documentation. The following commands are a future **interactive quarantined bootstrap** preparation workflow, **not** a release approval and **not** part of PR CI:
 
 ```sh
 npx wrangler login
