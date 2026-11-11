@@ -44,6 +44,57 @@ test("protected credential probe inspects the complete read API surface for both
   );
 });
 
+test("credential probe reports all denied independent GETs without provider details", async () => {
+  const provider = makeProviderMock(staging, production);
+  const requested = [];
+  const deniedSuffixes = [
+    "/workers/domains?",
+    "/workers/durable_objects/namespaces?",
+    "/agent-table-staging/secrets",
+    "/agent-table-production/deployments",
+  ];
+  await assert.rejects(
+    verifyReleaseReadAccess(staging.account_id, (path, withPageInfo) => {
+      requested.push(path);
+      if (deniedSuffixes.some((suffix) => path.includes(suffix))) {
+        throw new ProviderVerificationError("provider-read-refused");
+      }
+      return provider.read(path, withPageInfo);
+    }),
+    (error) =>
+      error instanceof ProviderVerificationError &&
+      error.message ===
+        "credential-read-refused:domains,durable-objects,agent-table-staging-secrets,agent-table-production-deployments",
+  );
+  assert.equal(requested.length, 10);
+  assert.equal(
+    requested.filter((path) => path.includes("/versions/")).length,
+    0,
+  );
+});
+
+test("credential probe reports all denied version and KV GETs", async () => {
+  const provider = makeProviderMock(staging, production);
+  const requested = [];
+  await assert.rejects(
+    verifyReleaseReadAccess(staging.account_id, (path, withPageInfo) => {
+      requested.push(path);
+      if (
+        path.includes("/versions/") ||
+        path.includes("/storage/kv/namespaces/")
+      ) {
+        throw new ProviderVerificationError("provider-result-unverified");
+      }
+      return provider.read(path, withPageInfo);
+    }),
+    (error) =>
+      error instanceof ProviderVerificationError &&
+      error.message ===
+        "credential-read-refused:agent-table-staging-version,agent-table-staging-kv,agent-table-production-version,agent-table-production-kv",
+  );
+  assert.equal(requested.length, 14);
+});
+
 test("token verification fails closed on missing target, incomplete resources and denied GETs", async () => {
   await assert.rejects(
     verifyReleaseReadAccess("not-an-account", async () => ({})),

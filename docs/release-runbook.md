@@ -94,6 +94,27 @@ token lacks write privileges**, nor does it authorize a release. Failed
 probes must be resolved by changing token scope through the standard owner
 approval process, never by temporarily enabling public routes or publishing.
 
+**Account-wide read scope is required for the current verifier.** The Cloudflare
+`GET /workers/domains` and `GET /workers/durable_objects/namespaces`
+endpoints enumerate account resources; granting only `Individual Workers
+Metadata Read-Only` to the two Worker IDs does not establish access to these
+lists. The current verifier needs `Workers Scripts Read` and `Workers KV
+Storage Read` at account scope for domain/namespace ownership and KV metadata
+GETs. These scopes also grant wider read capabilities than this probe uses
+(including Worker script content and KV values), so the owner must review that
+trade-off before editing either token. Preserve separate staging/production
+secrets and never grant write/DNS permissions for a GET-only probe. See
+[Worker Domains API](https://developers.cloudflare.com/api/resources/workers/subresources/domains/methods/list/),
+[Durable Object namespaces API](https://developers.cloudflare.com/api/resources/durable_objects/subresources/namespaces/methods/list/)
+and [API token permissions](https://developers.cloudflare.com/fundamentals/api/reference/permissions/).
+
+The probe batches independent metadata GETs first and version/KV GETs after
+their IDs are validated. If multiple endpoints in one batch are refused,
+`READ_CREDENTIAL_BLOCKED` lists deterministic endpoint labels separated by
+commas, with no provider response body or credential material. An earlier
+failed batch or structurally invalid response can prevent later dependent GETs;
+a single failure report is **not** a complete permission audit.
+
 The following protected Environment secrets are required for **each**
 environment; the two sets must not share credentials or private resources:
 

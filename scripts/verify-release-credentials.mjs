@@ -35,13 +35,48 @@ export async function verifyReleaseReadAccess(accountId, request) {
       throw error;
     }
   };
-  const [domains, namespaces] = await Promise.all([
-    read("domains", `${base}/workers/domains?page=1&per_page=100`, true),
-    read(
+  // Report all rejected GETs in a phase using only fixed endpoint labels.
+  // Never include provider error bodies or token values in diagnostics.
+  const readBatch = async (entries) => {
+    const outcomes = await Promise.allSettled(
+      entries.map(([label, path, paged]) => read(label, path, paged)),
+    );
+    const refusedLabels = [];
+    for (const [index, outcome] of outcomes.entries()) {
+      if (outcome.status === "fulfilled") continue;
+      const label = entries[index][0];
+      if (
+        !(outcome.reason instanceof ProviderVerificationError) ||
+        outcome.reason.message !== `credential-read-refused:${label}`
+      ) {
+        throw outcome.reason;
+      }
+      refusedLabels.push(label);
+    }
+    if (refusedLabels.length > 0) {
+      throw new ProviderVerificationError(
+        `credential-read-refused:${refusedLabels.join(",")}`,
+      );
+    }
+    return outcomes.map((outcome) => outcome.value);
+  };
+
+  const [domains, namespaces, ...initialResults] = await readBatch([
+    ["domains", `${base}/workers/domains?page=1&per_page=100`, true],
+    [
       "durable-objects",
       `${base}/workers/durable_objects/namespaces?page=1&per_page=100`,
       true,
-    ),
+    ],
+    ...WORKERS.flatMap((worker) => {
+      const prefix = `${base}/workers/scripts/${worker}`;
+      return [
+        [`${worker}-settings`, `${prefix}/settings`],
+        [`${worker}-subdomain`, `${prefix}/subdomain`],
+        [`${worker}-secrets`, `${prefix}/secrets`],
+        [`${worker}-deployments`, `${prefix}/deployments`],
+      ];
+    }),
   ]);
   requireRead(Array.isArray(domains?.result), "credential-domains-unreadable");
   requireRead(
@@ -49,14 +84,13 @@ export async function verifyReleaseReadAccess(accountId, request) {
     "credential-durable-objects-unreadable",
   );
 
-  for (const worker of WORKERS) {
+  const workerResources = [];
+  for (const [index, worker] of WORKERS.entries()) {
     const prefix = `${base}/workers/scripts/${worker}`;
-    const [settings, subdomain, secrets, deployments] = await Promise.all([
-      read(`${worker}-settings`, `${prefix}/settings`),
-      read(`${worker}-subdomain`, `${prefix}/subdomain`),
-      read(`${worker}-secrets`, `${prefix}/secrets`),
-      read(`${worker}-deployments`, `${prefix}/deployments`),
-    ]);
+    const [settings, subdomain, secrets, deployments] = initialResults.slice(
+      index * 4,
+      index * 4 + 4,
+    );
     requireRead(
       Array.isArray(settings?.bindings),
       "credential-worker-settings-unreadable",
@@ -85,13 +119,22 @@ export async function verifyReleaseReadAccess(accountId, request) {
       kvBindings.length === 1 && NAMESPACE_ID.test(kvBindings[0].namespace_id),
       "credential-kv-id-unavailable",
     );
-    const [version, kv] = await Promise.all([
-      read(`${worker}-version`, `${prefix}/versions/${versionId}`),
-      read(
-        `${worker}-kv`,
-        `${base}/storage/kv/namespaces/${kvBindings[0].namespace_id}`,
-      ),
-    ]);
+    workerResources.push({
+      worker,
+      prefix,
+      versionId,
+      namespaceId: kvBindings[0].namespace_id,
+    });
+  }
+
+  const dependentResults = await readBatch(
+    workerResources.flatMap(({ worker, prefix, versionId, namespaceId }) => [
+      [`${worker}-version`, `${prefix}/versions/${versionId}`],
+      [`${worker}-kv`, `${base}/storage/kv/namespaces/${namespaceId}`],
+    ]),
+  );
+  for (const [index, { namespaceId }] of workerResources.entries()) {
+    const [version, kv] = dependentResults.slice(index * 2, index * 2 + 2);
     requireRead(
       Array.isArray(version?.resources?.bindings) &&
         Array.isArray(version?.resources?.script?.named_handlers) &&
@@ -99,7 +142,7 @@ export async function verifyReleaseReadAccess(accountId, request) {
       "credential-worker-version-unreadable",
     );
     requireRead(
-      kv?.id?.toLowerCase() === kvBindings[0].namespace_id.toLowerCase(),
+      kv?.id?.toLowerCase() === namespaceId.toLowerCase(),
       "credential-kv-metadata-unreadable",
     );
   }
