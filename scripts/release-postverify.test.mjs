@@ -62,6 +62,15 @@ test("changed private namespace refuses success after a seemingly healthy releas
     .get(path)
     .bindings.find((x) => x.name === "TABLES").namespace_id =
     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  const versionPath = [...provider.routes.keys()].find((x) =>
+    x.endsWith(
+      "/agent-table-staging/versions/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    ),
+  );
+  provider.routes
+    .get(versionPath)
+    .resources.bindings.find((x) => x.name === "TABLES").namespace_id =
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
   const nsPath = `/client/v4/accounts/${config.account_id}/workers/durable_objects/namespaces?page=1&per_page=100`;
   provider.routes
     .get(nsPath)

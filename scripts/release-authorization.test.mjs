@@ -288,6 +288,15 @@ test("a previously quarantined live Worker cannot be cleared by operator checkbo
   );
   const settings = cloudflare.routes.get(path);
   settings.bindings.find((x) => x.name === "RESTORE_QUARANTINE").text = "true";
+  const versionPath = [...cloudflare.routes.keys()].find((x) =>
+    x.endsWith(
+      "/agent-table-staging/versions/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    ),
+  );
+  cloudflare.routes
+    .get(versionPath)
+    .resources.bindings.find((x) => x.name === "RESTORE_QUARANTINE").text =
+    "true";
   await assert.rejects(
     authorizeRelease({
       ...fixture,

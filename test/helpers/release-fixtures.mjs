@@ -211,7 +211,15 @@ export function makeProviderMock(config, peer) {
     });
     routes.set(`${base}/versions/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb`, {
       resources: {
+        bindings: structuredClone(bindings),
+        script: {
+          named_handlers: DO_CLASSES.map(([, className]) => ({
+            name: className,
+            handlers: ["class"],
+          })),
+        },
         script_runtime: {
+          migration_tag: "v3",
           exports: Object.fromEntries(
             DO_CLASSES.map(([, className]) => [
               className,
