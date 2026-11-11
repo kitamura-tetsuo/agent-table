@@ -76,6 +76,25 @@ test("production needs its own protected workflow and separate owned resources",
   );
 });
 
+test("explicit owner review permits same-account or agent dispatch without bypass", async () => {
+  for (const actor of [
+    { login: "kitamura-tetsuo", type: "User" },
+    { login: "release-agent[bot]", type: "Bot" },
+  ]) {
+    const { fixture, cloudflare, github } = harness();
+    github.routes.get(
+      "/repos/kitamura-tetsuo/agent-table/actions/runs/2345",
+    ).actor = actor;
+    const result = await authorizeRelease({
+      ...fixture,
+      cloudflareRead: cloudflare.read,
+      githubRead: github.read,
+      now,
+    });
+    assert.equal(result.deploymentApproved, true);
+  }
+});
+
 test("a GitHub Environment label or claimed operator approval is not a review", async () => {
   const prefix = "/repos/kitamura-tetsuo/agent-table/actions/runs/2345";
   const cases = [
@@ -87,6 +106,16 @@ test("a GitHub Environment label or claimed operator approval is not a review", 
     (routes) =>
       (routes.get(`${prefix}/approvals`)[0].user.login = "release-dispatcher"),
     (routes) => (routes.get(`${prefix}/approvals`)[0].user.type = "Bot"),
+    (routes) =>
+      routes.get(`${prefix}/approvals`).push({
+        state: "approved",
+        environments: [{ name: "production" }],
+        user: { login: "kitamura-tetsuo", type: "User" },
+      }),
+    (routes) =>
+      routes
+        .get(`${prefix}/approvals`)[0]
+        .environments.push({ name: "production" }),
     (routes) => (routes.get(prefix).head_sha = "b".repeat(40)),
     (routes) => (routes.get(prefix).path = ".github/workflows/other.yml"),
     (routes) => (routes.get(prefix).status = "completed"),

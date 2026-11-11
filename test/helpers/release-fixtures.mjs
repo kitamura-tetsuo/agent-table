@@ -269,7 +269,7 @@ export function makeGithubMock(environment = "staging") {
         path: `.github/workflows/deploy-${environment}.yml`,
         run_attempt: 1,
         status: "in_progress",
-        actor: { login: "release-dispatcher", type: "User" },
+        actor: { login: "kitamura-tetsuo", type: "User" },
       },
     ],
     [
@@ -278,7 +278,7 @@ export function makeGithubMock(environment = "staging") {
         {
           state: "approved",
           environments: [{ name: environment }],
-          user: { login: "independent-reviewer", type: "User" },
+          user: { login: "kitamura-tetsuo", type: "User" },
         },
       ],
     ],

@@ -108,9 +108,9 @@ export async function verifyCurrentMainHead(sha, githubRead) {
 }
 
 /**
- * A protected Environment name does not prove that reviewers were configured
- * or that a person approved this exact run. GitHub's approval history is not
- * attempt-scoped, so a rerun cannot inherit an earlier approval.
+ * A protected Environment name does not prove that the owner approved this
+ * exact run. GitHub's approval history is not attempt-scoped, so a rerun
+ * cannot inherit an earlier approval.
  */
 export async function verifyProtectedEnvironmentApproval(workflow, githubRead) {
   requireDecision(
@@ -130,25 +130,18 @@ export async function verifyProtectedEnvironmentApproval(workflow, githubRead) {
       run?.event === "workflow_dispatch" &&
       run?.path === `.github/workflows/deploy-${workflow.environment}.yml` &&
       run?.run_attempt === 1 &&
-      run?.status === "in_progress" &&
-      run?.actor?.login &&
-      run.actor.type === "User",
+      run?.status === "in_progress",
     "deployment-run-not-verified",
   );
-  const matching = Array.isArray(approvals)
-    ? approvals.filter((approval) =>
-        approval?.environments?.some(
-          (environment) => environment?.name === workflow.environment,
-        ),
-      )
-    : [];
   requireDecision(
-    matching.length === 1 &&
-      matching[0].state === "approved" &&
-      matching[0].user?.type === "User" &&
-      typeof matching[0].user?.login === "string" &&
-      matching[0].user.login.length > 0 &&
-      matching[0].user.login !== run.actor.login,
+    Array.isArray(approvals) &&
+      approvals.length === 1 &&
+      approvals[0]?.state === "approved" &&
+      approvals[0]?.user?.type === "User" &&
+      approvals[0]?.user?.login === "kitamura-tetsuo" &&
+      Array.isArray(approvals[0]?.environments) &&
+      approvals[0].environments.length === 1 &&
+      approvals[0].environments[0]?.name === workflow.environment,
     "independent-deployment-review-unverified",
   );
 }

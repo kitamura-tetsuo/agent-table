@@ -65,8 +65,11 @@ reviewed change/receipt; it is not permission to release or unquarantine.
    old ciphertext readers. Rotate provider/OAuth client credentials through
    their own independent authorization flows.
 4. Configure protected GitHub `staging` and `production` Environments with
-   deployment branches restricted to `main` and an independent human reviewer
-   (the owner), disallowing self-approval. Verify their policy again immediately
+   deployment branches restricted to `main` and a human reviewer
+   (the owner), requiring an explicit review after workflow dispatch. The
+   owner has approved same-account dispatch plus review; verify the policy
+   actually permits this and requires review, rather than silently bypassing
+   it. Verify Environment protection again immediately
    before use; a historically green test is insufficient.
 5. Scope the **write** `CLOUDFLARE_API_TOKEN` to the intended account and Worker
    deployment operation only. Scope the **separate read token**
@@ -214,8 +217,9 @@ Expected success is `PREFLIGHT_MANIFEST_VALID` with
 2. After approval, the job checks checkout SHA, runs application tests and a
    fresh Wrangler **dry-run without deployment credentials**, then reads
    Cloudflare **and GitHub** with separate read-only tokens. GitHub's own
-   review-history endpoint must show a human approval of this exact deployment
-   run and environment by someone other than the dispatcher; an Environment
+   review-history endpoint must show an explicit approval by the verified owner
+   `kitamura-tetsuo` for this exact deployment run and environment, even if
+   the dispatcher uses that same GitHub account; an Environment
    label or an operator-provided JSON approval is insufficient. Because the
    approval history is not attempt-scoped, workflow reruns are refused: dispatch
    a new reviewed run after a failure. The gate requires the currently
