@@ -165,6 +165,7 @@ test("release workflows remain explicit main-only manual dispatches with environ
     assert.match(workflow, new RegExp(`target_environment: ${environment}`));
     assert.match(workflow, /expected_sha:/);
     assert.match(workflow, /_deploy-reviewed.yml/);
+    assert.match(workflow, /actions: read/);
   }
   const shared = readFileSync(
     new URL("../.github/workflows/_deploy-reviewed.yml", import.meta.url),
@@ -187,6 +188,7 @@ test("release workflows remain explicit main-only manual dispatches with environ
   );
   assert.match(shared, /sha256sum "\$config"/);
   assert.match(shared, /wrangler deploy --config "\$config"/);
+  assert.match(shared, /verifyCurrentMainHead/);
   assert.match(shared, /CLOUDFLARE_API_TOKEN/);
   assert.match(shared, /if: steps\.gate\.outputs\.approved == 'true'/);
   assert.match(shared, /if: always\(\)/);
