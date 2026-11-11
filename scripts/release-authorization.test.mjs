@@ -57,7 +57,7 @@ test("production needs its own protected workflow and separate owned resources",
   const approval = await authorizeRelease({
     ...fixture,
     cloudflareRead: provider.read,
-    githubRead: makeGithubMock().read,
+    githubRead: makeGithubMock("production").read,
     now,
   });
   assert.equal(approval.environment, "production");
@@ -69,10 +69,61 @@ test("production needs its own protected workflow and separate owned resources",
     authorizeRelease({
       ...fixture,
       cloudflareRead: provider.read,
-      githubRead: makeGithubMock().read,
+      githubRead: makeGithubMock("production").read,
       now,
     }),
     /unprotected-release-context/,
+  );
+});
+
+test("a GitHub Environment label or claimed operator approval is not a review", async () => {
+  const prefix = "/repos/kitamura-tetsuo/agent-table/actions/runs/2345";
+  const cases = [
+    (routes) => routes.set(`${prefix}/approvals`, []),
+    (routes) => (routes.get(`${prefix}/approvals`)[0].state = "pending"),
+    (routes) =>
+      (routes.get(`${prefix}/approvals`)[0].environments[0].name =
+        "production"),
+    (routes) =>
+      (routes.get(`${prefix}/approvals`)[0].user.login =
+        "release-dispatcher"),
+    (routes) =>
+      (routes.get(`${prefix}/approvals`)[0].user.type = "Bot"),
+    (routes) =>
+      (routes.get(prefix).head_sha = "b".repeat(40)),
+    (routes) =>
+      (routes.get(prefix).path = ".github/workflows/other.yml"),
+    (routes) =>
+      (routes.get(prefix).status = "completed"),
+    (routes) =>
+      (routes.get(prefix).run_attempt = 2),
+  ];
+  for (const mutate of cases) {
+    const { fixture, cloudflare, github } = harness();
+    mutate(github.routes);
+    await assert.rejects(
+      authorizeRelease({
+        ...fixture,
+        cloudflareRead: cloudflare.read,
+        githubRead: github.read,
+        now,
+      }),
+      /deployment-run-not-verified|independent-deployment-review-unverified/,
+    );
+  }
+});
+
+test("reruns cannot reuse earlier deployment approvals", async () => {
+  const { fixture, cloudflare, github } = harness();
+  fixture.workflow.runAttempt = "2";
+  await assert.rejects(
+    authorizeRelease({
+      ...fixture,
+      cloudflareRead: cloudflare.read,
+      githubRead: github.read,
+      now,
+    }),
+    /deployment-review-attempt-unverifiable/,
   );
 });
 

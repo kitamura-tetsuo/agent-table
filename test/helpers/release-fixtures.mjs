@@ -255,8 +255,33 @@ export function makeProviderMock(config, peer) {
   };
 }
 
-export function makeGithubMock() {
+export function makeGithubMock(environment = "staging") {
+  const deploymentPath = "/repos/kitamura-tetsuo/agent-table/actions/runs/2345";
   const routes = new Map([
+    [
+      deploymentPath,
+      {
+        id: 2345,
+        repository: { full_name: "kitamura-tetsuo/agent-table" },
+        head_sha: buildSha,
+        head_branch: "main",
+        event: "workflow_dispatch",
+        path: `.github/workflows/deploy-${environment}.yml`,
+        run_attempt: 1,
+        status: "in_progress",
+        actor: { login: "release-dispatcher", type: "User" },
+      },
+    ],
+    [
+      `${deploymentPath}/approvals`,
+      [
+        {
+          state: "approved",
+          environments: [{ name: environment }],
+          user: { login: "independent-reviewer", type: "User" },
+        },
+      ],
+    ],
     [
       "/repos/kitamura-tetsuo/agent-table/git/ref/heads/main",
       {

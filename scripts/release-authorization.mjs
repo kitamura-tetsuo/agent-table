@@ -107,6 +107,52 @@ export async function verifyCurrentMainHead(sha, githubRead) {
   );
 }
 
+/**
+ * A protected Environment name does not prove that reviewers were configured
+ * or that a person approved this exact run. GitHub's approval history is not
+ * attempt-scoped, so a rerun cannot inherit an earlier approval.
+ */
+export async function verifyProtectedEnvironmentApproval(workflow, githubRead) {
+  requireDecision(
+    workflow.runAttempt === "1",
+    "deployment-review-attempt-unverifiable",
+  );
+  const prefix = `/repos/${REPOSITORY}/actions/runs/${workflow.runId}`;
+  const [run, approvals] = await Promise.all([
+    githubRead(prefix),
+    githubRead(`${prefix}/approvals`),
+  ]);
+  requireDecision(
+    run?.id === Number(workflow.runId) &&
+      run?.repository?.full_name === REPOSITORY &&
+      run?.head_sha === workflow.sha &&
+      run?.head_branch === "main" &&
+      run?.event === "workflow_dispatch" &&
+      run?.path === `.github/workflows/deploy-${workflow.environment}.yml` &&
+      run?.run_attempt === 1 &&
+      run?.status === "in_progress" &&
+      run?.actor?.login &&
+      run.actor.type === "User",
+    "deployment-run-not-verified",
+  );
+  const matching = Array.isArray(approvals)
+    ? approvals.filter((approval) =>
+        approval?.environments?.some(
+          (environment) => environment?.name === workflow.environment,
+        ),
+      )
+    : [];
+  requireDecision(
+    matching.length === 1 &&
+      matching[0].state === "approved" &&
+      matching[0].user?.type === "User" &&
+      typeof matching[0].user?.login === "string" &&
+      matching[0].user.login.length > 0 &&
+      matching[0].user.login !== run.actor.login,
+    "independent-deployment-review-unverified",
+  );
+}
+
 export function verifyOperationalDecision(
   record,
   { environment, profile, buildSha, configSha256, origin, now },
@@ -236,6 +282,7 @@ export async function authorizeRelease({
     verifyCiEvidence(evidence, buildSha, githubRead),
     readCloudflareDeployment(config, peer, cloudflareRead),
     verifyCurrentMainHead(buildSha, githubRead),
+    verifyProtectedEnvironmentApproval(workflow, githubRead),
   ]);
   requireDecision(
     observed.targetState.textBindings.RESTORE_QUARANTINE !== "true" &&
@@ -269,7 +316,7 @@ export function githubReader(token, fetchImpl = fetch) {
   requireDecision(token?.length > 10, "github-read-token-missing");
   return async (path) => {
     requireDecision(
-      /^\/repos\/kitamura-tetsuo\/agent-table\/(?:git\/ref\/heads\/main|actions\/runs\/[1-9]\d*(?:\/jobs\?per_page=100)?)$/.test(
+      /^\/repos\/kitamura-tetsuo\/agent-table\/(?:git\/ref\/heads\/main|actions\/runs\/[1-9]\d*(?:\/jobs\?per_page=100|\/approvals)?)$/.test(
         path,
       ),
       "github-evidence-path-invalid",

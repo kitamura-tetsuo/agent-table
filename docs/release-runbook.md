@@ -213,9 +213,14 @@ Expected success is `PREFLIGHT_MANIFEST_VALID` with
    Environment approval; Slack is an additional, durable backup channel.
 2. After approval, the job checks checkout SHA, runs application tests and a
    fresh Wrangler **dry-run without deployment credentials**, then reads
-   Cloudflare **and GitHub** with separate read-only tokens. It requires the
-   currently advertised `main` head to match the tested SHA, and rechecks
-   this immediately before the publish write. The identity
+   Cloudflare **and GitHub** with separate read-only tokens. GitHub's own
+   review-history endpoint must show a human approval of this exact deployment
+   run and environment by someone other than the dispatcher; an Environment
+   label or an operator-provided JSON approval is insufficient. Because the
+   approval history is not attempt-scoped, workflow reruns are refused: dispatch
+   a new reviewed run after a failure. The gate requires the currently
+   advertised `main` head to match the tested SHA and rechecks this immediately
+   before the publish write. The identity
    readback includes both deployed Workers, actual four SQLite DO namespace
    IDs and version exports, OAuth KV namespaces, named secrets, one enabled
    custom domain each, and disabled workers.dev/previews. Missing/inconsistent
