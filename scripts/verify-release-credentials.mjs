@@ -93,8 +93,9 @@ export async function verifyReleaseReadAccess(accountId, request) {
       ),
     ]);
     requireRead(
-      version?.resources?.script_runtime?.exports &&
-        typeof version.resources.script_runtime.exports === "object",
+      Array.isArray(version?.resources?.bindings) &&
+        Array.isArray(version?.resources?.script?.named_handlers) &&
+        typeof version?.resources?.script_runtime?.migration_tag === "string",
       "credential-worker-version-unreadable",
     );
     requireRead(

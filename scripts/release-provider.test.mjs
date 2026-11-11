@@ -92,6 +92,36 @@ test("does not accept fabricated target or peer resource ownership", async () =>
         (value.resources.script_runtime.exports.GuestDO.storage = "legacy-kv"),
       "provider-sqlite-class-unverified",
     ],
+    [
+      "/versions/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      (value) => (value.resources.script_runtime.migration_tag = "v2"),
+      "provider-migration-tag-unverified",
+    ],
+    [
+      "/versions/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      (value) =>
+        (value.resources.script.named_handlers =
+          value.resources.script.named_handlers.filter(
+            (entry) => entry.name !== "GuestDO",
+          )),
+      "provider-class-export-unverified",
+    ],
+    [
+      "/versions/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      (value) =>
+        (value.resources.bindings.find(
+          (entry) => entry.name === "TABLES",
+        ).namespace_id = "e".repeat(32)),
+      "provider-version-do-binding-mismatch",
+    ],
+    [
+      "/versions/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      (value) =>
+        (value.resources.bindings.find(
+          (entry) => entry.name === "RELEASE_BUILD_SHA",
+        ).text = "b".repeat(40)),
+      "provider-version-config-unverified",
+    ],
   ];
   for (const [suffix, mutation, code] of checks) {
     const mock = makeProviderMock(config, peer);
@@ -107,6 +137,18 @@ test("does not accept fabricated target or peer resource ownership", async () =>
       code,
     );
   }
+});
+
+test("Cloudflare versions without optional declarative exports still prove live classes and SQLite identity", async () => {
+  const mock = makeProviderMock(config, peer);
+  for (const worker of [config, peer]) {
+    const version = mock.routes.get(
+      `/client/v4/accounts/${worker.account_id}/workers/scripts/${worker.name}/versions/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb`,
+    );
+    delete version.resources.script_runtime.exports;
+  }
+  const result = await readCloudflareDeployment(config, peer, mock.read);
+  assert.equal(result.targetState.doNamespaces.TABLES.length, 32);
 });
 
 test("mismatched public origin and recycled peer namespace deny release", async () => {
@@ -140,6 +182,14 @@ test("mismatched public origin and recycled peer namespace deny release", async 
     targetSettings.bindings.find(
       (value) => value.name === "TABLES",
     ).namespace_id;
+  const peerVersion = reused.routes.get(
+    `/client/v4/accounts/${peer.account_id}/workers/scripts/${peer.name}/versions/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb`,
+  );
+  peerVersion.resources.bindings.find(
+    (value) => value.name === "TABLES",
+  ).namespace_id = peerSettings.bindings.find(
+    (value) => value.name === "TABLES",
+  ).namespace_id;
   const nsPath = `/client/v4/accounts/${config.account_id}/workers/durable_objects/namespaces?page=1&per_page=100`;
   const namespaces = reused.routes.get(nsPath).result;
   namespaces.find(

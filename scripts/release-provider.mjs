@@ -16,6 +16,18 @@ const REQUIRED_SECRETS = [
   "INVITATION_RESPONSE_KEYRING",
   "CALLBACK_CREDENTIAL_KEYRING",
 ];
+const RELEASE_VARS = [
+  "PUBLIC_ORIGIN",
+  "RELEASE_ENVIRONMENT",
+  "RELEASE_BUILD_SHA",
+  "RELEASE_PROFILE",
+  "RESTORE_QUARANTINE",
+  "ENABLE_MCP_SUBSCRIPTIONS",
+  "ENABLE_OPENAI_EVENTS",
+  "ALLOW_OUTBOUND_NOTIFICATIONS",
+  "ALLOW_NEW_GUESTS",
+  "ALLOW_NEW_TABLES",
+];
 
 export class ProviderVerificationError extends Error {
   constructor(code) {
@@ -112,16 +124,68 @@ export async function inspectWorker(config, request, domains, namespaces) {
   );
   const versionId = activeVersions[0].version_id;
   const version = await request(`${prefix}/versions/${versionId}`);
-  const exports = version?.resources?.script_runtime?.exports;
-  ensure(exports && typeof exports === "object", "provider-schema-unverified");
-  for (const className of REQUIRED_DOS.values()) {
-    ensure(
-      exports[className]?.type === "durable-object" &&
-        exports[className]?.storage === "sqlite" &&
-        exports[className]?.state !== "expecting-transfer",
-      "provider-sqlite-class-unverified",
+  const runtime = version?.resources?.script_runtime;
+  const versionBindings = version?.resources?.bindings;
+  const namedHandlers = version?.resources?.script?.named_handlers;
+  ensure(
+    Array.isArray(versionBindings) && Array.isArray(namedHandlers),
+    "provider-version-schema-unverified",
+  );
+  ensure(
+    typeof config.migrations?.at(-1)?.tag === "string" &&
+      runtime?.migration_tag === config.migrations.at(-1).tag,
+    "provider-migration-tag-unverified",
+  );
+  // Cloudflare's declarative script_runtime.exports is optional in its version
+  // API. Verify named class handlers and the active version's DO bindings
+  // independently, then use the account namespace list for SQLite ownership.
+  const exports = runtime.exports;
+  ensure(
+    exports === undefined || (exports && typeof exports === "object"),
+    "provider-schema-unverified",
+  );
+  ensure(
+    versionBindings.filter((item) => item?.type === "durable_object_namespace")
+      .length === REQUIRED_DOS.size,
+    "provider-version-extra-do-binding",
+  );
+  for (const [name, className] of REQUIRED_DOS) {
+    const bound = readBinding(
+      versionBindings,
+      name,
+      "durable_object_namespace",
     );
+    ensure(
+      bound.class_name === className &&
+        bound.namespace_id?.toLowerCase() === doNamespaces[name] &&
+        !bound.script_name &&
+        !bound.environment &&
+        !bound.dispatch_namespace,
+      "provider-version-do-binding-mismatch",
+    );
+    ensure(
+      namedHandlers.filter(
+        (item) =>
+          item?.name === className &&
+          Array.isArray(item.handlers) &&
+          item.handlers.includes("class"),
+      ).length === 1,
+      "provider-class-export-unverified",
+    );
+    if (exports !== undefined) {
+      ensure(
+        exports[className]?.type === "durable-object" &&
+          exports[className]?.storage === "sqlite" &&
+          exports[className]?.state !== "expecting-transfer",
+        "provider-sqlite-class-unverified",
+      );
+    }
   }
+  const versionKv = readBinding(versionBindings, "OAUTH_KV", "kv_namespace");
+  ensure(
+    versionKv.namespace_id?.toLowerCase() === kvId,
+    "provider-version-kv-binding-mismatch",
+  );
 
   ensure(
     subdomain?.enabled === false && subdomain?.previews_enabled === false,
@@ -156,6 +220,18 @@ export async function inspectWorker(config, request, domains, namespaces) {
       .filter((binding) => binding?.type === "plain_text")
       .map((binding) => [binding.name, binding.text]),
   );
+  const versionText = Object.fromEntries(
+    versionBindings
+      .filter((binding) => binding?.type === "plain_text")
+      .map((binding) => [binding.name, binding.text]),
+  );
+  for (const name of RELEASE_VARS) {
+    ensure(
+      typeof textBindings[name] === "string" &&
+        versionText[name] === textBindings[name],
+      "provider-version-config-unverified",
+    );
+  }
   return {
     accountId: config.account_id.toLowerCase(),
     workerName: config.name,
@@ -191,18 +267,7 @@ export function verifyProviderIsolation(
 }
 
 export function verifyDeployedConfiguration(observed, config) {
-  for (const name of [
-    "PUBLIC_ORIGIN",
-    "RELEASE_ENVIRONMENT",
-    "RELEASE_BUILD_SHA",
-    "RELEASE_PROFILE",
-    "RESTORE_QUARANTINE",
-    "ENABLE_MCP_SUBSCRIPTIONS",
-    "ENABLE_OPENAI_EVENTS",
-    "ALLOW_OUTBOUND_NOTIFICATIONS",
-    "ALLOW_NEW_GUESTS",
-    "ALLOW_NEW_TABLES",
-  ]) {
+  for (const name of RELEASE_VARS) {
     ensure(
       observed.textBindings[name] === config.vars[name],
       "provider-deployed-config-mismatch",

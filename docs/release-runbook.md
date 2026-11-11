@@ -49,9 +49,12 @@ reviewed change/receipt; it is not permission to release or unquarantine.
 2. Create independent Workers and domain bindings with `workers_dev: false`
    and `preview_urls: false`. Confirm these **live** settings and the paginated
    account namespace owner list, not just JSON. The release gate checks the
-   active Worker version and SQLite exports,
-   an exclusive enabled domain route, and both exposure switches; missing
-   settings fail closed. A valid custom domain must already resolve over
+   active Worker version, named class handlers, migration tag, version-bound
+   DO/KV IDs, provider-owned SQLite namespaces, an exclusive enabled domain
+   route, and both exposure switches; missing settings fail closed.
+   Cloudflare's optional declarative `script_runtime.exports` are checked if
+   present, but are not required when the other independent version and
+   namespace proofs exist. A valid custom domain must already resolve over
    HTTPS with a certificate for the intended host. Verify Host/Origin behavior
    and public security controls on that actual domain.
 3. Inject secrets **interactively** and separately for each Worker. Each needs
