@@ -21,6 +21,8 @@ import {
 const buildSha = "a".repeat(40);
 const makeConfig = (environment, overrides = {}) => ({
   name: `agent-table-${environment}`,
+  workers_dev: false,
+  preview_urls: false,
   main: "src/index.ts",
   compatibility_flags: ["global_fetch_strictly_public", "nodejs_compat"],
   durable_objects: {
@@ -183,6 +185,62 @@ test("release and restore reject private or noncanonical origin authorities", ()
     );
     blockedRestore(makeConfig("staging"), "invalid-public-origin", peer);
   }
+});
+
+test("release requires explicit opt-out of workers.dev and preview URLs on both Workers", () => {
+  for (const field of ["workers_dev", "preview_urls"]) {
+    for (const value of [undefined, true, "false"]) {
+      const config = makeConfig("staging");
+      const peer = makeConfig("production");
+      if (value === undefined) {
+        delete config[field];
+        delete peer[field];
+      } else {
+        config[field] = value;
+        peer[field] = value;
+      }
+      blocked(
+        { ...fixture(), configText: JSON.stringify(config) },
+        "unreviewed-worker-public-exposure",
+      );
+      blocked(
+        { ...fixture(), peerText: JSON.stringify(peer) },
+        "unreviewed-worker-public-exposure",
+      );
+      blockedRestore(
+        makeConfig("staging"),
+        "unreviewed-worker-public-exposure",
+        peer,
+      );
+    }
+  }
+});
+
+test("restore generator disables inherited public Worker exposure by default", () => {
+  const oldConfig = makeConfig("staging");
+  oldConfig.workers_dev = true;
+  oldConfig.preview_urls = true;
+  const restored = JSON.parse(
+    prepareQuarantinedRestoreConfig(
+      JSON.stringify(oldConfig),
+      JSON.stringify(makeConfig("production")),
+    ),
+  );
+  assert.equal(restored.workers_dev, false);
+  assert.equal(restored.preview_urls, false);
+  assert.equal(restored.vars.RESTORE_QUARANTINE, "true");
+
+  // Omitted flags are dangerous because Wrangler defaults workers_dev on.
+  delete oldConfig.workers_dev;
+  delete oldConfig.preview_urls;
+  const fromImplicitExposure = JSON.parse(
+    prepareQuarantinedRestoreConfig(
+      JSON.stringify(oldConfig),
+      JSON.stringify(makeConfig("production")),
+    ),
+  );
+  assert.equal(fromImplicitExposure.workers_dev, false);
+  assert.equal(fromImplicitExposure.preview_urls, false);
 });
 
 test("release and restore reject unreviewed secondary Worker entry surfaces", () => {
@@ -662,6 +720,8 @@ test("restore CLI refuses an environment override before creating any output", (
 
 test("checked-in restore candidate is the actual generator output for stale-enabled input", () => {
   const source = makeConfig("staging");
+  source.workers_dev = true;
+  source.preview_urls = true;
   source.vars.RESTORE_QUARANTINE = "false";
   for (const name of [
     "ENABLE_MCP_SUBSCRIPTIONS",

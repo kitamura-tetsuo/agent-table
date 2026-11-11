@@ -1,5 +1,7 @@
 {
   "name": "agent-table-staging",
+  "workers_dev": false,
+  "preview_urls": false,
   "main": "src/index.ts",
   "compatibility_flags": ["global_fetch_strictly_public", "nodejs_compat"],
   "durable_objects": {

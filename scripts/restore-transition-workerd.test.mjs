@@ -67,7 +67,7 @@ function runtime(directory, quarantined) {
   );
 }
 
-async function inspect(mf, className, id, sql) {
+async function inspect(mf, className, id, sql, ...params) {
   const storage = await mf.unsafeGetDurableObjectStorage(
     candidate.name,
     className,
@@ -75,7 +75,7 @@ async function inspect(mf, className, id, sql) {
       name: id,
     },
   );
-  return storage.exec(sql);
+  return storage.exec(sql, ...params);
 }
 
 test("generated restore configuration preserves historical SQLite but refuses old authority after a real Workerd restart", async () => {
@@ -155,6 +155,71 @@ test("generated restore configuration preserves historical SQLite but refuses ol
       ).ok,
       true,
     );
+    // Simulate durable, due notification work inherited from the old
+    // runtime. No post-snapshot revocation source is available for clearance.
+    const [membership] = await inspect(
+      mf,
+      "TableDO",
+      tableId,
+      "SELECT membership_id FROM table_memberships",
+    );
+    const [message] = await inspect(
+      mf,
+      "TableDO",
+      tableId,
+      "SELECT message_id FROM table_messages",
+    );
+    const pendingEventId = crypto.randomUUID();
+    const pendingSubscriptionId = crypto.randomUUID();
+    const pendingNextAttemptAt = Date.now() - 2_000;
+    await inspect(
+      mf,
+      "TableDO",
+      tableId,
+      `INSERT INTO table_event_subscriptions
+        (membership_id, generation, fence, status, guest_id, connection_id,
+         subscription_id, callback_url, secret_envelope, expires_at)
+        VALUES (?, 1, 1, 'active', ?, ?, ?, ?, ?, ?)`,
+      membership.membership_id,
+      guestId,
+      connectionId,
+      pendingSubscriptionId,
+      "https://callbacks.invalid/never-send",
+      "synthetic-unreadable-envelope",
+      Date.now() + 60 * 60_000,
+    );
+    await inspect(
+      mf,
+      "TableDO",
+      tableId,
+      `INSERT INTO table_event_outbox
+        (event_id, message_id, message_seq, recipient_membership_id,
+         subscription_id, subscription_generation, status, attempt_count,
+         next_attempt_at, created_at, expires_at)
+        VALUES (?, ?, 1, ?, ?, 1, 'pending', 0, ?, ?, ?)`,
+      pendingEventId,
+      message.message_id,
+      membership.membership_id,
+      pendingSubscriptionId,
+      pendingNextAttemptAt,
+      Date.now() - 30_000,
+      Date.now() + 60 * 60_000,
+    );
+    const pendingOutboxSql =
+      "SELECT status, attempt_count, next_attempt_at, lease_token, lease_deadline FROM table_event_outbox WHERE event_id = ?";
+    const unchangedPendingOutbox = [
+      {
+        status: "pending",
+        attempt_count: 0,
+        next_attempt_at: pendingNextAttemptAt,
+        lease_token: null,
+        lease_deadline: null,
+      },
+    ];
+    assert.deepEqual(
+      await inspect(mf, "TableDO", tableId, pendingOutboxSql, pendingEventId),
+      unchangedPendingOutbox,
+    );
     assert.deepEqual(
       await inspect(mf, "TableDO", tableId, "SELECT body FROM table_messages"),
       [{ body: privateBody }],
@@ -230,6 +295,12 @@ test("generated restore configuration preserves historical SQLite but refuses ol
       ),
       { ok: false, code: "TEMPORARILY_UNAVAILABLE" },
     );
+    // The retained due outbox remains pending after Workerd reconstruction.
+    // The isolated generated-runtime test separately invokes real DO alarms.
+    assert.deepEqual(
+      await inspect(mf, "TableDO", tableId, pendingOutboxSql, pendingEventId),
+      unchangedPendingOutbox,
+    );
     assert.deepEqual(
       await inspect(mf, "TableDO", tableId, "SELECT body FROM table_messages"),
       [{ body: privateBody }],
@@ -255,6 +326,10 @@ test("generated restore configuration preserves historical SQLite but refuses ol
     assert.deepEqual(
       await inspect(mf, "TableDO", tableId, "SELECT body FROM table_messages"),
       [{ body: privateBody }],
+    );
+    assert.deepEqual(
+      await inspect(mf, "TableDO", tableId, pendingOutboxSql, pendingEventId),
+      unchangedPendingOutbox,
     );
   } finally {
     await mf?.dispose();

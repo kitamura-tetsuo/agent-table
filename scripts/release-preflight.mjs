@@ -41,6 +41,15 @@ function validateUnambiguousWorkerConfig(config) {
   }
 }
 
+// Wrangler defaults workers.dev exposure on. Explicitly opt out for a
+// reviewed, origin-bound release; actual domain routing is checked separately.
+function requireReviewedWorkerExposure(config) {
+  requireCondition(
+    config.workers_dev === false && config.preview_urls === false,
+    "unreviewed-worker-public-exposure",
+  );
+}
+
 function validateSqliteMigrationHistory(config) {
   const actual = config?.migrations;
   requireCondition(
@@ -247,6 +256,7 @@ function verifyEvidence(
 
 function validatePeerIsolation(config, peer, environment) {
   validateUnambiguousWorkerConfig(peer);
+  requireReviewedWorkerExposure(peer);
   const vars = config.vars;
   requireCondition(
     peer?.vars?.RELEASE_ENVIRONMENT ===
@@ -330,6 +340,7 @@ export function validateRelease({
     throw new PreflightError("invalid-config-json");
   }
   validateUnambiguousWorkerConfig(config);
+  requireReviewedWorkerExposure(config);
   const vars = config?.vars ?? {};
   requireCondition(
     vars.RELEASE_ENVIRONMENT === environment,
@@ -432,6 +443,10 @@ export function prepareQuarantinedRestoreConfig(configText, peerText) {
   }
   validatePeerIsolation(source, peer, environment);
   const candidate = structuredClone(source);
+  // Restore an inaccessible candidate even if the old config relied on
+  // Wrangler's public workers.dev default or had preview links enabled.
+  candidate.workers_dev = false;
+  candidate.preview_urls = false;
   candidate.vars.RESTORE_QUARANTINE = "true";
   for (const name of [
     "ENABLE_MCP_SUBSCRIPTIONS",

@@ -118,6 +118,10 @@ describe("unreconciled older snapshot in the generated quarantine runtime", () =
     if (!connection) throw new Error("Synthetic connection unavailable");
     const now = Date.now();
     const privateBody = "Synthetic message retained from before restore";
+    const messageId = crypto.randomUUID();
+    const subscriptionId = crypto.randomUUID();
+    const eventId = crypto.randomUUID();
+    const nextAttemptAt = now - 2_000;
     await runInDurableObject(table, async (_instance, state) => {
       state.storage.sql.exec(
         `INSERT INTO table_metadata
@@ -148,11 +152,40 @@ describe("unreconciled older snapshot in the generated quarantine runtime", () =
         `INSERT INTO table_messages
          (seq, message_id, sender_membership_id, body, body_bytes, created_at, reply_to_message_id)
          VALUES (1, ?, ?, ?, ?, ?, NULL)`,
-        crypto.randomUUID(),
+        messageId,
         membershipId,
         privateBody,
         new TextEncoder().encode(privateBody).byteLength,
         now - 30_000,
+      );
+      // A retained snapshot can also contain due delivery work that would
+      // expose private content if the restored alarm ran its outbox consumer.
+      state.storage.sql.exec(
+        `INSERT INTO table_event_subscriptions
+         (membership_id, generation, fence, status, guest_id, connection_id,
+          subscription_id, callback_url, secret_envelope, expires_at)
+         VALUES (?, 1, 1, 'active', ?, ?, ?, ?, ?, ?)`,
+        membershipId,
+        guestId,
+        connection.connectionId,
+        subscriptionId,
+        "https://callbacks.invalid/never-send",
+        "synthetic-unreadable-envelope",
+        now + 60 * 60_000,
+      );
+      state.storage.sql.exec(
+        `INSERT INTO table_event_outbox
+         (event_id, message_id, message_seq, recipient_membership_id,
+          subscription_id, subscription_generation, status, attempt_count,
+          next_attempt_at, created_at, expires_at)
+         VALUES (?, ?, 1, ?, ?, 1, 'pending', 0, ?, ?, ?)`,
+        eventId,
+        messageId,
+        membershipId,
+        subscriptionId,
+        nextAttemptAt,
+        now - 30_000,
+        now + 60 * 60_000,
       );
     });
     const cookie = `${SESSION_COOKIE_NAME}=v1.${guestId}.${session.sessionId}.${session.secret}`;
@@ -229,6 +262,25 @@ describe("unreconciled older snapshot in the generated quarantine runtime", () =
           .exec("SELECT COUNT(*) AS n FROM table_tombstones")
           .one(),
       ).toEqual({ n: 0 });
+      // Even due, active-looking historical Events work remains untouched:
+      // quarantine cannot charge, cancel or send a restored notification.
+      expect(
+        state.storage.sql
+          .exec(
+            "SELECT status, attempt_count, next_attempt_at, lease_token, lease_deadline FROM table_event_outbox WHERE event_id = ?",
+            eventId,
+          )
+          .one(),
+      ).toEqual({
+        status: "pending",
+        attempt_count: 0,
+        next_attempt_at: nextAttemptAt,
+        lease_token: null,
+        lease_deadline: null,
+      });
+      expect(await state.storage.getAlarm()).toBeGreaterThan(
+        Date.now() + RESTORE_QUARANTINE_RECHECK_MS - 5_000,
+      );
     });
     await runInDurableObject(guest, async (instance, state) => {
       await instance.alarm();
