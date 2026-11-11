@@ -56,6 +56,8 @@
   ],
   "vars": {
     "PUBLIC_ORIGIN": "http://localhost:8787",
+    "RELEASE_ENVIRONMENT": "local",
+    "RESTORE_QUARANTINE": "false",
     "ENABLE_MCP_SUBSCRIPTIONS": "false",
     "ENABLE_OPENAI_EVENTS": "false",
     "ALLOW_NEW_GUESTS": "false",

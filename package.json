@@ -16,6 +16,7 @@
     "measure:synthetic": "vitest run test/integration/telemetry-workload.test.ts",
     "test:e2e": "playwright test",
     "build": "wrangler deploy --dry-run --outdir dist",
+    "test:restore-runtime": "vitest run --config vitest.restore.config.ts",
     "probe:subscriptions:sdk": "node scripts/mcp-subscriptions-sdk.test.mjs",
     "probe:subscriptions:table": "node scripts/inbox-streams-workerd.test.mjs",
     "probe:subscriptions:two-worker": "node scripts/two-worker-subscriptions.mjs"

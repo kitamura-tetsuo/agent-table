@@ -65,6 +65,10 @@ import type {
 } from "../shared/lifecycle";
 import { TABLE_LIMITS } from "../shared/limits";
 import { digestSessionSecret, randomBase64Url } from "../shared/random";
+import {
+  deferQuarantinedAlarm,
+  isRestoreQuarantined,
+} from "../shared/release-quarantine";
 import { ownInboxUri, parseOwnInboxUri } from "../shared/resources";
 import {
   initializeApplicationSchema,
@@ -756,6 +760,7 @@ export class TableDO extends DurableObject<Env> {
     actor: VerifiedConnectionActor,
     requiredScope: ConnectionScope,
   ): Promise<boolean> {
+    if (isRestoreQuarantined(this.env)) return false;
     if (
       actor?.kind !== "verified-connection" ||
       actor.scope !== requiredScope ||
@@ -1183,6 +1188,10 @@ export class TableDO extends DurableObject<Env> {
     requested: unknown,
     tokenExpiresAtMs: number,
   ): Promise<TableResult<InboxSubscriptionCheck>> {
+    // Internal RPCs are not HTTP ingress. A restored grant must not authorize
+    // a stream merely because it still looks valid in the old SQLite rows.
+    if (isRestoreQuarantined(this.env))
+      return { ok: false, code: "TEMPORARILY_UNAVAILABLE" };
     const filter = parseCanonicalInboxFilter(requested);
     if (!filter) return { ok: false, code: "INVALID_REQUEST" };
     if (
@@ -1260,6 +1269,8 @@ export class TableDO extends DurableObject<Env> {
       cancellationId: string;
     }>
   > {
+    if (isRestoreQuarantined(this.env))
+      return { ok: false, code: "TEMPORARILY_UNAVAILABLE" };
     if (this.pendingInboxAttaches >= 2)
       return { ok: false, code: "TEMPORARILY_UNAVAILABLE" };
     this.pendingInboxAttaches++;
@@ -2085,7 +2096,10 @@ export class TableDO extends DurableObject<Env> {
       mutation,
     );
     if (result.ok && newlyCommitted) {
-      if (result.peerUpdateHint) {
+      if (isRestoreQuarantined(this.env)) {
+        // No private hint may be emitted by a retained DO in recovery mode.
+        this.inboxStreams.closeAll();
+      } else if (result.peerUpdateHint) {
         // The SQLite transaction has committed. Dispatch stays at the table
         // authority and cannot turn a committed post into an uncertain retry.
         this.ctx.waitUntil(
@@ -2369,6 +2383,7 @@ export class TableDO extends DurableObject<Env> {
   private async verifyBrowserSession(
     credential: BrowserDeletionCredential,
   ): Promise<boolean> {
+    if (isRestoreQuarantined(this.env)) return false;
     if (
       !credential ||
       typeof credential.guestId !== "string" ||
@@ -2894,6 +2909,9 @@ export class TableDO extends DurableObject<Env> {
 
   /** Alarms are recoverable; no wakeup implies that content is readable. */
   async alarm(): Promise<void> {
+    // During independent reconciliation, park the wakeup but never prune
+    // restored private rows or issue any downstream effect.
+    if (await deferQuarantinedAlarm(this.env, this.ctx.storage)) return;
     const started = Date.now();
     try {
       const earliest = this.earliestLifecycleDeadline();

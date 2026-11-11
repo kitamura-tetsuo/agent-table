@@ -29,6 +29,8 @@ const tableRead = vi.fn(async () => ({
 }));
 const bindings = {
   PUBLIC_ORIGIN: STAGING,
+  RELEASE_ENVIRONMENT: "staging",
+  RESTORE_QUARANTINE: "false",
   STAGING_EVIDENCE_MODE: "read-only",
   STAGING_EVIDENCE_KEY: SECRET,
   GUESTS: {
@@ -94,6 +96,21 @@ describe("staging-only SQLite evidence inspection", () => {
       {} as ExecutionContext,
     );
     expect(response.status).toBe(404);
+
+    // Recovery isolation takes precedence even over a disabled diagnostic route.
+    const quarantined = {
+      ...bindings,
+      STAGING_EVIDENCE_MODE: "off",
+      RESTORE_QUARANTINE: "true",
+    } as Env;
+    const recoveryResponse = await worker.fetch(
+      new Request(`${STAGING}/__staging/evidence`, {
+        method: "POST",
+      }) as Parameters<typeof worker.fetch>[0],
+      quarantined,
+      {} as ExecutionContext,
+    );
+    expect(recoveryResponse.status).toBe(503);
   });
 
   it("requires a full constant-time fixed-size secret and POST", async () => {

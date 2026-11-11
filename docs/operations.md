@@ -41,7 +41,7 @@ Run `npx vitest run test/integration/table-authority.test.ts` for real binding/S
 
 `src/shared/deadlines.ts` provides per-object atomic alarm-plus-SQL commit and bounded alarm draining. The implementation uses the pinned Cloudflare SQLite `storage.transaction` API (which can contain awaited alarm operations and synchronous SQL), not an in-memory timer or an assumption that `transactionSync` awaits alarm writes. Actual workerd tests in `test/integration/deadline-runtime-probe.test.ts` demonstrate paired SQL/alarm commit and rollback. `test/integration/deadline-scheduler.test.ts` forces crashes at the alarm/commit/rearm boundaries, tests response loss and competing deadlines, then reconstructs storage. `test/integration/guest-cleanup.test.ts` drives production `GuestDO.alarm` through batches exceeding 100 expired records and verifies live sessions, grants and reservations remain.
 
-GuestDO's alarm handles only physical cleanup of the existing session, connection and creation-reservation records. It schedules a separate 60-second recovery wakeup before processing and a one-second follow-up for already-due backlog; valid records keep their original deadlines and server-side authorization remains synchronous. TableDO has the same scheduler interface but no application expiry/outbox handler yet; **do not** enable notifications or interpret alarm execution as table purge or callback delivery. No real deployed alarm observation or external host run is claimed.
+GuestDO's alarm handles only physical cleanup of the existing session, connection and creation-reservation records. It schedules a separate 60-second recovery wakeup before processing and a one-second follow-up for already-due backlog; valid records keep their original deadlines and server-side authorization remains synchronous. TableDO now has lifecycle cleanup and a durable Events outbox alarm consumer. Its dispatch requires independently enabled outbound settings, current grant validation and transport readiness; restore quarantine parks the alarm before cleanup or any delivery attempt. Do not interpret a successful alarm as public Events readiness, actual callback delivery or backup reconciliation. See the separate recorded synthetic Cloudflare quarantine evidence in [pr46-cloudflare-quarantine-evidence.md](pr46-cloudflare-quarantine-evidence.md).
 
 ## Future repository layout
 
@@ -77,6 +77,17 @@ The implemented subset has `src/index.ts`, `src/mcp/server.ts`, `src/auth/guest.
 Tests should run in Cloudflare's workerd-based harness for storage, bindings, alarms, and streams. Browser tests cover consent and invitation handling. Pure Node unit tests alone are not an adequate production oracle. [CF-TEST]
 
 ## Cloudflare resources
+
+The offline release preflight and restore generator require a canonical
+HTTPS DNS origin; IP literals, single-label/internal hostnames and trailing-dot
+origins are rejected. They also refuse alternate Wrangler entry points
+(routes, static site/assets and cron triggers) for both target and peer
+configurations and require explicit `workers_dev: false` and
+`preview_urls: false` in both. The restore-config generator forces both
+exposure flags off even when the stale input omitted or enabled them. These structural checks cannot prove DNS ownership, TLS
+validity, the live Cloudflare route or the absence of an implicit workers.dev
+endpoint. Independently reviewed authenticated deployment evidence remains
+mandatory, and this offline preflight never grants publication approval.
 
 Use separate staging and production Workers, DO namespaces, KV namespaces, secrets, and origins. A test environment must never deliver to production callbacks. Reserve one stable production HTTPS origin before configuring public OAuth clients; no domain has been selected or deployed by these documents.
 
@@ -119,6 +130,35 @@ The GitHub Actions PR workflow repeats clean `npm ci`, type checking, linting, w
 
 New guest admission is disabled by default (`ALLOW_NEW_GUESTS=false`). For a temporary, isolated local browser session test, start `npm run dev -- --var ALLOW_NEW_GUESTS:true`; the Playwright web server uses that override, while the standard `npm run dev` does not. Browser routes are `/guest` (explicit choice UI), `/guest/session` (same-origin CSRF-protected POST only), `/guest/me` (read-only validated session check), and `/guest/connections` (session-protected connection list) with POST-only `/guest/connections/revoke`. The `__Host-` session cookie needs HTTPS except on loopback during development. Version 2 of the application schema adds guest identity/session tables **only in GuestDO**. It migrates existing version 1 objects transactionally and rejects unsupported newer versions without clearing state. The SHA-256 session digests remain durable across instance eviction; raw session credentials must never enter SQL, logs, or diagnostic artifacts.
 
+### Manual deployment workflow scaffold (Issue #22, fail-closed)
+
+The repository has **manual-only** dispatch entries `.github/workflows/deploy-staging.yml`
+and `deploy-production.yml`, sharing a bounded reviewed source and release
+preflight. They accept an exact expected **main** SHA, require the repository and
+branch identity, use the selected GitHub `staging` or `production` environment,
+re-run application and Workerd checks, and consume private configuration and
+evidence files only from that environment's secrets. The Worker config is written
+with owner-only permissions for the duration of the job. Pull requests never
+trigger publication. GitHub API readback on 2026-11-11 confirmed that both
+`staging` and `production` Environments have owner-required review and
+protected-branch restrictions. This is evidence of the configured policy, not
+an approval of a particular run; verify it again before release. The separate
+[staging-only credential validation #42969129958](https://github.com/kitamura-tetsuo/agent-table/actions/runs/42969129958)
+succeeded at reading Worker settings but did not authorize publishing.
+
+Environment secrets: `RELEASE_CONFIG_JSON`, `PEER_CONFIG_JSON`,
+`RELEASE_SECRET_INVENTORY_JSON`, `RELEASE_EVIDENCE_JSON`,
+`CLOUDFLARE_API_TOKEN`, and `CLOUDFLARE_ACCOUNT_ID`. Supply real values only
+from an authorized secret store, never source files or issue comments. Scope the
+Cloudflare token to the reviewed Worker/namespace and required operations.
+The offline preflight deliberately returns `deploymentApproved:false` even
+when its structural and self-reported evidence checks succeed; the distinct
+`require-release-approval.mjs` gate therefore **stops before the publish
+step**. These workflows do not grant approval, attest evidence, provision a
+production deployment, or make an unsafe quarantine-clear path. A future
+independent authenticated approval producer and externally configured protected
+environments are prerequisites to enabling a real publication.
+
 ## Deployment procedure after implementation
 
 After the guest/OAuth and later application stages have been implemented, separately approve staging publication, provision the OAuth KV binding if the selected library requires it, and set real staging origin/namespace configuration outside the committed local scaffold. Store encryption keyrings with `wrangler secret put`, not in committed configuration, shell history, deployment logs or test artifacts. Configure additional secrets from the chosen OAuth library's pinned documentation. The following commands are a future **interactive** operator workflow, **not** part of PR CI:
@@ -160,13 +200,13 @@ The Worker now emits `agent-table.telemetry.v1` allowlisted JSON console records
 
 **Platform logging boundary:** Cloudflare [Workers Logs](https://developers.cloudflare.com/workers/observability/logs/workers-logs/) documents that automatic invocation logs include the method and full URL, independent of this code's safe console record. The checked-in `wrangler.jsonc` explicitly disables invocation logs (`observability.logs.invocation_logs=false`) while enabling custom Workers Logs. Do not re-enable invocation logs for guest/OAuth/event routes carrying opaque values. This setting has **not** been verified on an actual deployment, and it does not control other account-level logs, WAF/security analytics, external proxies or platform-generated diagnostics; those surfaces require a separate privacy review. This commit neither deploys nor inspects private host activity.
 
-The event encoder allows only fixed event/route/operation names, non-negative bounded measurements, HTTP codes and ephemeral random 12-hex correlation IDs. It does **not** log guest or table IDs, raw URLs, titles, purposes, bodies, cookies, OAuth parameters, callback paths, invitation secrets, authorization headers or exception strings. There is no log-derived identity or transcript analysis. TableDO now records local stream active count/duration and emits fixed-category stream-stop reasons, including replacement, revocation and slow-reader termination; the public SDK output cap emits its own fixed-category termination metric. Outbox/retry/delivery metrics remain unimplemented. DO SQL volume and billed active duration are not inferred from these counters.
+The event encoder allows only fixed event/route/operation names, non-negative bounded measurements, HTTP codes and ephemeral random 12-hex correlation IDs. It does **not** log guest or table IDs, raw URLs, titles, purposes, bodies, cookies, OAuth parameters, callback paths, invitation secrets, authorization headers or exception strings. There is no log-derived identity or transcript analysis. TableDO now records local stream active count/duration and emits fixed-category stream-stop reasons, including replacement, revocation and slow-reader termination; the public SDK output cap emits its own fixed-category termination metric. TableDO records bounded outbox backlog, attempted delivery, retry and terminal-failure measurements, but these do not establish end-to-end provider delivery or configured alerting. DO SQL volume and billed active duration are not inferred from these counters.
 
 Invitation metrics are emitted at the authenticated application result boundary, not inferred from HTTP status: MCP invitation errors may return HTTP 200. The allowlisted `invitation` record has only fixed `create_invite`/`join_table` operation, `accepted`/`rejected`/`unknown` outcome, bounded failure category and duration. A retryable DO transport failure is `unknown`, not evidence of a failed SQL transaction. Neither successful invite issuance nor joining counts as a peer host run. The OAuth/MCP integration regression captures actual invitation and post events against independent SQLite message/receipt counts, including retries and a lost client response. It verifies secret sentinels never occur in these records; no account-wide platform logging claim is implied.
 
 Local synthetic measurements: run `npm run measure:synthetic` on an isolated Workerd/Vitest environment. The quiet case creates/reads one synthetic table and checks zero transcript rows; the active case commits two synthetic posts and retries one request ID, then compares two persisted rows and two receipts to its observations. The harness emits only profile names and numeric observed counts/storage sizes. Such evidence is reproducible **local Workerd observation only**, not production traffic, CPU billing, exact read/write operation count, long-lived stream hibernation, webhook delivery, or agent-host execution. Record real deployment SHA, fixture, duration, Cloudflare dashboard Worker/DO request, CPU, duration, database size and billing figures separately when an authorized isolated deployment becomes available; missing results must be marked **not run** rather than measured zero. Refresh official pricing at the time of any approved deployment.
 
-Operator diagnostics: review HTTP 429 by safe route category for admissions, 401/403 on OAuth/protocol routes for authorization failures, 5xx/exception rates, and cleanup alarm `backlogLagMs` plus `processed` for an accumulating physical cleanup backlog. Treat repeated cleanup lag above 60 seconds for several alarms, a rising 5xx/429 ratio, or unexpectedly growing DO storage size as *investigation triggers* to calibrate from actual workload measurements, not pre-proven service-level thresholds. If stream/outbox hooks are introduced later, alert on persistent pending-age and delivery failures only after real emitters and durable counts exist. Limit Workers Logs retention and access separately through the deployment account; this commit does not provision a logging vendor or modify deployment settings.
+Operator diagnostics: review HTTP 429 by safe route category for admissions, 401/403 on OAuth/protocol routes for authorization failures, 5xx/exception rates, and cleanup alarm `backlogLagMs` plus `processed` for an accumulating physical cleanup backlog. Treat repeated cleanup lag above 60 seconds for several alarms, a rising 5xx/429 ratio, or unexpectedly growing DO storage size as *investigation triggers* to calibrate from actual workload measurements, not pre-proven service-level thresholds. Alerting on persistent outbox pending-age or delivery failures must be calibrated from actual counters and verified monitoring configuration; the metrics hooks alone do not provision alerts. Limit Workers Logs retention and access separately through the deployment account; this commit does not provision a logging vendor or modify deployment settings.
 
 ## Cost model
 

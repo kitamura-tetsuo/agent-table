@@ -172,6 +172,9 @@ function workerOptions(name, scriptPath, core = false) {
     kvNamespaces: { OAUTH_KV: "synthetic-oauth-shared-kv" },
     bindings: {
       PUBLIC_ORIGIN: ORIGIN,
+      // Explicit normal-mode settings are required on every edge and DO worker.
+      RELEASE_ENVIRONMENT: "local",
+      RESTORE_QUARANTINE: "false",
       INVITATION_RESPONSE_KEYRING: KEYRING,
       ENABLE_MCP_SUBSCRIPTIONS: "true",
       ENABLE_OPENAI_EVENTS: "false",

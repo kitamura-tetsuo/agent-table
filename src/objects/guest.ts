@@ -19,6 +19,7 @@ import {
 import { DurableDeadlineScheduler } from "../shared/deadlines";
 import { CREATION_LIMITS } from "../shared/limits";
 import { digestSessionSecret, randomBase64Url } from "../shared/random";
+import { deferQuarantinedAlarm } from "../shared/release-quarantine";
 import {
   initializeApplicationSchema,
   readApplicationSchemaVersion,
@@ -973,6 +974,9 @@ export class GuestDO extends DurableObject<Env> {
 
   /** At-least-once alarm processing; remaining work is always rearmed. */
   async alarm(): Promise<void> {
+    // During independent reconciliation, park the wakeup but never prune
+    // restored private rows or issue any downstream effect.
+    if (await deferQuarantinedAlarm(this.env, this.ctx.storage)) return;
     const started = Date.now();
     try {
       const earliest = this.earliestDeadline();

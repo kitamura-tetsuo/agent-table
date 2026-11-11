@@ -37,6 +37,8 @@ const config :Workerd.Config = (
         (name = "TABLES", durableObjectNamespace = "ProbeTableDO"),
         (name = "GUESTS", durableObjectNamespace = "ProbeGuestDO"),
         (name = "PUBLIC_ORIGIN", text = "http://localhost:8787"),
+        (name = "RELEASE_ENVIRONMENT", text = "local"),
+        (name = "RESTORE_QUARANTINE", text = "false"),
         (name = "INVITATION_RESPONSE_KEYRING", text = "{\\"current\\":{\\"id\\":\\"synthetic-test-2026\\",\\"key\\":\\"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8\\"},\\"previous\\":[]}")
       ]
     ))

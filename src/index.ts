@@ -18,6 +18,7 @@ import {
   type EdgeAdmissionCategory,
   rejectOversizedIngress,
 } from "./shared/admission";
+import { rejectRestoredAccess } from "./shared/release-quarantine";
 import { correlationId, emitOperationalEvent } from "./shared/telemetry";
 import { handleBrowserTableCreate } from "./web/create";
 import { handleDeletionPage } from "./web/deletion";
@@ -68,6 +69,8 @@ const handleRequest: ExportedHandler<Env>["fetch"] = async (
   env,
   ctx,
 ) => {
+  const quarantine = rejectRestoredAccess(env);
+  if (quarantine) return quarantine;
   const ingressRejected = await rejectOversizedIngress(request);
   if (ingressRejected) return ingressRejected;
   const url = new URL(request.url);

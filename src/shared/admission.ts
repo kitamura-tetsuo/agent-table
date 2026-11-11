@@ -1,3 +1,5 @@
+import { isRestoreQuarantined } from "./release-quarantine";
+
 /** Bounded Worker ingress and independently controlled admission switches. */
 
 const MAX_URL_BYTES = 2_048;
@@ -31,7 +33,9 @@ export function allowNewTables(env: Env): boolean {
  * future delivery. This is only a control hook, not a delivery producer.
  */
 export function allowOutboundNotifications(env: Env): boolean {
-  return env.ALLOW_OUTBOUND_NOTIFICATIONS === "true";
+  return (
+    !isRestoreQuarantined(env) && env.ALLOW_OUTBOUND_NOTIFICATIONS === "true"
+  );
 }
 
 /** No raw body, token, IP or table identifier is echoed in this response. */
