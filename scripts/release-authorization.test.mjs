@@ -73,16 +73,17 @@ function legacyStagingHarness() {
   fixture.workflow.eventSender = "kitamura-tetsuo";
 
   const cloudflare = makeProviderMock(config, JSON.parse(fixture.peerText));
-  const prefix =
-    `/client/v4/accounts/${config.account_id}/workers/scripts/${config.name}`;
+  const prefix = `/client/v4/accounts/${config.account_id}/workers/scripts/${config.name}`;
   for (const bindings of [
     cloudflare.routes.get(`${prefix}/settings`).bindings,
-    cloudflare.routes.get(
-      `${prefix}/versions/${oldVersion}`,
-    ).resources.bindings,
+    cloudflare.routes.get(`${prefix}/versions/${oldVersion}`).resources
+      .bindings,
   ]) {
     for (const entry of bindings) {
-      if (entry.name === "ALLOW_NEW_GUESTS" || entry.name === "ALLOW_NEW_TABLES") {
+      if (
+        entry.name === "ALLOW_NEW_GUESTS" ||
+        entry.name === "ALLOW_NEW_TABLES"
+      ) {
         entry.text = "true";
       }
     }
@@ -95,7 +96,9 @@ function legacyStagingHarness() {
   ]);
   const settings = cloudflare.routes.get(`${prefix}/settings`);
   const version = cloudflare.routes.get(`${prefix}/versions/${oldVersion}`);
-  settings.bindings = settings.bindings.filter((binding) => !absent.has(binding.name));
+  settings.bindings = settings.bindings.filter(
+    (binding) => !absent.has(binding.name),
+  );
   version.resources.bindings = version.resources.bindings.filter(
     (binding) => !absent.has(binding.name),
   );
@@ -149,7 +152,8 @@ test("bootstrap cannot waive review, safe-intake transition, or exact version", 
     {
       label: "old version changed",
       mutate: ({ fixture }) => {
-        fixture.workflow.expectedActiveVersionId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+        fixture.workflow.expectedActiveVersionId =
+          "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
       },
       error: /staging-bootstrap-unapproved/,
     },
@@ -171,15 +175,15 @@ test("bootstrap cannot waive review, safe-intake transition, or exact version", 
       label: "existing intake unexpectedly paused",
       mutate: ({ fixture, cloudflare }) => {
         const config = JSON.parse(fixture.configText);
-        const base =
-          `/client/v4/accounts/${config.account_id}/workers/scripts/${config.name}`;
+        const base = `/client/v4/accounts/${config.account_id}/workers/scripts/${config.name}`;
         for (const bindings of [
           cloudflare.routes.get(`${base}/settings`).bindings,
           cloudflare.routes.get(
             `${base}/versions/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb`,
           ).resources.bindings,
         ]) {
-          bindings.find((binding) => binding.name === "ALLOW_NEW_TABLES").text = "false";
+          bindings.find((binding) => binding.name === "ALLOW_NEW_TABLES").text =
+            "false";
         }
       },
       error: /staging-bootstrap-live-state-changed/,

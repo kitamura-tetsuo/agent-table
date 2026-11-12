@@ -148,7 +148,15 @@ export async function verifyProtectedEnvironmentApproval(workflow, githubRead) {
 
 export function verifyOperationalDecision(
   record,
-  { environment, profile, buildSha, configSha256, origin, now, bootstrapStaging = false },
+  {
+    environment,
+    profile,
+    buildSha,
+    configSha256,
+    origin,
+    now,
+    bootstrapStaging = false,
+  },
 ) {
   requireDecision(
     record?.environment === environment &&
@@ -314,7 +322,9 @@ export async function authorizeRelease({
           "ENABLE_MCP_SUBSCRIPTIONS",
           "ENABLE_OPENAI_EVENTS",
           "ALLOW_OUTBOUND_NOTIFICATIONS",
-        ].every((name) => active[name] === "false" && config.vars[name] === "false") &&
+        ].every(
+          (name) => active[name] === "false" && config.vars[name] === "false",
+        ) &&
         active.ALLOW_NEW_GUESTS === "true" &&
         active.ALLOW_NEW_TABLES === "true" &&
         config.vars.ALLOW_NEW_GUESTS === "false" &&
@@ -426,11 +436,14 @@ async function main() {
     const buildSha = cliArgument(args, "build-sha");
     const bootstrapFlag = cliOptionalArgument(args, "bootstrap-staging");
     requireDecision(
-      bootstrapFlag === undefined || bootstrapFlag === "true" || bootstrapFlag === "false",
+      bootstrapFlag === undefined ||
+        bootstrapFlag === "true" ||
+        bootstrapFlag === "false",
       "invalid-staging-bootstrap-flag",
     );
     const bootstrapStaging = bootstrapFlag === "true";
-    const expectedVersion = cliOptionalArgument(args, "expected-active-version-id") ?? "";
+    const expectedVersion =
+      cliOptionalArgument(args, "expected-active-version-id") ?? "";
     const dispatch = process.env.GITHUB_EVENT_PATH
       ? JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, "utf8"))
       : {};
@@ -457,8 +470,11 @@ async function main() {
         runId: process.env.GITHUB_RUN_ID,
         runAttempt: process.env.GITHUB_RUN_ATTEMPT,
         cloudflareAccountId: process.env.CLOUDFLARE_ACCOUNT_ID,
-        bootstrapStaging: String(dispatch?.inputs?.bootstrap_staging) === "true",
-        expectedActiveVersionId: String(dispatch?.inputs?.expected_active_version_id ?? ""),
+        bootstrapStaging:
+          String(dispatch?.inputs?.bootstrap_staging) === "true",
+        expectedActiveVersionId: String(
+          dispatch?.inputs?.expected_active_version_id ?? "",
+        ),
         eventSender: dispatch?.sender?.login,
       },
       requestedActiveVersionId: expectedVersion,

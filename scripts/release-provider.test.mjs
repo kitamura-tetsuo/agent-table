@@ -49,13 +49,14 @@ test("legacy staging identity exception only accepts exactly four absent release
     "RESTORE_QUARANTINE",
   ];
   const mock = makeProviderMock(config, peer);
-  const prefix =
-    `/client/v4/accounts/${config.account_id}/workers/scripts/${config.name}`;
+  const prefix = `/client/v4/accounts/${config.account_id}/workers/scripts/${config.name}`;
   const settings = mock.routes.get(`${prefix}/settings`);
   const version = mock.routes.get(
     `${prefix}/versions/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb`,
   );
-  settings.bindings = settings.bindings.filter((value) => !names.includes(value.name));
+  settings.bindings = settings.bindings.filter(
+    (value) => !names.includes(value.name),
+  );
   version.resources.bindings = version.resources.bindings.filter(
     (value) => !names.includes(value.name),
   );
@@ -76,12 +77,16 @@ test("legacy staging identity exception only accepts exactly four absent release
     (value) => value.name !== "ALLOW_NEW_TABLES",
   );
   await assert.rejects(
-    readCloudflareDeployment(config, peer, mock.read, { bootstrapStaging: true }),
+    readCloudflareDeployment(config, peer, mock.read, {
+      bootstrapStaging: true,
+    }),
     /provider-version-config-unverified/,
   );
   const clean = makeProviderMock(config, peer);
   await assert.rejects(
-    readCloudflareDeployment(config, peer, clean.read, { bootstrapStaging: true }),
+    readCloudflareDeployment(config, peer, clean.read, {
+      bootstrapStaging: true,
+    }),
     /staging-bootstrap-identity-state-unverified/,
   );
 });
