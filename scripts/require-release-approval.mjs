@@ -25,17 +25,26 @@ try {
       (profile === "manual" ||
         (profile === PRIVATE_PILOT_PROFILE &&
           environment === "staging" &&
-          manifest.privatePilot?.mode === "a-only" &&
+          ["a-only", "a-only-discovery"].includes(
+            manifest.privatePilot?.mode,
+          ) &&
+          (manifest.privatePilot.observationMode === undefined ||
+            manifest.privatePilot.observationMode === "private-redacted") &&
           /^[a-f0-9]{64}$/.test(manifest.privatePilot.policySha256) &&
           Date.parse(manifest.privatePilot.notBefore) <
             Date.parse(manifest.privatePilot.expiresAt) &&
           Date.parse(manifest.privatePilot.expiresAt) -
             Date.parse(manifest.privatePilot.notBefore) <=
             PRIVATE_PILOT_MAX_WINDOW_MS &&
-          (manifest.privatePilot.deliveryEnabled === false ||
-            (manifest.privatePilot.deliveryEnabled === true &&
+          (manifest.privatePilot.mode === "a-only-discovery"
+            ? manifest.privatePilot.observationMode === "private-redacted" &&
+              manifest.privatePilot.deliveryEnabled === false &&
               Date.parse(manifest.privatePilot.notBefore) <= Date.now() &&
-              Date.parse(manifest.privatePilot.expiresAt) > Date.now())))) &&
+              Date.parse(manifest.privatePilot.expiresAt) > Date.now()
+            : manifest.privatePilot.deliveryEnabled === false ||
+              (manifest.privatePilot.deliveryEnabled === true &&
+                Date.parse(manifest.privatePilot.notBefore) <= Date.now() &&
+                Date.parse(manifest.privatePilot.expiresAt) > Date.now())))) &&
       /^[1-9]\d*$/.test(manifest.workflowRunId) &&
       /^[1-9]\d*$/.test(manifest.workflowRunAttempt) &&
       /^[1-9]\d*$/.test(manifest.ciRunId) &&

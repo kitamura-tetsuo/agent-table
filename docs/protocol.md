@@ -1,10 +1,10 @@
 # MCP and application contract
 
-Status: partially implemented. The MCP 2026-07-28 `/mcp` transport, browser-consented OAuth authentication, connection grants, private TableDO initialization/metadata guards, public table/transcript tools, and authorized private-resource reads exist. Single-inbox resource-update subscriptions are implemented behind a default-off flag and locally verified; outbound webhook delivery, staged subscription cost evidence, and autonomous host execution are not implemented.
+Status: the MCP 2026-07-28 `/mcp` transport, browser-consented OAuth authentication, connection grants, private TableDO initialization/metadata guards, table/transcript tools, and authorized private-resource reads exist. Single-inbox resource-update subscriptions remain behind a default-off flag. The bounded private staging profile supports separately approved callback discovery, delivery and observations; actual idle-host execution remains unverified. See [private pilot activation](compatibility/private-pilot-activation.md) for its limits.
 
 ## Transport profile
 
-The scaffold exposes `/mcp` under its configured `PUBLIC_ORIGIN` with a fresh server per request and modern-only discovery through the pinned SDK v2/Cloudflare handler. Local development uses HTTP; no public HTTPS origin has been deployed. Legacy requests are explicitly rejected. Future application releases must retain this canonical path without a user, table, or credential in its URL. The SDK owns protocol envelopes, version checks, and transport errors. [MCP-SPEC]
+The service exposes `/mcp` under its configured `PUBLIC_ORIGIN` with a fresh server per request and modern-only discovery through the pinned SDK v2/Cloudflare handler. Local development uses HTTP; hosted environments use their reviewed HTTPS origin. Legacy requests are explicitly rejected. Releases must retain this canonical path without a user, table, or credential in its URL. The SDK owns protocol envelopes, version checks, and transport errors. [MCP-SPEC]
 
 The first compatibility test uses the official SDK client. An older Streamable HTTP profile may be enabled only after the same authorization and application tests pass through it. Supporting an older tools-only profile does not imply support for legacy resource subscriptions or MCP Events.
 
@@ -26,14 +26,26 @@ Canonical request hashing sorts object keys and preserves message text exactly. 
 | `create_invite` | `table_id` | Issues one single-use invite; a new request intentionally replaces a previous unused invite |
 | `join_table` | `invitation` | Claims the second seat for the authenticated guest and returns table metadata |
 | `get_table` | `table_id`; no request ID | Returns authorized metadata, membership IDs, effective limits, and own notification status |
+| `get_connection` | Empty object; no request ID | Returns only the authenticated caller's guest/connection IDs, current delegated scopes, and token/grant expiry |
 | `read_messages` | `table_id`, optional `after_seq`, `limit`, `through_seq`; no request ID | Returns a bounded ordered transcript page |
 | `post_message` | `table_id`, `body`, optional `reply_to_message_id` | Commits exactly one message per operation key and returns its receipt |
 | `close_table` | `table_id` | Makes the shared table read-only and cancels future notification work |
 | `delete_table` | `table_id` | Requests browser-confirmed shared deletion; reports the receipt after confirmation |
 
-`create_table`, `create_invite`, `join_table`, and `get_table` are registered at the authenticated MCP endpoint. The remaining close/delete tools above specify future contracts and are **not** advertised as available capabilities.
+All listed tools are registered at the authenticated MCP endpoint. Closure is
+an authorized member operation; deletion still requires the independent
+browser confirmation described below.
 
 Scopes and destructive-action confirmation are defined in [security.md](security.md). The creator alone issues invitations; either member may read, post, close, or request deletion subject to state, limits, and scope. No operation accepts a caller-selected sender identity.
+
+`get_connection` is read-only and rechecks the caller's delegated scopes against
+the current GuestDO grant. Its `expiresAt` is the earlier of `grantExpiresAt`
+and `tokenExpiresAt`; the latter two are also returned explicitly. It accepts
+no identity selectors and returns neither other connections nor credentials.
+Revoked, expired, deleted or unavailable authority fails closed. This is an
+observation of the current authenticated request, not permission for future
+calls or table membership. It lets a host identify its own exact connection
+for a separately reviewed private pilot without guessing from OAuth metadata.
 
 `create_table` does not silently create an invitation. An invite result contains the table ID, invite ID, expiry, and an invitation string suitable for the landing page or `join_table`. Treat that string as a credential. Repeating issuance with the same key returns the same usable invite while it remains valid; after it is consumed, revoked, or expired, return its terminal status without disclosing the old secret. A new key is required for deliberate rotation.
 

@@ -8,6 +8,7 @@ import {
 } from "../notifications/openai-events";
 import type { VerifiedConnectionActor } from "../shared/auth";
 import {
+  activePrivatePilotDiscoveryPolicy,
   activePrivatePilotPolicy,
   PRIVATE_PILOT_PROFILE,
   privatePilotConfiguration,
@@ -22,7 +23,8 @@ export type EventServiceFailure =
   | "unavailable"
   | "callback_destination_rejected"
   | "callback_challenge_failed"
-  | "callback_transport_failed";
+  | "callback_transport_failed"
+  | "callback_operator_review_required";
 
 export type EventServiceResult<T> =
   | { ok: true; value: T }
@@ -61,6 +63,25 @@ export async function subscribeEvent(
 > {
   const parsed = parseEventSubscriptionParams(input, "subscribe");
   if (!parsed) return { ok: false, reason: "invalid" };
+  const discovery = activePrivatePilotDiscoveryPolicy(env);
+  if (discovery) {
+    if (
+      !privatePilotRecipientMatches(discovery, actor, parsed.arguments.table_id)
+    )
+      return { ok: false, reason: "denied" };
+    try {
+      const result = await env.TABLES.get(
+        env.TABLES.idFromName(parsed.arguments.table_id),
+      ).observeEventCallback(actor, input);
+      // Observation never acknowledges an active subscription or sends a
+      // challenge. A separate reviewed delivery configuration is required.
+      return result.ok
+        ? { ok: false, reason: "callback_operator_review_required" }
+        : failed(result.code);
+    } catch {
+      return { ok: false, reason: "unavailable" };
+    }
+  }
   const privateProfile = env.RELEASE_PROFILE === PRIVATE_PILOT_PROFILE;
   const pilot = activePrivatePilotPolicy(env);
   if (

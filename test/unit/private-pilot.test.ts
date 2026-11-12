@@ -3,10 +3,12 @@ import { callbackTransportReadiness } from "../../src/notifications/egress";
 import { subscribeEvent } from "../../src/services/events";
 import type { VerifiedConnectionActor } from "../../src/shared/auth";
 import {
+  activePrivatePilotDiscoveryPolicy,
   activePrivatePilotPolicy,
   PRIVATE_PILOT_PROFILE,
   parsePrivatePilotPolicy,
   privatePilotConfiguration,
+  privatePilotDiscoveryAllowed,
   privatePilotRecipientAllowed,
 } from "../../src/shared/private-pilot";
 import { isRestoreQuarantined } from "../../src/shared/release-quarantine";
@@ -36,6 +38,116 @@ const bindings = () => ({
   ENABLE_OPENAI_EVENTS: "false",
   ALLOW_OUTBOUND_NOTIFICATIONS: "true",
   PRIVATE_PILOT_POLICY: JSON.stringify(policy),
+});
+
+describe("private callback discovery policy", () => {
+  const discoveryPolicy = {
+    ...policy,
+    mode: "a-only-discovery",
+    observationMode: "private-redacted",
+    callbackTargets: [],
+  };
+  const discoveryBindings = () => ({
+    ...bindings(),
+    ALLOW_OUTBOUND_NOTIFICATIONS: "false",
+    PRIVATE_PILOT_POLICY: JSON.stringify(discoveryPolicy),
+  });
+  const actor = {
+    guestId: policy.recipientGuestId,
+    connectionId: policy.recipientConnectionId,
+  };
+
+  it("advertises only the selected identity without authorizing delivery", () => {
+    const env = discoveryBindings();
+    expect(parsePrivatePilotPolicy(env.PRIVATE_PILOT_POLICY)).toEqual(
+      discoveryPolicy,
+    );
+    expect(activePrivatePilotDiscoveryPolicy(env, now)).toEqual(
+      discoveryPolicy,
+    );
+    expect(
+      privatePilotDiscoveryAllowed(env, actor, policy.tableIds[0], now),
+    ).toBe(true);
+    expect(
+      privatePilotDiscoveryAllowed(
+        env,
+        { ...actor, connectionId: "other-connection" },
+        policy.tableIds[0],
+        now,
+      ),
+    ).toBe(false);
+    expect(
+      privatePilotDiscoveryAllowed(
+        env,
+        { ...actor, guestId: "other-guest" },
+        policy.tableIds[0],
+        now,
+      ),
+    ).toBe(false);
+    expect(privatePilotDiscoveryAllowed(env, actor, "other-table", now)).toBe(
+      false,
+    );
+    expect(activePrivatePilotPolicy(env, now)).toBeNull();
+    expect(
+      privatePilotRecipientAllowed(env, actor, policy.tableIds[0], now),
+    ).toBe(false);
+    expect(isRestoreQuarantined(env)).toBe(false);
+    expect(callbackTransportReadiness().enabled).toBe(false);
+  });
+
+  it("stops discovery at the window boundary while preserving ordinary access", () => {
+    const env = discoveryBindings();
+    for (const outside of [
+      Date.parse(policy.notBefore) - 1,
+      Date.parse(policy.expiresAt),
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+    ]) {
+      expect(activePrivatePilotDiscoveryPolicy(env, outside)).toBeNull();
+      expect(
+        privatePilotDiscoveryAllowed(env, actor, policy.tableIds[0], outside),
+      ).toBe(false);
+    }
+    expect(privatePilotConfiguration(env)).not.toBeNull();
+    const stopped = { ...bindings(), ALLOW_OUTBOUND_NOTIFICATIONS: "false" };
+    expect(activePrivatePilotDiscoveryPolicy(stopped, now)).toBeNull();
+    expect(privatePilotDiscoveryAllowed(stopped, actor, undefined, now)).toBe(
+      false,
+    );
+    expect(isRestoreQuarantined(stopped)).toBe(false);
+  });
+
+  it.each([
+    { observationMode: undefined },
+    { observationMode: "off" },
+    { callbackTargets: policy.callbackTargets },
+    { callbackTargets: null },
+    { callbackTargets: {} },
+    { unexpected: "unreviewed-field" },
+  ])("rejects broadened or implicit discovery authority %#", (patch) => {
+    expect(
+      parsePrivatePilotPolicy(JSON.stringify({ ...discoveryPolicy, ...patch })),
+    ).toBeNull();
+  });
+
+  it.each([
+    { RELEASE_ENVIRONMENT: "production" },
+    { RELEASE_ENVIRONMENT: "local" },
+    { RELEASE_BUILD_SHA: "b".repeat(40) },
+    { RELEASE_PROFILE: "manual" },
+    { RESTORE_QUARANTINE: "true" },
+    { ENABLE_MCP_SUBSCRIPTIONS: "true" },
+    { ENABLE_OPENAI_EVENTS: "true" },
+    { ALLOW_OUTBOUND_NOTIFICATIONS: "true" },
+  ])("rejects a mismatched discovery configuration %#", (patch) => {
+    const env = { ...discoveryBindings(), ...patch };
+    expect(privatePilotConfiguration(env)).toBeNull();
+    expect(activePrivatePilotDiscoveryPolicy(env, now)).toBeNull();
+    expect(activePrivatePilotPolicy(env, now)).toBeNull();
+    expect(privatePilotDiscoveryAllowed(env, actor, undefined, now)).toBe(
+      false,
+    );
+  });
 });
 
 describe("private staging pilot policy", () => {

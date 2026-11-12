@@ -13,7 +13,8 @@ causal trace, repeated after a retained-state restart. B's subscription or
 automatic wake-up is not required. Full A↔B autonomy is neither demonstrated
 nor required by this revised condition.
 
-Implementation baseline: `381c4e7378b2d95a3b8342f045a3e4d5521ada00`.
+Implementation baseline: `f6095e9ffdd583c06b4210a2bc168bdbf6efa177`.
+This source baseline is not a claim that the build is deployed or host-tested.
 The existing [guest OAuth record](guest-oauth.md) establishes bounded tools
 interoperability for one tested ChatGPT Work private connection. It supplies
 neither a second owner's consent nor notification or autonomous-run evidence.
@@ -59,13 +60,13 @@ bidirectional pass or generalized to another host/account/profile.
 | Host OAuth, #23 | One scoped actual-host tools record accepted | Two independently controlled tools-eligible accounts, each owner's approval and current host tools evidence |
 | Host execution | No observed ChatGPT idle-event response | A's supported idle/run/event observation surface for the selected product, surface and account |
 
-At the inspected baseline, public `callbackTransportReadiness()` is disabled,
-and hosted ingress/release authorization permits only the manual profile with
-notification flags false. The separate default-off
-[private staging activation implementation](private-pilot-activation.md)
-adds a reviewed `private-pilot-a-only` path. It must reach exact `main` with
-passing CI before the protected main-only workflow can use it. Its concrete
-account/table/callback-bound deployment still requires independent approval.
+At this implementation baseline, public `callbackTransportReadiness()` remains
+disabled. The merged default-off
+[private staging implementation](private-pilot-activation.md) supports
+separately reviewed callback discovery and delivery through
+`private-pilot-a-only`. The protected main-only workflow still requires
+successful exact-main CI and independent approval of its concrete
+account/table/callback-bound configuration before deployment.
 Neither the offline evidence tools nor a subscription ID authorizes activation.
 Public Events advertisement and production's manual behavior remain unchanged.
 
@@ -90,18 +91,22 @@ controlled receiver cannot replace the actual ChatGPT host.
 The [activation runbook](private-pilot-activation.md) documents the exact
 `PRIVATE_PILOT_POLICY` contract and protected workflow. It binds the candidate
 SHA/configuration/resources, A's guest and connection, one to three synthetic
-tables, reviewed callback origin/path prefixes and a window of at most two
-hours. `ENABLE_MCP_SUBSCRIPTIONS` and `ENABLE_OPENAI_EVENTS` stay false;
-`ALLOW_OUTBOUND_NOTIFICATIONS` is the independent stop switch. The canary
+tables and a window of at most two hours. `a-only-discovery` requires empty
+callback targets, `observationMode: "private-redacted"` and outbound disabled;
+it observes the real host's origin without a challenge or active subscription.
+`a-only` delivery instead requires reviewed callback origin/path prefixes and
+outbound permission. `ENABLE_MCP_SUBSCRIPTIONS` and `ENABLE_OPENAI_EVENTS` stay
+false. `ALLOW_OUTBOUND_NOTIFICATIONS=false` stops delivery; discovery stops at
+expiry or through an independently reviewed return to manual. The canary
 dispatch bound permits message sequences up to 12, with no replay of events
 created before the window.
 
 The same parser feeds hosted quarantine, protected release decisions and fresh
 runtime checks. A sees private discovery/status only under its scoped current
 authority; B requires no event subscription. Existing guest, membership,
-lifecycle, subscription-generation and retry checks still apply. Expiry or a
-stop denies new effects while retaining authorized reads, closure and permitted
-unsubscribe. The approved trial obtains missing host evidence rather than
+lifecycle, subscription-generation and retry checks still apply. Expiry or the
+mode's stop procedure denies new effects while retaining authorized reads,
+closure and permitted unsubscribe. The approved trial obtains missing host evidence rather than
 requiring a successful autonomous run before activation.
 
 No hosted pilot deployment, actual account consent or concrete activation
@@ -123,6 +128,11 @@ represent actual distinct owners and identities, not two tabs of one owner.
 Record an undisclosed SaaS build explicitly rather than inventing a version.
 Each owner separately approves the bounded synthetic exercise and stop limits;
 A's permission cannot authorize B's account.
+
+Authenticated `get_connection` supplies the caller's current guest/connection,
+delegated scopes and token/grant expiry without selecting another identity.
+It does not establish ownership consent, table membership or a host run. Keep
+any owner/account facts it cannot establish explicitly unknown.
 
 A additionally needs a verified active Events subscription and supported host
 audit/export or UI evidence establishing idle/no-active-run state, a later new
@@ -171,8 +181,13 @@ new owner input, not silent continuation.
 ## Capture B's post and A's event-triggered reply
 
 Create one private table through the existing independently authorized browser
-or MCP flow and join its second seat with explicit consent. Establish **A's**
-subscription before B posts. Keep invitation secrets private. For Events,
+or MCP flow and join its second seat with explicit consent. Inspect A's own
+identity using authenticated `get_connection`. If its real callback origin is
+unknown, use the separately approved no-outbound discovery stage, review the
+observed origin, and deploy the reviewed delivery configuration. A discovery
+error is never an active subscription; a new actual-host subscription must
+pass callback control. Establish **A's** subscription before B posts. Keep
+invitation secrets private. For Events,
 `events/list`, `events/subscribe` and `events/unsubscribe` are authenticated
 protocol methods, not MCP tools. Refresh uses `events/subscribe` with the
 original compound identity; there is no ID-only renewal API.
@@ -181,11 +196,15 @@ original compound identity; there is no ID-only renewal API.
 Capture A's subscription verification/readback and both participants' authorized
 table/tool observations. B's absent subscription does not block this mode.
 Generic telemetry excludes private event/table/principal identifiers and
-cannot reconstruct the causal trace by itself. Use actual host tool receipts,
-supported A-host observations and narrowly scoped, independently authorized
-server readback where needed. If a required event or dispatch fact cannot be
-observed, leave it unknown; do not invent a diagnostic endpoint or expand
-routine telemetry to supply it.
+cannot reconstruct the causal trace by itself. The merged, explicitly enabled
+private observation stream, `scripts/private-pilot-observations.mjs`, and the
+existing secret-protected staging snapshot view can supply scoped server
+facts. Follow the [activation runbook](private-pilot-activation.md) for capture
+readiness and the final SQL readback after capture ends. Its conditional
+comparison leaves host execution unestablished. Use actual host tool receipts
+and supported A-host observations for the run/read/reply trace. Missing or
+inconsistent server observations remain incomplete; leave unobservable facts
+unknown rather than reconstructing them or expanding routine telemetry.
 
 | Observation | Required association | Authoritative source |
 | --- | --- | --- |

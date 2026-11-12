@@ -137,12 +137,18 @@ export function makeFixture(environment = "staging") {
   };
 }
 
-export function makePrivatePilotFixture() {
+export function makePrivatePilotFixture({
+  mode = "a-only",
+  observationMode = mode === "a-only-discovery"
+    ? "private-redacted"
+    : undefined,
+} = {}) {
   const fixture = makeFixture("staging");
   const config = JSON.parse(fixture.configText);
   const policy = {
     schemaVersion: 1,
-    mode: "a-only",
+    mode,
+    ...(observationMode === undefined ? {} : { observationMode }),
     buildSha,
     approvedAt: new Date(now - 60_000).toISOString(),
     notBefore: new Date(now - 30_000).toISOString(),
@@ -151,13 +157,20 @@ export function makePrivatePilotFixture() {
     recipientGuestId: "11111111-1111-4111-8111-111111111111",
     recipientConnectionId: "22222222-2222-4222-8222-222222222222",
     tableIds: ["33333333-3333-4333-8333-333333333333"],
-    callbackTargets: [
-      { origin: "https://receiver.example.com", pathPrefix: "/mcp-events" },
-    ],
+    callbackTargets:
+      mode === "a-only-discovery"
+        ? []
+        : [
+            {
+              origin: "https://receiver.example.com",
+              pathPrefix: "/mcp-events",
+            },
+          ],
   };
   config.vars.RELEASE_PROFILE = "private-pilot-a-only";
   config.vars.PRIVATE_PILOT_POLICY = JSON.stringify(policy);
-  config.vars.ALLOW_OUTBOUND_NOTIFICATIONS = "true";
+  config.vars.ALLOW_OUTBOUND_NOTIFICATIONS =
+    mode === "a-only-discovery" ? "false" : "true";
   fixture.profile = config.vars.RELEASE_PROFILE;
   fixture.configText = JSON.stringify(config);
   const configSha256 = createHash("sha256")
@@ -167,14 +180,18 @@ export function makePrivatePilotFixture() {
   fixture.operations.configSha256 = configSha256;
   fixture.operations.profile = fixture.profile;
   fixture.operations.privatePilot = {
-    mode: "a-only",
+    mode,
     policySha256: createHash("sha256")
       .update(config.vars.PRIVATE_PILOT_POLICY)
       .digest("hex"),
     approvalRef: policy.approvalRef,
     independentOwnerConsentsReviewed: true,
-    callbackControlReviewed: true,
-    nativeFetchRiskAccepted: true,
+    ...(mode === "a-only-discovery"
+      ? { callbackDiscoveryReviewed: true, noOutboundReviewed: true }
+      : { callbackControlReviewed: true, nativeFetchRiskAccepted: true }),
+    ...(observationMode === undefined
+      ? {}
+      : { privateObservationReviewed: true }),
     boundedCanaryReviewed: true,
     stopPlanReviewed: true,
   };

@@ -148,6 +148,7 @@ test("private gate binds the explicit staging profile and rechecks its finite se
     { expiresAt: new Date(current - 30_000).toISOString() },
     { expiresAt: new Date(current + 3 * 60 * 60_000).toISOString() },
     { deliveryEnabled: "false" },
+    { observationMode: "raw" },
   ]) {
     assert.equal(
       check({
@@ -168,6 +169,31 @@ test("private gate binds the explicit staging profile and rechecks its finite se
     }),
     0,
   );
+  const discovery = {
+    ...manifest,
+    privatePilot: {
+      ...manifest.privatePilot,
+      mode: "a-only-discovery",
+      observationMode: "private-redacted",
+      deliveryEnabled: false,
+    },
+  };
+  assert.equal(check(discovery), 0);
+  for (const patch of [
+    { deliveryEnabled: true },
+    { observationMode: undefined },
+    { observationMode: "raw" },
+    { notBefore: new Date(current + 30_000).toISOString() },
+    { expiresAt: new Date(current - 30_000).toISOString() },
+  ]) {
+    assert.equal(
+      check({
+        ...discovery,
+        privatePilot: { ...discovery.privatePilot, ...patch },
+      }),
+      1,
+    );
+  }
 });
 
 test("current offline validator never manufactures a deployment approval", async () => {

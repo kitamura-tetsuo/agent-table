@@ -170,6 +170,95 @@ test("an approved private kill-switch configuration can be deployed after its se
   assert.equal(approval.privatePilot.deliveryEnabled, false);
 });
 
+test("discovery is separately reviewed, finite and unable to authorize outbound delivery", async () => {
+  const discovery = () => makePrivatePilotFixture({ mode: "a-only-discovery" });
+  const { fixture, cloudflare, github } = harness(discovery());
+  const approval = await authorizeRelease({
+    ...fixture,
+    cloudflareRead: cloudflare.read,
+    githubRead: github.read,
+    now,
+  });
+  assert.deepEqual(approval.privatePilot, {
+    mode: "a-only-discovery",
+    observationMode: "private-redacted",
+    policySha256: fixture.operations.privatePilot.policySha256,
+    notBefore: new Date(now - 30_000).toISOString(),
+    expiresAt: new Date(now + 60 * 60_000).toISOString(),
+    deliveryEnabled: false,
+  });
+  for (const field of [
+    "callbackDiscoveryReviewed",
+    "noOutboundReviewed",
+    "privateObservationReviewed",
+    "independentOwnerConsentsReviewed",
+    "boundedCanaryReviewed",
+    "stopPlanReviewed",
+  ]) {
+    const value = harness(discovery());
+    value.fixture.operations.privatePilot[field] = false;
+    await assert.rejects(
+      authorizeRelease({
+        ...value.fixture,
+        cloudflareRead: value.cloudflare.read,
+        githubRead: value.github.read,
+        now,
+      }),
+      /private-pilot-scope-not-approved/,
+    );
+  }
+  fixture.operations.privatePilot.mode = "a-only";
+  await assert.rejects(
+    authorizeRelease({
+      ...fixture,
+      cloudflareRead: cloudflare.read,
+      githubRead: github.read,
+      now,
+    }),
+    /private-pilot-scope-not-approved/,
+  );
+  for (const timestamp of [now - 31_000, now + 60 * 60_000]) {
+    const value = harness(discovery());
+    value.fixture.operations.review.reviewedAt = new Date(
+      timestamp,
+    ).toISOString();
+    for (const disclosure of Object.values(
+      value.fixture.operations.retention,
+    )) {
+      disclosure.reviewedAt = new Date(timestamp).toISOString();
+    }
+    await assert.rejects(
+      authorizeRelease({
+        ...value.fixture,
+        cloudflareRead: value.cloudflare.read,
+        githubRead: value.github.read,
+        now: timestamp,
+      }),
+      /private-pilot-not-active/,
+    );
+  }
+});
+
+test("delivery observations require their own review while legacy unobserved policies remain valid", async () => {
+  const candidate = makePrivatePilotFixture({
+    observationMode: "private-redacted",
+  });
+  const { fixture, cloudflare, github } = harness(candidate);
+  const options = {
+    ...fixture,
+    cloudflareRead: cloudflare.read,
+    githubRead: github.read,
+    now,
+  };
+  const approved = await authorizeRelease(options);
+  assert.equal(approved.privatePilot.observationMode, "private-redacted");
+  delete fixture.operations.privatePilot.privateObservationReviewed;
+  await assert.rejects(
+    authorizeRelease(options),
+    /private-pilot-scope-not-approved/,
+  );
+});
+
 function legacyStagingHarness() {
   const fixture = makeFixture();
   const config = JSON.parse(fixture.configText);

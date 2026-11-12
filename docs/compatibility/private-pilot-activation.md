@@ -29,20 +29,22 @@ these bindings only in a separately reviewed staging candidate:
 | `RESTORE_QUARANTINE` | `false` only for independently reviewed current state, with no historical restore |
 | `ENABLE_MCP_SUBSCRIPTIONS` | `false` |
 | `ENABLE_OPENAI_EVENTS` | `false`; no global/public advertisement |
-| `ALLOW_OUTBOUND_NOTIFICATIONS` | `true` only for the approved active trial; `false` is the independent stop switch |
+| `ALLOW_OUTBOUND_NOTIFICATIONS` | Delivery mode: `true` only for the approved active trial; `false` stops delivery. Discovery mode: must be `false` |
 | `PRIVATE_PILOT_POLICY` | Exact serialized JSON string described below |
 
-`PRIVATE_PILOT_POLICY` has exactly these fields:
+`PRIVATE_PILOT_POLICY` has the following required fields and one optional
+`observationMode` field. Unknown fields are rejected:
 
 | Field | Constraint |
 | --- | --- |
-| `schemaVersion`, `mode` | `1`, `a-only` |
+| `schemaVersion`, `mode` | `1`; `a-only` for delivery or `a-only-discovery` for callback discovery without delivery |
 | `buildSha` | Matches `RELEASE_BUILD_SHA` |
 | `approvedAt`, `notBefore`, `expiresAt` | UTC ISO timestamps; approval no later than start; positive window of at most two hours |
 | `approvalRef` | Bounded reference to the separately retained operator decision; not a credential or self-issued permission |
 | `recipientGuestId`, `recipientConnectionId` | The exact independently authorized receiving guest and application connection |
 | `tableIds` | One to three distinct UUIDs for the approved synthetic primary/cancellation/control tables |
-| `callbackTargets` | Strict reviewed HTTPS `origin` plus canonical `pathPrefix` entries; no arbitrary caller-selected destination |
+| `callbackTargets` | Delivery: nonempty strict reviewed HTTPS `origin` plus canonical `pathPrefix` entries. Discovery: exactly an empty array |
+| `observationMode` (optional) | Exactly `private-redacted` enables separately reviewed private observations. Required in discovery mode; omitted means no private diagnostic stream |
 
 The following is **synthetic schema illustration only**, not an approved or
 currently usable deployment policy:
@@ -89,6 +91,144 @@ callback challenge/signature path under the finite policy. It does not claim
 stronger same-connection IP/TLS evidence than the owner-approved limited-beta
 native-fetch premise already recorded for Issue #19.
 
+## Discover an actual host callback without outbound requests
+
+The receiving host supplies its callback URL in `events/subscribe`. An OAuth
+redirect origin, documentation example, guessed hostname or synthetic receiver
+does not establish that callback destination. When its actual origin is not yet
+known, prepare a separate `a-only-discovery` policy under the same staging-only
+`private-pilot-a-only` release profile. It requires the exact A guest/connection
+and selected tables, the finite approved window, `observationMode:
+"private-redacted"`, an empty `callbackTargets` array and
+`ALLOW_OUTBOUND_NOTIFICATIONS="false"`. Enabling outbound in this mode makes
+the configuration invalid.
+
+Only A's freshly authorized connection sees the private Events capability.
+An actual subscription request crosses a fresh grant and current TableDO
+membership/lifecycle check before producing a sanitized HTTPS origin
+observation. Discovery sends no callback challenge or event, persists no
+callback URL or signing secret, and does not create or commit a subscription.
+It returns an operator-review-required failure. The recorded origin remains
+unreviewed routing evidence; it is not an allowlist entry or proof of provider
+control. Its observation is limited by a separate persisted rolling admission
+bucket to one per 60 seconds for the policy/recipient, at most 120 within the
+half-open two-hour window. Ordinary ingress limits also apply.
+
+Review the observed origin and the provider's path-scope requirements before
+proposing an `a-only` delivery policy. Use a root path prefix only when the
+provider actually requires unrelated opaque paths and that scope is explicitly
+reviewed. A subsequent protected deployment binds the reviewed targets. A
+new real host subscription must then pass the existing signed callback-control
+challenge before delivery becomes eligible. A failed discovery request is
+never reclassified as a successful subscription.
+
+Discovery has effects even while outbound is false. Its protected authorization
+and immediate prewrite gate therefore require its window to be active. An
+expired discovery policy cannot be deployed as a supposed stopped delivery
+configuration. Expiry stops discovery eligibility; an operator stop uses the
+separately reviewed return-to-manual configuration. The ordinary outbound
+switch is a delivery stop and is not a discovery stop.
+
+## Explicit private observations and their limits
+
+`observationMode: "private-redacted"` is an opt-in private diagnostic stream,
+separate from routine categorical telemetry. It requires an additional
+operator review of the exact policy and observation handling. A prior policy
+that omits the field emits no such stream. The new instrumentation introduces
+no SQL schema migration and does not alter retry counts, subscription identity
+or transport authority.
+
+The fixed observation schema admits only the scoped synthetic identifiers,
+policy/build association, event and attempt timing, and categorical transport
+outcomes needed to compare the actual trial. Callback discovery records only
+the sanitized origin. It excludes full callback URLs, signing or bearer
+credentials, headers, invitations and message bodies. Keep the collected
+observations private; publish only reviewed references and digests. Review
+account-specific provider log handling and the collector's retention with the
+existing operational disclosures.
+
+The operator captures the stream for a declared interval and compares it with
+the policy-scoped SQLite projection through the existing secret-protected
+staging evidence route. That projection reads actual subscription/outbox,
+message-identity and terminal-state facts. It is not an agent tool and does not
+give an outside guest access to private tables. Start capture before the
+source event, retain the actual capture boundaries, and finish after every
+included attempt has its final outcome and the cancellation observation
+interval has ended.
+
+Live log delivery can be missing, sampled, truncated or interrupted. The SQL
+attempt count is a conservation check, not a source for invented authorization
+or dispatch timestamps: a reservation can survive a crash before final
+authorization. Any missing, ambiguous or unmatched observation makes the
+attempt ledger incomplete. Do not infer that no request occurred from an empty
+stream, reconstruct timestamps from counters, or silently retry a scenario as
+if the first one had passed. A transport invocation is an observation of the
+sender calling its actual HTTPS transport, not proof that bytes reached the
+receiver. Response headers and later completion remain distinct observations;
+even a genuine 2xx response does not establish a new A-host run.
+
+### Collect and compare the actual observations
+
+Use `get_connection` through the receiving host to obtain its own authenticated
+guest and connection IDs before creating a policy. Rescan the host's MCP app
+when needed to discover the new tool and the subsequently enabled Events
+capability. Do not substitute a provider link ID for the server connection ID.
+
+The collector runs on the authorized operator machine with its existing
+Cloudflare credentials. Supply the reviewed configuration, an actual bounded
+UTC end time with milliseconds, and a new private output path:
+
+```sh
+node scripts/private-pilot-observations.mjs collect \
+  --worker agent-table-staging \
+  --until "$PILOT_OBSERVATION_END_UTC" \
+  --config "$PILOT_STAGING_CONFIG_PATH" \
+  --output "$PILOT_CAPTURE_PATH"
+```
+
+It launches the installed pinned Wrangler directly with sampling rate 1 and
+disk logs disabled. Raw tail output, request metadata, exception text and
+stderr never reach the output file or terminal. Any stderr warning, including
+a reconnect, invalidates continuity. Bounds are 1 MiB per buffered object,
+32 MiB total input, 2,000 retained observations and two hours plus one minute
+of collection. Output is exclusively created with mode 0600 and no symlink
+following. The first actual tail frame emits a safe `capture: ready` marker;
+an ordinary authorized read can produce that initial frame. Wait for readiness
+before the source event. Process startup alone is insufficient.
+
+After stopping capture, request the existing `POST /__staging/evidence` with
+its operator secret and JSON fields `guestId`, `connectionId`, `tableId` and
+`view: "private-pilot"`. Keep the returned snapshot private. This view requires
+the exact policy scope and observation opt-in. It intentionally remains
+available after outbound pause, policy expiry or grant revocation so retained
+terminal state can be inspected. It exports bounded random identifiers and
+state, never transcript content, destinations or credentials. Missing retained
+rows, mismatched recipient connections or unknown error categories cannot
+satisfy complete evidence.
+
+Finish after all included attempts complete. SIGINT is an explicit requested
+stop; unexpected EOF or source failure is incomplete. Capture the final SQL
+snapshot at or after collection ends, within 60 seconds. A snapshot taken
+before the end cannot cover a later retry whose log was lost. Any additional
+charged attempt appearing in the final readback without its complete observed
+stages makes the result incomplete. Then compare the private files:
+
+```sh
+node scripts/private-pilot-observations.mjs verify \
+  --capture "$PILOT_CAPTURE_PATH" \
+  --snapshot "$PILOT_SNAPSHOT_PATH" \
+  --output "$PILOT_OBSERVATION_REPORT_PATH"
+```
+
+The comparison covers every retained outbox row for that table, with exact
+event/message/subscription joins, charged attempt counts, stage flags and
+timestamps. A successful report is `conditionally-complete` and still says
+`hostExecution: "not-established"`. Keep one continuous collector across a
+same-build, same-policy storage-preserving restart if it is to cover both
+phases. A new collector cannot supply the earlier events' missing history;
+preserve a reconnect or capture gap as incomplete. Actual host idle/run/read/
+reply receipts remain independently required by the pilot acceptance record.
+
 ## Prepare a concrete, reviewable candidate
 
 1. Confirm two independently controlled owners/accounts and their separate
@@ -100,7 +240,9 @@ native-fetch premise already recorded for Issue #19.
    cancellation/control tables before proposing their policy. Do not replace
    missing identities with guessed IDs or enable unrestricted new admission.
 3. Review the actual provider callback origin/prefix and callback-control
-   procedure, bounded canary, stop plan and retained native-fetch risk. Actual
+   procedure, bounded canary, stop plan and retained native-fetch risk. If the
+   actual destination is unavailable, use the separately approved no-outbound
+   discovery stage above before proposing delivery. Actual
    callback verification and host execution still need to be observed during
    the trial; an operator checklist is not their passing test result.
 4. Build exact staging/peer configuration files and current inventories using
@@ -118,17 +260,20 @@ reviewed **no-restore** fields from the release process still apply. Add an
 
 | Field | Meaning |
 | --- | --- |
-| `mode` | `a-only` |
+| `mode` | Exactly matches policy mode: `a-only` or `a-only-discovery` |
 | `policySha256` | SHA-256 of the exact serialized policy string |
 | `approvalRef` | The same policy decision reference |
 | `independentOwnerConsentsReviewed` | Both owners' bounded authorities actually reviewed |
-| `callbackControlReviewed` | Actual callback scope/control procedure reviewed |
-| `nativeFetchRiskAccepted` | Recorded limited-beta transport premise accepted for this scope |
+| `callbackControlReviewed` | Delivery mode: actual callback scope/control procedure reviewed |
+| `nativeFetchRiskAccepted` | Delivery mode: recorded limited-beta transport premise accepted for this scope |
+| `callbackDiscoveryReviewed` | Discovery mode: genuine host callback capture and subsequent separate scope review understood |
+| `noOutboundReviewed` | Discovery mode: no challenge, delivery or active subscription is permitted |
+| `privateObservationReviewed` | Required whenever `observationMode` is present: private diagnostic fields, capture, incompleteness and retention handling reviewed |
 | `boundedCanaryReviewed` | Exact table/recipient/window and traffic bounds reviewed |
 | `stopPlanReviewed` | Outbound stop, terminal action and readback plan reviewed |
 
-The five review fields must be `true` based on actual review. They are not
-filled automatically from this example. Structural private-profile evidence
+Every applicable review field must be `true` based on actual review. They are
+not filled automatically from this example. Structural private-profile evidence
 requires the existing `application`, `security` and `browser` checks. Completed
 real-host autonomy evidence is deliberately not an activation prerequisite:
 the purpose of the approved trial is to obtain or fail that evidence.
@@ -151,8 +296,8 @@ retains the Environment approval and stages:
 3. [`release-authorization.mjs`](../../scripts/release-authorization.mjs)
    independently reads main CI, protected Environment approval and live
    Cloudflare resource ownership. It uses the shared policy parser, binds the
-   operations decision to its exact policy digest and requires an active
-   window for an enabled trial.
+   operations decision to its exact policy digest and mode. It requires an
+   active window for enabled delivery and for every discovery deployment.
 4. [`require-release-approval.mjs`](../../scripts/require-release-approval.mjs)
    checks the profile-bound manifest and private window again immediately
    before the write, alongside a fresh main-head check. An expired enabled
@@ -160,7 +305,8 @@ retains the Environment approval and stages:
 5. [`release-postverify.mjs`](../../scripts/release-postverify.mjs) hashes the
    actual configuration bytes, verifies the approved build/environment/profile
    and private policy/window/stop metadata, reads live service settings and the
-   active version, and checks the no-store `/health` build response.
+   active version, and checks the no-store `/health` build response. The
+   manifest's mode and observation setting must exactly match the candidate.
 
 Both service settings and active-version bindings must contain the same exact
 policy as the candidate. Missing, duplicated, secret-typed or divergent policy
@@ -177,8 +323,8 @@ remains a separate acceptance exercise.
 
 ## Stop, expiry and storage-preserving restart
 
-Policy expiry or `ALLOW_OUTBOUND_NOTIFICATIONS=false` stops new private
-registration/delivery eligibility while valid configuration preserves ordinary
+For `a-only` delivery, policy expiry or `ALLOW_OUTBOUND_NOTIFICATIONS=false`
+stops new private registration/delivery eligibility while valid configuration preserves ordinary
 authorized reads, closure and the owner's permitted unsubscribe. Do not remove
 or corrupt the policy while retaining the private profile; an invalid hosted
 configuration fails closed and can also prevent read/close operations.
