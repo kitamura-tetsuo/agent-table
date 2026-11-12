@@ -29,6 +29,13 @@ reviewed callback targets and the exact candidate configuration. It keeps
 global/public Events advertisement off and requires its own concrete owner
 approval; merging the implementation does not activate it. Both profiles
 require `RESTORE_QUARANTINE=false` only for a verified no-restore release.
+The private profile has a separately approved `a-only-discovery` mode for
+learning the actual host callback origin without any outbound challenge,
+delivery or subscription commit. Its finite window is checked even though
+outbound is false. Discovery and optional `private-redacted` observations have
+their own operator review fields; the protected manifest and post-deploy
+readback bind those choices to the exact policy. See the profile document for
+capture completeness and the separate transition to reviewed delivery targets.
 Public `live`, `events` and `autonomous` profiles are not reachable by
 editing a flag or inventing a successful test URL: they need separately
 implemented provider/host evidence verification. Restored snapshots with

@@ -170,6 +170,7 @@ test("official SDK negotiates against the authenticated live Wrangler HTTP serve
       "create_invite",
       "create_table",
       "delete_table",
+      "get_connection",
       "get_table",
       "join_table",
       "post_message",

@@ -542,3 +542,97 @@ describe("callback egress preflight", () => {
     ).toEqual({ ok: false, reason: "destination-rejected" });
   });
 });
+
+describe("private transport observations", () => {
+  it("observes only native invocation and response headers after all preflights", async () => {
+    const sequence: string[] = [];
+    const observer = {
+      transportInvoked: vi.fn((at: number) => {
+        expect(Number.isSafeInteger(at)).toBe(true);
+        sequence.push("invoked");
+      }),
+      responseHeaders: vi.fn((at: number, status: number) => {
+        expect(Number.isSafeInteger(at)).toBe(true);
+        expect(status).toBe(204);
+        sequence.push("headers");
+      }),
+    };
+    const spy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+      sequence.push("fetch");
+      return new Response(null, { status: 204 });
+    });
+    try {
+      for (const request of [
+        {
+          method: "POST" as const,
+          body: new Uint8Array(),
+          headers: { Host: "unsafe" },
+        },
+        {
+          method: "POST" as const,
+          body: new Uint8Array(MAX_CALLBACK_REQUEST_BYTES + 1),
+        },
+      ]) {
+        expect(
+          (
+            await sendVerifiedHttps(
+              `${reviewed[0].origin}/callback`,
+              reviewed,
+              request,
+              { observer },
+            )
+          ).ok,
+        ).toBe(false);
+      }
+      expect(
+        (
+          await sendVerifiedHttps(
+            "https://127.0.0.1/callback",
+            reviewed,
+            { method: "POST", body: new Uint8Array() },
+            { observer },
+          )
+        ).ok,
+      ).toBe(false);
+      expect(sequence).toEqual([]);
+      expect(spy).not.toHaveBeenCalled();
+      expect(
+        (
+          await sendVerifiedHttps(
+            `${reviewed[0].origin}/callback`,
+            reviewed,
+            { method: "POST", body: new Uint8Array() },
+            { observer },
+          )
+        ).ok,
+      ).toBe(true);
+      expect(sequence).toEqual(["invoked", "fetch", "headers"]);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("does not change delivery when an observation sink fails", async () => {
+    const spy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(null, { status: 204 }));
+    const fail = () => {
+      throw new Error("Synthetic observation failure");
+    };
+    try {
+      expect(
+        (
+          await sendVerifiedHttps(
+            `${reviewed[0].origin}/callback`,
+            reviewed,
+            { method: "POST", body: new Uint8Array() },
+            { observer: { transportInvoked: fail, responseHeaders: fail } },
+          )
+        ).ok,
+      ).toBe(true);
+      expect(spy).toHaveBeenCalledOnce();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});

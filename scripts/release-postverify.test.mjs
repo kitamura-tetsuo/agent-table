@@ -36,7 +36,10 @@ async function harness(candidate = config, peerConfig = peer) {
     ...(policy
       ? {
           privatePilot: {
-            mode: "a-only",
+            mode: policy.mode,
+            ...(policy.observationMode === undefined
+              ? {}
+              : { observationMode: policy.observationMode }),
             policySha256: hash(candidate.vars.PRIVATE_PILOT_POLICY),
             notBefore: policy.notBefore,
             expiresAt: policy.expiresAt,
@@ -159,6 +162,52 @@ test("private staging postverify binds exact policy and exposes only safe releas
   }
 });
 
+test("discovery postverify binds its observation-only mode and checks both provider surfaces", async () => {
+  const candidate = JSON.parse(
+    makePrivatePilotFixture({ mode: "a-only-discovery" }).configText,
+  );
+  const { options } = await harness(candidate);
+  assert.equal((await verifyPublishedRelease(options)).verified, true);
+  for (const patch of [
+    { mode: "a-only" },
+    { observationMode: undefined },
+    { observationMode: "raw" },
+    { deliveryEnabled: true },
+  ]) {
+    const changed = await harness(candidate);
+    Object.assign(changed.options.approval.privatePilot, patch);
+    let reads = 0;
+    changed.options.cloudflareRead = async () => {
+      reads++;
+    };
+    await assert.rejects(
+      verifyPublishedRelease(changed.options),
+      /post-deploy-private-pilot-approval-mismatch/,
+    );
+    assert.equal(reads, 0);
+  }
+  for (const surface of ["settings", "version"]) {
+    const changed = await harness(candidate);
+    const path = [...changed.provider.routes.keys()].find((key) =>
+      key.endsWith(
+        surface === "settings"
+          ? "/agent-table-staging/settings"
+          : "/agent-table-staging/versions/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      ),
+    );
+    const record = changed.provider.routes.get(path);
+    const bindings =
+      surface === "settings" ? record.bindings : record.resources.bindings;
+    bindings.find(
+      (binding) => binding.name === "ALLOW_OUTBOUND_NOTIFICATIONS",
+    ).text = "true";
+    await assert.rejects(
+      verifyPublishedRelease(changed.options),
+      /provider-version-config-unverified/,
+    );
+  }
+});
+
 test("postverify refuses mismatched approval, profile or exact configuration bytes before any request", async () => {
   const changes = [
     (options) => {
@@ -271,6 +320,7 @@ test("exact deployment readback refuses an orphan policy after a requested manua
 test("postverify refuses changed private activation bounds despite matching config approval", async () => {
   for (const [field, value] of [
     ["mode", "bidirectional"],
+    ["observationMode", "private-redacted"],
     ["policySha256", "b".repeat(64)],
     ["notBefore", "2026-11-10T00:00:00.000Z"],
     ["expiresAt", "2026-11-12T00:00:00.000Z"],

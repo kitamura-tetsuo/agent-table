@@ -30,8 +30,9 @@ import { validTableId } from "../shared/invitations";
 import { CREATION_LIMITS, TABLE_LIMITS } from "../shared/limits";
 import {
   PRIVATE_PILOT_PROFILE,
-  privatePilotRecipientAllowed,
+  privatePilotDiscoveryAllowed,
 } from "../shared/private-pilot";
+import { getOwnConnectionIdentity } from "./connection-identity";
 import {
   handleOwnedInboxListen,
   isListenRequest,
@@ -173,7 +174,7 @@ function newServer(
       capabilities: {
         tools: { listChanged: false },
         resources: { listChanged: false, subscribe: liveSubscriptions },
-        ...(privateEvents && privatePilotRecipientAllowed(env, identity)
+        ...(privateEvents && privatePilotDiscoveryAllowed(env, identity)
           ? { events: {} }
           : {}),
       },
@@ -202,7 +203,7 @@ function newServer(
       if (
         !actor ||
         (env.RELEASE_PROFILE === PRIVATE_PILOT_PROFILE &&
-          !privatePilotRecipientAllowed(env, actor))
+          !privatePilotDiscoveryAllowed(env, actor))
       )
         throw eventError("denied");
       return { events: [MESSAGE_EVENT_DEFINITION] };
@@ -228,6 +229,27 @@ function newServer(
       const result = await unsubscribeEvent(env, actor, params);
       if (!result.ok) throw eventError(result.reason);
       return {};
+    },
+  );
+
+  server.registerTool(
+    "get_connection",
+    {
+      description:
+        "Inspect only your authenticated guest and connection IDs, currently authorized scopes, and token/grant expiry. This grants no table membership or future authority.",
+      inputSchema: z.strictObject({}),
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    async () => {
+      const connection = await getOwnConnectionIdentity(env, identity);
+      return connection
+        ? toolResult(connection)
+        : toolResult({ error: { code: "NOT_AUTHORIZED" } }, true);
     },
   );
 
@@ -498,7 +520,7 @@ export async function handleMcp(
       )
     ).allowed;
   const privateEvents =
-    privatePilotRecipientAllowed(env, identity) &&
+    privatePilotDiscoveryAllowed(env, identity) &&
     identity.scopes.includes("events:subscribe") &&
     identity.tokenExpiresAtMs !== null &&
     identity.tokenExpiresAtMs > Date.now() &&

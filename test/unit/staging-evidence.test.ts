@@ -181,3 +181,91 @@ describe("staging-only SQLite evidence inspection", () => {
     );
   });
 });
+
+describe("explicit private pilot evidence view", () => {
+  function pilot() {
+    const now = Date.now();
+    const policy = {
+      schemaVersion: 1,
+      mode: "a-only",
+      observationMode: "private-redacted",
+      buildSha: "a".repeat(40),
+      approvedAt: new Date(now - 3000).toISOString(),
+      notBefore: new Date(now - 2000).toISOString(),
+      expiresAt: new Date(now + 60_000).toISOString(),
+      approvalRef: "synthetic-observation-review",
+      recipientGuestId: GUEST,
+      recipientConnectionId: CONNECTION,
+      tableIds: [TABLE],
+      callbackTargets: [
+        { origin: "https://receiver.example.org", pathPrefix: "/" },
+      ],
+    };
+    const read = vi.fn(async () => ({
+      schema: "agent-table.private-pilot-snapshot.v1",
+      table: { tableId: TABLE },
+    }));
+    return {
+      read,
+      policy,
+      env: {
+        ...bindings,
+        RELEASE_PROFILE: "private-pilot-a-only",
+        PRIVATE_PILOT_POLICY: JSON.stringify(policy),
+        TABLES: {
+          idFromName: (id: string) => id,
+          get: () => ({ readPrivatePilotEvidence: read }),
+        },
+      } as unknown as Env,
+    };
+  }
+  const input = {
+    guestId: GUEST,
+    tableId: TABLE,
+    connectionId: CONNECTION,
+    view: "private-pilot",
+  };
+
+  it("requires the existing secret plus the exact observation policy and explicit view", async () => {
+    const f = pilot();
+    expect((await probe(f.env, input, null)).status).toBe(401);
+    expect((await probe(bindings, input)).status).toBe(404);
+    expect(
+      (await probe(f.env, { ...input, connectionId: crypto.randomUUID() }))
+        .status,
+    ).toBe(404);
+    expect(
+      (await probe(f.env, { ...input, tableId: crypto.randomUUID() })).status,
+    ).toBe(404);
+    expect(
+      (
+        await probe(
+          {
+            ...f.env,
+            PRIVATE_PILOT_POLICY: JSON.stringify({
+              ...f.policy,
+              observationMode: undefined,
+            }),
+          },
+          input,
+        )
+      ).status,
+    ).toBe(404);
+    expect(f.read).not.toHaveBeenCalled();
+    const response = await probe(f.env, input);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+    expect(f.read).toHaveBeenCalledExactlyOnceWith(TABLE, GUEST, CONNECTION);
+  });
+
+  it("fails closed on incomplete selectors or diagnostic failures without echoing errors", async () => {
+    const f = pilot();
+    expect(
+      (await probe(f.env, { guestId: GUEST, view: "private-pilot" })).status,
+    ).toBe(400);
+    f.read.mockRejectedValueOnce(new Error("SENSITIVE CALLBACK/SECRET"));
+    const response = await probe(f.env, input);
+    expect(response.status).toBe(503);
+    expect(await response.text()).toBe('{"error":"unavailable"}');
+  });
+});

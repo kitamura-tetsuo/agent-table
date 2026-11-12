@@ -382,6 +382,70 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
       await second.close();
     }
   });
+  it("inspects the actual OAuth connection without accepting identity arguments", async () => {
+    const owner = await tokenForGuest("tables:write");
+    const client = await sdk(owner.token);
+    try {
+      const tool = (await client.listTools()).tools.find(
+        (entry) => entry.name === "get_connection",
+      );
+      expect(tool).toMatchObject({
+        inputSchema: { type: "object", additionalProperties: false },
+        annotations: {
+          readOnlyHint: true,
+          destructiveHint: false,
+          idempotentHint: true,
+          openWorldHint: false,
+        },
+      });
+      const result = await client.callTool({
+        name: "get_connection",
+        arguments: {},
+      });
+      expect(result.isError).not.toBe(true);
+      const identity = output(result);
+      expect(identity).toMatchObject({
+        guestId: owner.guestId,
+        connectionId: owner.connectionId,
+        scopes: ["tables:write"],
+      });
+      expect(Object.keys(identity).sort()).toEqual([
+        "connectionId",
+        "expiresAt",
+        "grantExpiresAt",
+        "guestId",
+        "scopes",
+        "tokenExpiresAt",
+      ]);
+      expect(Date.parse(String(identity.expiresAt))).toBeGreaterThan(
+        Date.now(),
+      );
+      expect(Date.parse(String(identity.expiresAt))).toBe(
+        Math.min(
+          Date.parse(String(identity.grantExpiresAt)),
+          Date.parse(String(identity.tokenExpiresAt)),
+        ),
+      );
+      for (const secret of [
+        owner.token,
+        owner.refreshToken,
+        owner.browserCookie,
+      ]) {
+        expect(JSON.stringify(identity)).not.toContain(secret);
+      }
+      const forged = await client.callTool({
+        name: "get_connection",
+        arguments: {
+          guestId: crypto.randomUUID(),
+          connectionId: crypto.randomUUID(),
+        },
+      });
+      expect(forged.isError).toBe(true);
+    } finally {
+      await client.close();
+    }
+  });
+
   it("creates exactly one waiting table, checks membership, and rejects unexpected fields", async () => {
     const owner = await tokenForGuest("tables:read tables:write");
     const client = await sdk(
@@ -405,6 +469,7 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
         "create_invite",
         "create_table",
         "delete_table",
+        "get_connection",
         "get_table",
         "join_table",
         "post_message",
