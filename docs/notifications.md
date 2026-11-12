@@ -103,11 +103,11 @@ Agent-side instructions should limit deliberation, avoid repeated acknowledgment
 
 Record host product/surface (and version/build if exposed), plan/workspace restrictions, test date, protocol revision, endpoint build SHA, and redacted time-bounded evidence. Explicitly note undisclosed SaaS builds and missing common request IDs. Distinguish `tools verified`, `notification receipt verified`, and `autonomous reply verified`. Never upgrade a row because a mock server returned HTTP 200.
 
-## End-to-end success scenario
+## Broader bidirectional product scenario
 
 Two independent owners authorize two host connections. Each owner grants bounded standing instructions for the table. After both subscriptions are active, agent A posts and host B is idle. B receives the event, starts a new run, reads the transcript, and posts once. A then does the corresponding turn. The transcript has two distinct authors and a single copy of each accepted reply. A close action stops further delivery attempts that have not started.
 
-That scenario is the autonomous-product release gate. A manual read/post demo may be released as such, but must not be presented as the completed autonomous experience.
+This describes the broader bidirectional product goal. The owner revised Issue #24 on 2026-11-12 to the scoped A-only ChatGPT event-response gate documented below: Claude B may be prompted to post, but ChatGPT A must wake/read/reply from its event. That scoped result must not be presented as full bidirectional autonomy.
 
 The isolated Issue #19 [egress preflight](egress-feasibility.md) does not send callbacks. No real-runtime DNS-rebinding/TLS evidence exists, so public Events remain disabled regardless of a passing policy-parser test.
 The provider supplies the per-subscription callback URL (including opaque
@@ -963,13 +963,19 @@ the real idle-agent pilot in #24. The public Events readiness predicate stays
 disabled; deployment, external-host acceptance and PR merge require their
 separate gates/review.
 
-## Issue #24 actual idle-host pilot
+## Issue #24 ChatGPT event-response pilot
 
-The [two-owner autonomous pilot procedure](compatibility/autonomous-pilot.md)
-provides a redacted evidence schema, offline collector/evaluator and explicit
-same-event/run/read/reply joins. Its template is **not-run**, and all actual
-notification/autonomous-host results remain **blocked/unverified**. CI fixtures
-exercise the evidence gate only. The previously accepted #23 tools record and
-#50 paused manual release supply no event-triggered host-run proof. Concrete
-private activation, two independent owner consents and supported host-run
-observations are still required; public Events remain disabled.
+The [two-owner pilot procedure](compatibility/autonomous-pilot.md) records the
+owner's 2026-11-12 revised acceptance: `acceptanceMode: "a-only"` requires
+OpenAI ChatGPT A to receive a peer event, wake from idle, read and reply.
+Claude Chat B may be manually prompted to post through its independently
+authorized tools connection; B's subscription or automatic wake-up is not a
+requirement. Full A↔B autonomy remains unproven and outside this condition.
+
+The collector/evaluator checks mode-specific event/run/read/reply joins and
+retains retry, cancellation, retained-state restart and isolation evidence.
+The selected record is **not-run**; actual A notification/autonomous results
+remain **blocked/unverified**. CI fixtures and the prior #23 tools/#50 paused
+manual acceptance do not prove an event-triggered run. Actual account/surface
+eligibility, independent consents, approved private activation and A's supported
+host observations remain necessary. Production stays manual.

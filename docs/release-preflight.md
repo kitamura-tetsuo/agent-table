@@ -1,6 +1,11 @@
 # Release configuration preflight (Issue #22 / Issue #50)
 
-This script is a fail-closed **offline structural preflight**, not an independent proof of evidence or permission to expose private state. The separate manual-only, protected-environment [authenticated release workflow](release-runbook.md) adds exact-main CI verification, fresh independently reviewed operator disclosures, live Cloudflare resource/secret/domain/version readback, approval and post-deploy verification. A signed-off PR or offline `PREFLIGHT_MANIFEST_VALID` cannot authorize a deployment. Production infrastructure, credentials, approvals and real-host evidence must still be supplied and executed separately; this document does not claim they exist. Reconciliation-based restore-quarantine **clearance** remains unimplemented and belongs to Issue #51. Do not use this script's output to enable Events/autonomous functionality.
+This script is a fail-closed **offline structural preflight**, not an independent proof of evidence or permission to expose private state. The separate protected-environment [authenticated release workflow](release-runbook.md) adds exact-main CI verification, fresh independently reviewed operator disclosures, live Cloudflare resource/secret/domain/version readback, approval and post-deploy verification. A signed-off PR or offline `PREFLIGHT_MANIFEST_VALID` cannot authorize a deployment. Production infrastructure, credentials, approvals and real-host evidence must still be supplied and executed separately; this document does not claim they exist. Reconciliation-based restore-quarantine **clearance** remains unimplemented and belongs to Issue #51. Do not use this script's output alone to enable Events/autonomous functionality.
+
+The staging-only [`private-pilot-a-only` verification profile](compatibility/private-pilot-activation.md)
+uses the same protected release path with a separately reviewed finite policy.
+It gathers actual host evidence while global/public Events flags remain false;
+it does not assert that the real-host compatibility gate has already passed.
 
 ## Boundaries
 
@@ -62,7 +67,7 @@ The command requires the operator-supplied counterpart configuration and checks 
 
 - Separate manual staging/production workflows require the exact main SHA and a selected GitHub Environment. GitHub API readback on 2026-11-11 UTC confirmed required owner reviewers and protected-branch restrictions for **both** Environments; this is historical configuration evidence, not an approval of a deployment. The [protected staging credential check #42969129958](https://github.com/kitamura-tetsuo/agent-table/actions/runs/42969129958) verified staging-only read access to settings, **not** full release resource ownership or promotion.
 - The protected workflow's **authenticated** `release-authorization.mjs` now emits a short-lived in-job `RELEASE_APPROVAL_VALID` only after exact-main CI provenance and live Cloudflare readback of both environments. `require-release-approval.mjs` must verify that manifest before publishing. Missing read tokens, production configuration, named secret inventory, selected domain, independently verified retention/usage disclosures, and required profile evidence remain **blocked**, rather than being replaced by fabricated metadata. See [release-runbook.md](release-runbook.md) for required Environment secret names, operator JSON schemas, current scope and the exact approval sequence.
-- Only the `manual` profile is implemented in the authenticated gate. New `live`, Events and autonomous host validation and **independently reconciled restore-quarantine release** remain blocked. Future DO-only outbound producers must apply the independent dispatch-time guard too. A restored copy of an older successful operator record does not clear missing post-snapshot revocations/deletions/expiry.
+- The authenticated gate supports `manual` and separately approved staging-only `private-pilot-a-only` verification. Public `live`, Events and autonomous releases and **independently reconciled restore-quarantine release** remain blocked. The private trial rechecks its exact recipient/table/callback scope, finite window and stop switch before new effects. Future DO-only outbound producers must apply the independent dispatch-time guard too. A restored copy of an older successful operator record does not clear missing post-snapshot revocations/deletions/expiry.
 - A separately approved protected staging bootstrap and same-source,
   same-config, ID-pinned rollback **did** preserve retained synthetic Durable
   Object data [on 2026-11-12](https://github.com/kitamura-tetsuo/agent-table/issues/50#issuecomment-6815095095).
@@ -82,18 +87,22 @@ Local validation: `node --test scripts/release-preflight.test.mjs`. CI runs this
 
 ## Issue #24 autonomous evidence gate
 
-The [two-owner idle-host pilot](compatibility/autonomous-pilot.md) supplies an
-offline `probe:autonomous` collector/evaluator and a not-run evidence template.
-It requires the continuous real-host round trip, exact mutation-key retry,
-pending-work cancellation, retained-state restart and third-guest isolation
-before its complete-record result. This output checks correspondence and
-receipt integrity; independent review must establish the observations' origin.
-It is not release authorization and does not enable any capability switch.
+The [two-owner ChatGPT pilot](compatibility/autonomous-pilot.md) supplies an
+offline `probe:autonomous` collector/evaluator and a not-run selected record.
+Under the owner's 2026-11-12 `a-only` condition, manually prompted Claude B posts
+and idle ChatGPT A must automatically receive the event, run, read and reply.
+The same B→A path must work after retained-state restart; exact-key retry,
+pending-work cancellation and third-guest isolation remain required. B's
+subscription or autonomous wake-up is not required, and an A-only pass cannot
+be reported as bidirectional autonomy.
 
-The [2026-11-12 #50 acceptance](https://github.com/kitamura-tetsuo/agent-table/issues/50#issuecomment-6825493911)
-records the protected **paused manual** production release. It supersedes the
-earlier production-not-verified status above for that exact scoped release,
-but does not authorize live/Events/autonomous operation or restore clearance.
-The authenticated gate remains manual-only; #22/#51's independent reconciliation
-work and #24's actual host observations remain separate. The pilot must not use
-a manual approval, an SDK test, or another build's record to claim those gates.
+The report checks correspondence and receipt integrity; independent review
+must establish origin. It is not release authorization or permission to enable
+production Events. The [2026-11-12 #50 acceptance](https://github.com/kitamura-tetsuo/agent-table/issues/50#issuecomment-6825493911)
+records the protected **paused manual** production release, superseding earlier
+production-not-verified wording above only for that scoped release. A separate
+private staging activation and concrete approval are needed for this pilot.
+A no-restore restart is distinct from #51 historical restoration/quarantine
+clearance; the latter must not be invented as a mandatory prerequisite for the
+former. A manual approval, SDK result or different build's record supplies no
+missing A-host causal evidence.

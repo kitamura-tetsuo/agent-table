@@ -5,6 +5,7 @@ import {
   buildSha,
   makeFixture,
   makeGithubMock,
+  makePrivatePilotFixture,
   makeProviderMock,
   now,
   runId,
@@ -47,6 +48,126 @@ test("protected exact-main run plus independent provider and CI reads authorize 
     JSON.stringify(approval),
     /NEVER_ECHO_ME|secretNames|textBindings/,
   );
+});
+
+test("private A-only staging requires the same protected main and CI gates without claiming a host pass", async () => {
+  const { fixture, cloudflare, github } = harness(makePrivatePilotFixture());
+  const approval = await authorizeRelease({
+    ...fixture,
+    cloudflareRead: cloudflare.read,
+    githubRead: github.read,
+    now,
+  });
+  assert.equal(approval.profile, "private-pilot-a-only");
+  assert.equal(approval.deploymentApproved, true);
+  assert.deepEqual(approval.privatePilot, {
+    mode: "a-only",
+    policySha256: fixture.operations.privatePilot.policySha256,
+    notBefore: new Date(now - 30_000).toISOString(),
+    expiresAt: new Date(now + 60 * 60_000).toISOString(),
+    deliveryEnabled: true,
+  });
+  assert.equal(approval.completeRecord, undefined);
+  assert.doesNotMatch(
+    JSON.stringify(approval),
+    /recipientGuestId|recipientConnectionId|callbackTargets|receiver\.example/,
+  );
+  for (const patch of [
+    { ref: "refs/heads/pilot" },
+    { runAttempt: "2" },
+    { eventName: "pull_request" },
+  ]) {
+    await assert.rejects(
+      authorizeRelease({
+        ...fixture,
+        workflow: { ...fixture.workflow, ...patch },
+        cloudflareRead: cloudflare.read,
+        githubRead: github.read,
+        now,
+      }),
+      /unprotected-release-context|deployment-review-attempt-unverifiable/,
+    );
+  }
+});
+
+test("private activation refuses missing or changed owner scope and inactive windows", async () => {
+  for (const mutate of [
+    (value) => {
+      value.operations.privatePilot = undefined;
+    },
+    (value) => {
+      value.operations.privatePilot.policySha256 = "b".repeat(64);
+    },
+    (value) => {
+      value.operations.privatePilot.independentOwnerConsentsReviewed = false;
+    },
+    (value) => {
+      value.operations.privatePilot.callbackControlReviewed = false;
+    },
+    (value) => {
+      value.operations.privatePilot.nativeFetchRiskAccepted = false;
+    },
+    (value) => {
+      value.operations.privatePilot.stopPlanReviewed = false;
+    },
+  ]) {
+    const { fixture, cloudflare, github } = harness(makePrivatePilotFixture());
+    mutate(fixture);
+    await assert.rejects(
+      authorizeRelease({
+        ...fixture,
+        cloudflareRead: cloudflare.read,
+        githubRead: github.read,
+        now,
+      }),
+      /private-pilot-scope-not-approved/,
+    );
+  }
+  for (const timestamp of [now - 31_000, now + 60 * 60_000]) {
+    const { fixture, cloudflare, github } = harness(makePrivatePilotFixture());
+    fixture.operations.review.reviewedAt = new Date(timestamp).toISOString();
+    for (const disclosure of Object.values(fixture.operations.retention)) {
+      disclosure.reviewedAt = new Date(timestamp).toISOString();
+    }
+    await assert.rejects(
+      authorizeRelease({
+        ...fixture,
+        cloudflareRead: cloudflare.read,
+        githubRead: github.read,
+        now: timestamp,
+      }),
+      /private-pilot-not-active/,
+    );
+  }
+  const { fixture, cloudflare, github } = harness(makePrivatePilotFixture());
+  await assert.rejects(
+    authorizeRelease({
+      ...fixture,
+      bootstrapStaging: true,
+      cloudflareRead: cloudflare.read,
+      githubRead: github.read,
+      now,
+    }),
+    /private-pilot-cannot-bootstrap/,
+  );
+});
+
+test("an approved private kill-switch configuration can be deployed after its send window", async () => {
+  const fixture = makePrivatePilotFixture();
+  const config = JSON.parse(fixture.configText);
+  config.vars.ALLOW_OUTBOUND_NOTIFICATIONS = "false";
+  fixture.configText = JSON.stringify(config);
+  const digest = createHash("sha256").update(fixture.configText).digest("hex");
+  fixture.evidence.configSha256 = fixture.operations.configSha256 = digest;
+  const cloudflare = makeProviderMock(config, JSON.parse(fixture.peerText));
+  const approval = await authorizeRelease({
+    ...fixture,
+    cloudflareRead: cloudflare.read,
+    githubRead: makeGithubMock().read,
+    now: now + 2 * 60 * 60_000,
+  });
+  assert.equal(approval.deploymentApproved, true);
+  assert.equal(approval.privatePilot.deliveryEnabled, false);
 });
 
 function legacyStagingHarness() {

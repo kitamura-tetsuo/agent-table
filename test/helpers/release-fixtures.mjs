@@ -137,6 +137,50 @@ export function makeFixture(environment = "staging") {
   };
 }
 
+export function makePrivatePilotFixture() {
+  const fixture = makeFixture("staging");
+  const config = JSON.parse(fixture.configText);
+  const policy = {
+    schemaVersion: 1,
+    mode: "a-only",
+    buildSha,
+    approvedAt: new Date(now - 60_000).toISOString(),
+    notBefore: new Date(now - 30_000).toISOString(),
+    expiresAt: new Date(now + 60 * 60_000).toISOString(),
+    approvalRef: "fixture-pilot-approval",
+    recipientGuestId: "11111111-1111-4111-8111-111111111111",
+    recipientConnectionId: "22222222-2222-4222-8222-222222222222",
+    tableIds: ["33333333-3333-4333-8333-333333333333"],
+    callbackTargets: [
+      { origin: "https://receiver.example.com", pathPrefix: "/mcp-events" },
+    ],
+  };
+  config.vars.RELEASE_PROFILE = "private-pilot-a-only";
+  config.vars.PRIVATE_PILOT_POLICY = JSON.stringify(policy);
+  config.vars.ALLOW_OUTBOUND_NOTIFICATIONS = "true";
+  fixture.profile = config.vars.RELEASE_PROFILE;
+  fixture.configText = JSON.stringify(config);
+  const configSha256 = createHash("sha256")
+    .update(fixture.configText)
+    .digest("hex");
+  fixture.evidence.configSha256 = configSha256;
+  fixture.operations.configSha256 = configSha256;
+  fixture.operations.profile = fixture.profile;
+  fixture.operations.privatePilot = {
+    mode: "a-only",
+    policySha256: createHash("sha256")
+      .update(config.vars.PRIVATE_PILOT_POLICY)
+      .digest("hex"),
+    approvalRef: policy.approvalRef,
+    independentOwnerConsentsReviewed: true,
+    callbackControlReviewed: true,
+    nativeFetchRiskAccepted: true,
+    boundedCanaryReviewed: true,
+    stopPlanReviewed: true,
+  };
+  return fixture;
+}
+
 const namespace = (env, index) =>
   `${env === "staging" ? "1" : "2"}${String(index + 1).repeat(31)}`;
 

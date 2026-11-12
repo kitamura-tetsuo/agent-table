@@ -6,12 +6,17 @@ import {
   autonomousEvidenceSchema,
   evaluateAutonomousEvidence,
 } from "../e2e/host/autonomous-evidence";
+import selectedChatPair from "../e2e/host/autonomous-evidence.chatgpt-claude-selected.json";
 import template from "../e2e/host/autonomous-evidence.template.json";
 
 // This fixture is invented validator input, never a real compatibility record.
 // Changing its kind in a test exercises only the metadata gate's positive branch.
-function syntheticFixture(): AutonomousEvidence {
+function syntheticFixture(
+  acceptanceMode: AutonomousEvidence["acceptanceMode"] = "bidirectional",
+): AutonomousEvidence {
   const record = autonomousEvidenceSchema.parse(template);
+  record.acceptanceMode = acceptanceMode;
+  const aOnly = acceptanceMode === "a-only";
   record.evidenceKind = "synthetic-validator";
   const at = (seconds: number) =>
     new Date(Date.parse("2026-11-12T00:00:00Z") + seconds * 1000).toISOString();
@@ -78,12 +83,17 @@ function syntheticFixture(): AutonomousEvidence {
     },
   })) as AutonomousEvidence["participants"];
   const [a, b] = record.participants;
+  if (aOnly) {
+    b.subscriptionId = null;
+    b.subscription = { tableId: null, activeAt: null, observationRef: null };
+    b.host.runObservation = "unsupported";
+  }
   const makeTurn = (
     id: string,
     sender: "A" | "B",
     start: number,
     seq: number,
-    scenario: "roundtrip" | "restart",
+    scenario: "event-response" | "restart",
   ): AutonomousEvidence["turns"][number] => {
     const from = sender === "A" ? a : b;
     const to = sender === "A" ? b : a;
@@ -169,25 +179,41 @@ function syntheticFixture(): AutonomousEvidence {
       },
     };
   };
-  const first = makeTurn("fixture-first", "A", 10, 1, "roundtrip");
-  const back = makeTurn("fixture-return", "B", 16, 2, "roundtrip");
+  const first = makeTurn(
+    "fixture-first",
+    aOnly ? "B" : "A",
+    10,
+    1,
+    "event-response",
+  );
   const firstReply = first.reply as NonNullable<typeof first.reply>;
-  back.post = {
-    tableId: firstReply.tableId,
-    messageId: firstReply.messageId,
-    seq: firstReply.seq,
-    senderMembershipId: firstReply.senderMembershipId,
-    committedAt: firstReply.committedAt,
-    mutationKeySha256: firstReply.mutationKeySha256,
-    observationRef: firstReply.observationRef,
-    hostObservationRef: firstReply.hostObservationRef,
-  };
-  back.event.messageId = back.post.messageId;
-  if (back.read) back.read.observedMessageIds = [back.post.messageId];
-  (back.reply as NonNullable<typeof back.reply>).replyToMessageId =
-    back.post.messageId;
-  const resumed = makeTurn("fixture-resumed", "A", 110, 4, "restart");
-  record.turns = [first, back, resumed];
+  record.turns = [first];
+  if (!aOnly) {
+    const back = makeTurn("fixture-return", "B", 16, 2, "event-response");
+    back.post = {
+      tableId: firstReply.tableId,
+      messageId: firstReply.messageId,
+      seq: firstReply.seq,
+      senderMembershipId: firstReply.senderMembershipId,
+      committedAt: firstReply.committedAt,
+      mutationKeySha256: firstReply.mutationKeySha256,
+      observationRef: firstReply.observationRef,
+      hostObservationRef: firstReply.hostObservationRef,
+    };
+    back.event.messageId = back.post.messageId;
+    if (back.read) back.read.observedMessageIds = [back.post.messageId];
+    (back.reply as NonNullable<typeof back.reply>).replyToMessageId =
+      back.post.messageId;
+    record.turns.push(back);
+  }
+  const resumed = makeTurn(
+    "fixture-resumed",
+    aOnly ? "B" : "A",
+    110,
+    aOnly ? 3 : 4,
+    "restart",
+  );
+  record.turns.push(resumed);
   record.retry = {
     turnId: first.id,
     originalMutationKeySha256: first.post.mutationKeySha256,
@@ -198,8 +224,8 @@ function syntheticFixture(): AutonomousEvidence {
     retryMessageId: first.post.messageId,
     originalSeq: 1,
     retrySeq: 1,
-    beforeCount: 3,
-    afterCount: 3,
+    beforeCount: aOnly ? 2 : 3,
+    afterCount: aOnly ? 2 : 3,
     retriedAt: at(30),
     observationRef: receipt("server"),
   };
@@ -216,6 +242,8 @@ function syntheticFixture(): AutonomousEvidence {
   };
   record.cancellation = {
     tableId: "cancellation-table-0001",
+    recipient: "A",
+    recipientGuestId: a.guestId as string,
     action: "close",
     subscriptionId: "cancellation-subscription-0001",
     pendingEventId: "cancellation-pending-0001",
@@ -242,10 +270,9 @@ function syntheticFixture(): AutonomousEvidence {
     buildSha: record.deployment.buildSha as string,
     configSha256: record.deployment.configSha256 as string,
     retryStateSha256: "2".repeat(64),
-    subscriptionIds: [
-      a.subscriptionId as string,
-      b.subscriptionId as string,
-    ] as [string, string],
+    subscriptionIds: aOnly
+      ? [a.subscriptionId as string]
+      : [a.subscriptionId as string, b.subscriptionId as string],
     observedAt: at(100),
     observationRef: receipt("server"),
   };
@@ -278,13 +305,19 @@ function syntheticFixture(): AutonomousEvidence {
       "renew-subscription",
       "unsubscribe",
     ] as const) {
+      if (
+        aOnly &&
+        person.role === "B" &&
+        (action === "renew-subscription" || action === "unsubscribe")
+      )
+        continue;
       record.isolation.push({
         action,
         outsiderGuestId: "unaffiliated-guest-0001",
         outsiderConnectionId: "unaffiliated-connection-0001",
         tableId: record.tableId,
         targetMembershipId: person.membershipId as string,
-        targetSubscriptionId: person.subscriptionId as string,
+        targetSubscriptionId: person.subscriptionId,
         observedAt: at(80),
         outcome: "denied",
         privateDataReturned: false,
@@ -304,15 +337,20 @@ function syntheticFixture(): AutonomousEvidence {
   return record;
 }
 
-function realHostShapedFixture() {
-  const record = syntheticFixture();
+function realHostShapedFixture(
+  acceptanceMode: AutonomousEvidence["acceptanceMode"] = "bidirectional",
+) {
+  const record = syntheticFixture(acceptanceMode);
   record.evidenceKind = "real-host";
   return record;
 }
 
 describe("autonomous pilot metadata gate", () => {
-  it("keeps the committed unrun template explicit and incomplete", () => {
-    const result = evaluateAutonomousEvidence(template);
+  it.each([
+    ["generic template", template],
+    ["owner-selected ChatGPT and Claude Chat", selectedChatPair],
+  ])("keeps the unrun %s explicit and incomplete", (_name, record) => {
+    const result = evaluateAutonomousEvidence(record);
     expect(result.structurallyValid).toBe(true);
     expect(result.completeRecord).toBe(false);
     expect(Object.values(result.layers)).toEqual([
@@ -839,12 +877,12 @@ describe("autonomous pilot metadata gate", () => {
   it("distinguishes failed observed behavior from missing blocked observations", () => {
     const manual = realHostShapedFixture();
     if (manual.turns[0].run) manual.turns[0].run.trigger = "manual";
-    expect(evaluateAutonomousEvidence(manual).scenarios.roundTrip).toBe(
+    expect(evaluateAutonomousEvidence(manual).scenarios.eventResponse).toBe(
       "failed",
     );
     const missing = realHostShapedFixture();
     missing.turns[0].run = null;
-    expect(evaluateAutonomousEvidence(missing).scenarios.roundTrip).toBe(
+    expect(evaluateAutonomousEvidence(missing).scenarios.eventResponse).toBe(
       "blocked",
     );
     const leaked = realHostShapedFixture();
@@ -910,5 +948,239 @@ describe("autonomous pilot metadata gate", () => {
       callbackUrl: `https://private.example/${sentinel}`,
     });
     expect(evaluateAutonomousEvidence(nested).structurallyValid).toBe(false);
+  });
+});
+
+describe("explicit A-only autonomous acceptance", () => {
+  it("selects modes explicitly in both unrun templates", () => {
+    expect(template.acceptanceMode).toBe("bidirectional");
+    expect(selectedChatPair.acceptanceMode).toBe("a-only");
+    expect(selectedChatPair.participants[0].host.product).toBe(
+      "OpenAI ChatGPT",
+    );
+    expect(selectedChatPair.participants[1].host.product).toBe("Claude Chat");
+    expect(evaluateAutonomousEvidence(selectedChatPair).acceptanceMode).toBe(
+      "a-only",
+    );
+    expect(evaluateAutonomousEvidence(selectedChatPair).completeRecord).toBe(
+      false,
+    );
+  });
+
+  it("accepts A event responses while B has tools-only manual source capability", () => {
+    // Invented metadata exercises the positive branch, not actual host evidence.
+    const record = realHostShapedFixture("a-only");
+    expect(record.participants[1].host.runObservation).toBe("unsupported");
+    expect(record.participants[1].subscriptionId).toBeNull();
+    expect(record.participants[1].subscription.activeAt).toBeNull();
+    expect(record.turns).toHaveLength(2);
+    for (const turn of record.turns) {
+      expect(turn.sender).toBe("B");
+      expect(turn.recipient).toBe("A");
+      expect(turn.run?.trigger).toBe("peer-event");
+    }
+    const result = evaluateAutonomousEvidence(record);
+    expect(result.missing).toEqual([]);
+    expect(result.completeRecord).toBe(true);
+    expect(result.acceptanceMode).toBe("a-only");
+    expect(result.scenarios.eventResponse).toBe("passed");
+    expect(result.scenarios).not.toHaveProperty("roundTrip");
+    expect(result.layers).toEqual({
+      tools: "passed",
+      notificationReceipt: "passed",
+      autonomousReply: "passed",
+    });
+  });
+
+  it("never presents an A-only synthetic fixture as actual compatibility", () => {
+    const result = evaluateAutonomousEvidence(syntheticFixture("a-only"));
+    expect(result.acceptanceMode).toBe("a-only");
+    expect(result.completeRecord).toBe(false);
+    expect(result.layers.autonomousReply).toBe("blocked");
+  });
+
+  it("rejects a missing mode rather than silently falling back", () => {
+    const record = realHostShapedFixture("a-only");
+    Reflect.deleteProperty(record, "acceptanceMode");
+    const result = evaluateAutonomousEvidence(record);
+    expect(result.structurallyValid).toBe(false);
+    expect(result.acceptanceMode).toBeNull();
+    expect(result.completeRecord).toBe(false);
+  });
+
+  it("cannot promote A-only evidence to bidirectional acceptance", () => {
+    const record = realHostShapedFixture("a-only");
+    record.acceptanceMode = "bidirectional";
+    const result = evaluateAutonomousEvidence(record);
+    expect(result.acceptanceMode).toBe("bidirectional");
+    expect(result.completeRecord).toBe(false);
+    expect(result.scenarios.eventResponse).not.toBe("passed");
+    expect(result.scenarios.restart).not.toBe("passed");
+  });
+
+  const mutations: [string, (record: AutonomousEvidence) => void][] = [
+    [
+      "A manually woken for the primary response",
+      (r) => {
+        if (r.turns[0].run) r.turns[0].run.trigger = "manual";
+      },
+    ],
+    [
+      "A manually woken after restart",
+      (r) => {
+        if (r.turns[1].run) r.turns[1].run.trigger = "manual";
+      },
+    ],
+    [
+      "primary response in the wrong direction",
+      (r) => {
+        r.turns[0].sender = "A";
+        r.turns[0].recipient = "B";
+      },
+    ],
+    [
+      "restart response in the wrong direction",
+      (r) => {
+        r.turns[1].sender = "A";
+        r.turns[1].recipient = "B";
+      },
+    ],
+    [
+      "a second primary response disguised as A-only",
+      (r) => {
+        r.turns.push({ ...r.turns[0], id: "extra-response-0001" });
+      },
+    ],
+    [
+      "missing A active subscription",
+      (r) => {
+        r.participants[0].subscriptionId = null;
+        r.participants[0].subscription = {
+          tableId: null,
+          activeAt: null,
+          observationRef: null,
+        };
+      },
+    ],
+    [
+      "unsupported A idle/run observation",
+      (r) => {
+        r.participants[0].host.runObservation = "unsupported";
+      },
+    ],
+    [
+      "missing retained-state restart",
+      (r) => {
+        r.restart = null;
+      },
+    ],
+    [
+      "missing post-restart A response",
+      (r) => {
+        r.turns = r.turns.filter((item) => item.scenario !== "restart");
+      },
+    ],
+    [
+      "another receiver subscription in restart snapshot",
+      (r) => {
+        if (r.restart)
+          r.restart.after.subscriptionIds.push("unexpected-subscription");
+      },
+    ],
+    [
+      "replacement A subscription after restart",
+      (r) => {
+        if (r.restart)
+          r.restart.after.subscriptionIds[0] = "replacement-subscription";
+      },
+    ],
+    [
+      "cancellation targeting B",
+      (r) => {
+        if (r.cancellation) {
+          r.cancellation.recipient = "B";
+          r.cancellation.recipientGuestId = r.participants[1].guestId as string;
+        }
+      },
+    ],
+    [
+      "A cancellation labeled with B guest identity",
+      (r) => {
+        if (r.cancellation)
+          r.cancellation.recipientGuestId = r.participants[1].guestId as string;
+      },
+    ],
+    [
+      "unverified B source host account",
+      (r) => {
+        r.participants[1].host.eligibility = "unknown";
+      },
+    ],
+    [
+      "SDK replacement for the B source host",
+      (r) => {
+        r.participants[1].host.origin = "sdk-only";
+      },
+    ],
+    [
+      "missing B OAuth/tool receipt",
+      (r) => {
+        r.participants[1].oauthEvidenceRef = null;
+      },
+    ],
+    [
+      "missing independent B bounded consent",
+      (r) => {
+        r.participants[1].consent.observationRef = null;
+      },
+    ],
+    [
+      "B consent only after its first post",
+      (r) => {
+        r.participants[1].consent.approvedAt = "2026-11-12T00:00:11Z";
+      },
+    ],
+    [
+      "missing actual B source-post tool receipt",
+      (r) => {
+        r.observations = r.observations.filter(
+          (item) => item.id !== r.turns[0].post.hostObservationRef,
+        );
+      },
+    ],
+    [
+      "missing private transcript denial for B membership",
+      (r) => {
+        r.isolation = r.isolation.filter(
+          (item) =>
+            !(
+              item.action === "transcript" &&
+              item.targetMembershipId === r.participants[1].membershipId
+            ),
+        );
+      },
+    ],
+    [
+      "missing A subscription-maintenance denial",
+      (r) => {
+        r.isolation = r.isolation.filter(
+          (item) => item.action !== "unsubscribe",
+        );
+      },
+    ],
+    [
+      "A exceeding its independently approved reply bound",
+      (r) => {
+        r.participants[0].consent.maxReplies = 1;
+      },
+    ],
+  ];
+  it.each(mutations)("rejects %s", (_name, mutate) => {
+    const record = realHostShapedFixture("a-only");
+    mutate(record);
+    const result = evaluateAutonomousEvidence(record);
+    expect(result.completeRecord).toBe(false);
+    expect(result.acceptanceMode).toBe("a-only");
+    expect(result.missing.length).toBeGreaterThan(0);
   });
 });

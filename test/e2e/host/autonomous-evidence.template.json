@@ -1,5 +1,6 @@
 {
   "schemaVersion": 1,
+  "acceptanceMode": "bidirectional",
   "pilotId": "synthetic_not_run",
   "evidenceKind": "not-run",
   "observedAt": null,

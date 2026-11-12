@@ -151,11 +151,14 @@ Resolve these through implementation evidence and deployment decisions. Unknown 
 
 ### AGENT-TABLE-AUTONOMOUS-PILOT
 
-[Issue #24](https://github.com/kitamura-tetsuo/agent-table/issues/24) defines the
-actual two-owner idle-host acceptance contract. The
-[reproducible pilot procedure](compatibility/autonomous-pilot.md) and offline
-`probe:autonomous` collector/evaluator keep tools, notification receipt and
-autonomous reply results separate. No passing live record accompanies this
-implementation. Schema consistency and matching receipt digests do not
-independently authenticate external observations; real supported host audit
-and committed server/transcript evidence remain necessary.
+[Issue #24](https://github.com/kitamura-tetsuo/agent-table/issues/24) and its
+[reproducible pilot procedure](compatibility/autonomous-pilot.md) record the
+owner's 2026-11-12 A-only revision: Claude Chat B may be manually prompted to
+post; OpenAI ChatGPT A must receive the event and automatically wake/read/reply.
+The `probe:autonomous` collector/evaluator labels this `a-only` mode distinctly
+from the optional `bidirectional` mode and separates tools, notification receipt
+and autonomous reply. No passing live record accompanies the implementation.
+Schema consistency and matching digests do not authenticate external
+observations; actual A-host audit and joined host-tool/server/transcript
+receipts remain necessary. Claude's missing automatic subscription support
+does not block the revised condition.

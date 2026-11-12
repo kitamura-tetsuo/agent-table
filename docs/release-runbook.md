@@ -2,7 +2,7 @@
 
 ## Status and hard safety boundaries
 
-The repository contains an **authenticated, manual-only release gate**. It
+The repository contains an **authenticated, protected release gate**. It
 checks the exact `main` commit, a successful independently fetched CI run,
 fresh operator disclosures, the protected GitHub Environment, and actual
 Cloudflare Worker, SQLite Durable Object, KV, secret-name, domain and deployed
@@ -21,10 +21,15 @@ release has not run**. Account-specific backup/log retention, billed storage
 and pricing/usage acceptance are still unresolved. These are distinct gates;
 the checked-in `wrangler.jsonc` is not a hosted release candidate.
 
-The authenticated gate initially supports **`manual` only**. Every production
-or staging release must have `RESTORE_QUARANTINE=false` only for a verified
-non-restore release, with subscriptions, Events and outbound notifications
-all explicitly `false`. `live`, `events` and `autonomous` are not reachable by
+The authenticated gate supports **`manual`** in staging and production, with
+subscriptions, Events and outbound notifications all explicitly `false`.
+The separate staging-only [private A-only verification profile](compatibility/private-pilot-activation.md)
+binds a finite trial to one receiving connection, selected synthetic tables,
+reviewed callback targets and the exact candidate configuration. It keeps
+global/public Events advertisement off and requires its own concrete owner
+approval; merging the implementation does not activate it. Both profiles
+require `RESTORE_QUARANTINE=false` only for a verified no-restore release.
+Public `live`, `events` and `autonomous` profiles are not reachable by
 editing a flag or inventing a successful test URL: they need separately
 implemented provider/host evidence verification. Restored snapshots with
 unknown post-snapshot revocations/deletions/expiries remain quarantined until

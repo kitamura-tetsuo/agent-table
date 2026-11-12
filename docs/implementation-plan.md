@@ -85,12 +85,18 @@ A feature can be documented, implemented, unit-tested, integration-tested, host-
 
 ## Stage Y — reproducible autonomous-host evidence (#24)
 
-Use the [two-owner idle-host pilot](compatibility/autonomous-pilot.md) and
-`probe:autonomous` offline collector/evaluator for exact deployment/profile
-observations. The implementation supplies strict joins and deterministic
-negative regressions; the checked-in template remains not-run. Completion
-requires independently approved actual owners/hosts, both idle-triggered turns,
-exact-key retry, cancellation, retained-state restart and third-guest isolation.
-The paused manual release and one-owner tools interoperability do not complete
-this stage. Missing account eligibility, observable host-run causality or an
-approved private Events activation remain explicit blockers.
+Use the [two-owner ChatGPT pilot](compatibility/autonomous-pilot.md) and
+`probe:autonomous` for exact deployment/profile observations. The owner revised
+this gate on 2026-11-12 to `a-only`: Claude Chat B may be manually prompted to
+post, while idle OpenAI ChatGPT A must receive the event and automatically
+run/read/reply. Repeat B→A after a retained-state restart. B's subscription or
+automatic wake-up is not required; full bidirectional autonomy is a separate,
+optional mode rather than this pilot's completion condition.
+
+The selected record remains not-run. Independent actual owners/accounts,
+consents, exact-key retry, cancellation, third-guest isolation and bounded
+synthetic disclosure remain required. Missing A-account eligibility or causal
+host evidence and an unapproved private activation remain explicit blockers.
+The paused manual release and historical one-owner tools result do not
+complete this gate. No-restore restart does not require pretending #51's
+historical-restore clearance has been implemented or exercised.

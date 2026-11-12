@@ -187,6 +187,9 @@ export function buildPilotReport(input, receiptDirectory) {
       ? {
           pilotId: parsed.data.pilotId,
           evidenceKind: parsed.data.evidenceKind,
+          acceptanceMode: parsed.data.acceptanceMode,
+          requiredAutonomousResponders:
+            parsed.data.acceptanceMode === "a-only" ? ["A"] : ["A", "B"],
           observedAt: parsed.data.observedAt,
           tableId: parsed.data.tableId,
           deployment: parsed.data.deployment,
@@ -224,7 +227,11 @@ function argumentsFor(argv) {
       options.fragments.push(value);
       continue;
     }
-    if (!["--input", "--output", "--report", "--receipt-dir"].includes(option))
+    if (
+      !["--input", "--output", "--report", "--receipt-dir", "--mode"].includes(
+        option,
+      )
+    )
       invalid("Unknown option.");
     if (options[option] !== undefined)
       invalid("An option was supplied more than once.");
@@ -232,13 +239,19 @@ function argumentsFor(argv) {
   }
   if (!options["--output"]) invalid("An output path is required.");
   if (
+    options["--mode"] &&
+    (command !== "init" ||
+      !["a-only", "bidirectional"].includes(options["--mode"]))
+  )
+    invalid("Only init accepts a supported acceptance mode.");
+  if (
     command === "init" &&
     (options.fragments.length ||
       options["--input"] ||
       options["--report"] ||
       options["--receipt-dir"])
   )
-    invalid("Init accepts only an output path.");
+    invalid("Init accepts an output path and optional acceptance mode.");
   if (
     command === "evaluate" &&
     (!options["--input"] || options.fragments.length || options["--report"])
@@ -261,10 +274,13 @@ export function main(argv) {
   try {
     const options = argumentsFor(argv);
     if (options.command === "init") {
-      const template = autonomousEvidenceSchema.parse(readJson(TEMPLATE));
+      const template = autonomousEvidenceSchema.parse({
+        ...readJson(TEMPLATE),
+        ...(options["--mode"] ? { acceptanceMode: options["--mode"] } : {}),
+      });
       writeJson(options["--output"], template);
       process.stdout.write(
-        `${JSON.stringify({ initialized: true, livePilot: "not-run" })}\n`,
+        `${JSON.stringify({ initialized: true, livePilot: "not-run", acceptanceMode: template.acceptanceMode })}\n`,
       );
       return 0;
     }

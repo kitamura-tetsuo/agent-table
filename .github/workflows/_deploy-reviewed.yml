@@ -1,4 +1,4 @@
-name: Reviewed manual deployment (reusable)
+name: Reviewed deployment (reusable)
 
 on:
   workflow_call:
@@ -9,6 +9,10 @@ on:
       expected_sha:
         required: true
         type: string
+      release_profile:
+        required: false
+        type: string
+        default: manual
       bootstrap_staging:
         required: false
         type: boolean
@@ -45,11 +49,19 @@ jobs:
         env:
           EXPECTED_SHA: ${{ inputs.expected_sha }}
           CHECKED_OUT_SHA: ${{ github.sha }}
+          TARGET_ENVIRONMENT: ${{ inputs.target_environment }}
+          RELEASE_PROFILE: ${{ inputs.release_profile }}
+          BOOTSTRAP_STAGING: ${{ inputs.bootstrap_staging }}
         run: |
           set -euo pipefail
           [[ "$EXPECTED_SHA" =~ ^[a-f0-9]{40}$ ]]
           [[ "$EXPECTED_SHA" == "$CHECKED_OUT_SHA" ]]
           [[ "$(git rev-parse HEAD)" == "$CHECKED_OUT_SHA" ]]
+          if [[ "$RELEASE_PROFILE" != "manual" ]]; then
+            [[ "$RELEASE_PROFILE" == "private-pilot-a-only" ]]
+            [[ "$TARGET_ENVIRONMENT" == "staging" ]]
+            [[ "$BOOTSTRAP_STAGING" == "false" ]]
+          fi
       - run: npm ci
       - name: Recheck application and isolated Workerd gates
         run: |
@@ -64,6 +76,7 @@ jobs:
         id: candidate
         env:
           TARGET_ENVIRONMENT: ${{ inputs.target_environment }}
+          RELEASE_PROFILE: ${{ inputs.release_profile }}
           RELEASE_CONFIG_JSON: ${{ secrets.RELEASE_CONFIG_JSON }}
           PEER_CONFIG_JSON: ${{ secrets.PEER_CONFIG_JSON }}
           RELEASE_SECRET_INVENTORY_JSON: ${{ secrets.RELEASE_SECRET_INVENTORY_JSON }}
@@ -88,7 +101,7 @@ jobs:
           printf '%s' "$RELEASE_OPERATIONS_JSON" > "$scratch/operations.json"
           config_sha="$(sha256sum "$config" | cut -d " " -f1)"
           node scripts/release-preflight.mjs \
-            --environment "$TARGET_ENVIRONMENT" --profile manual \
+            --environment "$TARGET_ENVIRONMENT" --profile "$RELEASE_PROFILE" \
             --build-sha "$GITHUB_SHA" \
             --config "$config" --peer-config "$scratch/peer.json" \
             --secret-inventory "$scratch/secrets.json" \
@@ -99,6 +112,7 @@ jobs:
         id: gate
         env:
           TARGET_ENVIRONMENT: ${{ inputs.target_environment }}
+          RELEASE_PROFILE: ${{ inputs.release_profile }}
           EXPECTED_CONFIG_SHA: ${{ steps.candidate.outputs.config_sha }}
           BOOTSTRAP_STAGING: ${{ inputs.bootstrap_staging }}
           EXPECTED_ACTIVE_VERSION_ID: ${{ inputs.expected_active_version_id }}
@@ -117,7 +131,7 @@ jobs:
           # The only producer of an approved manifest performs live authenticated
           # Cloudflare + exact-main CI reads inside the approved Environment.
           node scripts/release-authorization.mjs \
-              --environment "$TARGET_ENVIRONMENT" --profile manual \
+              --environment "$TARGET_ENVIRONMENT" --profile "$RELEASE_PROFILE" \
               --build-sha "$GITHUB_SHA" --config "$config" \
               --peer-config "$scratch/peer.json" \
               --secret-inventory "$scratch/secrets.json" \
@@ -126,12 +140,14 @@ jobs:
               --bootstrap-staging "$BOOTSTRAP_STAGING" \
               --expected-active-version-id "$EXPECTED_ACTIVE_VERSION_ID" > "$scratch/approval.txt"
           node scripts/require-release-approval.mjs \
-            "$TARGET_ENVIRONMENT" "$GITHUB_SHA" "$EXPECTED_CONFIG_SHA" \
+            "$TARGET_ENVIRONMENT" "$GITHUB_SHA" "$EXPECTED_CONFIG_SHA" "$RELEASE_PROFILE" \
             < "$scratch/approval.txt"
           printf 'approved=true\nconfig_sha=%s\n' "$EXPECTED_CONFIG_SHA" >> "$GITHUB_OUTPUT"
       - name: Publish only the same independently approved config bytes
         if: steps.gate.outputs.approved == 'true'
         env:
+          TARGET_ENVIRONMENT: ${{ inputs.target_environment }}
+          RELEASE_PROFILE: ${{ inputs.release_profile }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_READ_TOKEN: ${{ secrets.CLOUDFLARE_READ_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -146,6 +162,12 @@ jobs:
           test -n "$CLOUDFLARE_ACCOUNT_ID"
           [[ "$EXPECTED_CONFIG_SHA" =~ ^[a-f0-9]{64}$ ]]
           [[ "$(sha256sum "$config" | cut -d " " -f1)" == "$EXPECTED_CONFIG_SHA" ]]
+          scratch="$RUNNER_TEMP/agent-table-release-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          # Recheck the private window immediately before the write, including
+          # when an earlier step completed shortly before its expiry.
+          node scripts/require-release-approval.mjs \
+            "$TARGET_ENVIRONMENT" "$GITHUB_SHA" "$EXPECTED_CONFIG_SHA" "$RELEASE_PROFILE" \
+            < "$scratch/approval.txt"
           # Recheck the latest main head immediately before any write.
           node --input-type=module -e '
             import { githubReader, verifyCurrentMainHead } from "./scripts/release-authorization.mjs";

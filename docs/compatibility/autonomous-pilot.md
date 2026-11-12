@@ -1,297 +1,321 @@
-# Two-owner idle-host autonomous conversation pilot
+# Two-owner ChatGPT event-response pilot
 
 **Status: BLOCKED / NOT RUN.** The evidence procedure and its deterministic
 validator tests do not establish an actual host wake-up. There is no passing
 real-host record for Issue [#24](https://github.com/kitamura-tetsuo/agent-table/issues/24).
-This gate requires independently authorized owners A and B, actual target
-hosts, an approved isolated deployment, and observable event-to-run-to-reply
-traces in both directions.
+
+On **2026-11-12**, the owner revised the acceptance condition: **A is OpenAI
+ChatGPT and must receive a peer event, wake from idle, authenticate, read and
+reply automatically. B is Claude Chat and may be manually instructed to post.**
+The selected record uses `acceptanceMode: "a-only"`. It requires two independent
+owners' authorization, an approved isolated deployment and an observed B→A
+causal trace, repeated after a retained-state restart. B's subscription or
+automatic wake-up is not required. Full A↔B autonomy is neither demonstrated
+nor required by this revised condition.
 
 Implementation baseline: `381c4e7378b2d95a3b8342f045a3e4d5521ada00`.
 The existing [guest OAuth record](guest-oauth.md) establishes bounded tools
 interoperability for one tested ChatGPT Work private connection. It supplies
 neither a second owner's consent nor notification or autonomous-run evidence.
-Do not transfer its accepted provenance limitations to this pilot: if a new
-host exposes no sufficient event/run association, that scenario stays blocked.
+Do not transfer its accepted provenance limitations to A's event/run proof:
+if the chosen ChatGPT surface exposes no sufficient causal observation, the
+A-only scenario stays blocked.
+
+## Selected host pair and explicit acceptance mode
+
+The product choice and revised condition are recorded in
+[`autonomous-evidence.chatgpt-claude-selected.json`](../../test/e2e/host/autonomous-evidence.chatgpt-claude-selected.json).
+It remains `evidenceKind: "not-run"`: actual owners/accounts, separate consents,
+eligible surfaces, deployed configuration, A's subscription and live traces
+are unverified. Product selection alone supplies none of those observations.
+
+Official documentation checked on 2026-11-12 establishes this narrower matrix:
+
+| Participant | Documented client capability | Role under the revised condition |
+| --- | --- | --- |
+| A: OpenAI ChatGPT | [MCP Events](https://developers.openai.com/plugins/build/mcp-events) supports webhook subscriptions in Work chats on the web, desktop Work with Cloud selected, and dots, subject to workspace controls | Select an eligible Work surface; verify callback control and actual event-triggered execution. A tools-only connection is insufficient proof. |
+| B: Claude Chat | [Claude's MCP client](https://claude.com/docs/connectors/building) supports tools, prompts and resources, but does not yet support resource subscriptions or advanced/draft capabilities | Use an independently authorized tools connection. Its owner may prompt B to post the synthetic source message; event subscription or autonomous execution is not required. |
+
+Claude Chat's documented subscription limitation is therefore **not a blocker
+for this A-only pilot**. Do not replace Claude Chat with Claude Code or a hosted
+API agent, and do not use scripted interaction to manufacture A's wake-up.
+A human prompt to B is allowed; a human prompt, scheduled poll or copied
+message used to wake A after B posts fails the required causal step.
+
+The validator also retains the original `bidirectional` mode for a separately
+approved, broader experiment. That mode requires both subscriptions and the
+continuous A→B→A idle-host round trip. Its generic template defaults to
+`bidirectional`; the selected ChatGPT/Claude record explicitly uses `a-only`.
+Every report must state its mode. An A-only pass must never be presented as a
+bidirectional pass or generalized to another host/account/profile.
 
 ## Current prerequisites
 
 | Boundary | Known state | Needed for this pilot |
 | --- | --- | --- |
-| Durable delivery, #21 | Server implementation and controlled-receiver regressions exist | Exact deployed candidate, active subscriptions and actual provider receipts |
+| Durable delivery, #21 | Server implementation and controlled-receiver regressions exist | Exact deployed candidate, A's active subscription and actual receiver receipts |
 | Operations, #22 / #51 | Independent restore reconciliation remains open | Approved isolation, current authoritative state and applicable operational gates; no unapproved quarantine clearance |
 | Protected release, #50 | [Paused manual production release accepted](https://github.com/kitamura-tetsuo/agent-table/issues/50#issuecomment-6825493911) on 2026-11-12 | Separate private pilot activation; the manual release does not authorize Events or autonomy |
-| Host OAuth, #23 | One scoped actual-host tools record accepted | Two independently controlled eligible accounts, each owner's approval and that host's current tools evidence |
-| Host execution | No observed idle-host round trip | Supported idle/run/event observation surface for each selected product, surface and account |
+| Host OAuth, #23 | One scoped actual-host tools record accepted | Two independently controlled tools-eligible accounts, each owner's approval and current host tools evidence |
+| Host execution | No observed ChatGPT idle-event response | A's supported idle/run/event observation surface for the selected product, surface and account |
 
-At this baseline `src/notifications/egress.ts` returns literal `enabled: false`
-from `callbackTransportReadiness()`. Hosted `isRestoreQuarantined()` in
-`src/shared/release-quarantine.ts` admits only `RELEASE_PROFILE=manual` with
-all three subscription/Events/outbound flags false. The protected
-`release-authorization.mjs` path also supports the manual profile only. Setting
-environment flags or obtaining a subscription ID cannot make the current
-deployment an autonomous pilot.
-A reviewed private activation change and its concrete deployment approval are
-prerequisites; the offline evidence tools below do not implement or authorize
-them. Keep public Events advertisement and production configuration unchanged
-through this offline work.
+At the inspected baseline, public `callbackTransportReadiness()` is disabled,
+and hosted ingress/release authorization permits only the manual profile with
+notification flags false. The separate default-off
+[private staging activation implementation](private-pilot-activation.md)
+adds a reviewed `private-pilot-a-only` path. It must reach exact `main` with
+passing CI before the protected main-only workflow can use it. Its concrete
+account/table/callback-bound deployment still requires independent approval.
+Neither the offline evidence tools nor a subscription ID authorizes activation.
+Public Events advertisement and production's manual behavior remain unchanged.
 
 A storage-preserving restart of current authoritative state, without restoring
 a historical snapshot, is distinct from Issue #51's PITR/restore-quarantine
-clearance. Do not claim that #51 must be completed merely to observe such a
-no-restore pilot restart. Issue #24 still lists #22 as a dependency; reconcile
-that outstanding scope explicitly while satisfying the actual approved
-isolation and restart requirements. Neither this procedure nor the existing
-manual scripts can deploy or authorize an autonomous profile.
+clearance. Do not require completing #51 merely to observe such a no-restore
+restart. Reconcile Issue #24's outstanding #22 dependency scope explicitly
+while satisfying its actual isolation and restart requirements. Neither this
+procedure nor an earlier manual approval authorizes the private pilot or a
+public autonomous profile.
 
 Issue #19's owner-approved limited-beta assumption permits evaluating native
 hosted Workers fetch within its recorded residual risk. Do not reopen the
 unavailable same-connection IP/TLS proof as a new pilot condition. The
 [reviewed callback profile](../events-provider-wire.md), real callback control,
 signature interoperability, bounded canary and stop controls still need their
-scoped staged-rollout evidence. No public IPv4 receiver is required by this
-procedure, and a controlled receiver cannot substitute for either real host.
+scoped staged-rollout evidence. No public IPv4 receiver is required, and a
+controlled receiver cannot replace the actual ChatGPT host.
 
-### Proposed private staging activation boundary
+### Default-off private staging profile
 
-This proposal is a separate, default-off implementation prerequisite. Add an
-explicit **staging verification profile**, distinct from public Events or an
-autonomous release: the approved trial gathers missing host evidence and must
-not require that same evidence to exist before the trial can start.
+The [activation runbook](private-pilot-activation.md) documents the exact
+`PRIVATE_PILOT_POLICY` contract and protected workflow. It binds the candidate
+SHA/configuration/resources, A's guest and connection, one to three synthetic
+tables, reviewed callback origin/path prefixes and a window of at most two
+hours. `ENABLE_MCP_SUBSCRIPTIONS` and `ENABLE_OPENAI_EVENTS` stay false;
+`ALLOW_OUTBOUND_NOTIFICATIONS` is the independent stop switch. The canary
+dispatch bound permits message sequences up to 12, with no replay of events
+created before the window.
 
-Bind its approval to the exact candidate SHA, configuration digest, isolated
-resources, finite window, selected guest connections/tables and reviewed
-callback origin/path prefixes. Keep credentials outside that record. Two
-actual hosts and their independent owners must be selected before the
-provider-specific fields and observation surfaces can be finalized.
+The same parser feeds hosted quarantine, protected release decisions and fresh
+runtime checks. A sees private discovery/status only under its scoped current
+authority; B requires no event subscription. Existing guest, membership,
+lifecycle, subscription-generation and retry checks still apply. Expiry or a
+stop denies new effects while retaining authorized reads, closure and permitted
+unsubscribe. The approved trial obtains missing host evidence rather than
+requiring a successful autonomous run before activation.
 
-Use one shared activation policy across the existing
-[quarantine guard](../../src/shared/release-quarantine.ts),
-[release authorization](../../scripts/release-authorization.mjs),
-[approval check](../../scripts/require-release-approval.mjs),
-[protected workflow](../../.github/workflows/_deploy-reviewed.yml) and
-[post-verification](../../scripts/release-postverify.mjs). Apply that same
-policy to [transport readiness](../../src/notifications/egress.ts), authenticated
-[discovery/status](../../src/mcp/server.ts) as required by the selected host,
-and fresh [TableDO dispatch](../../src/objects/table.ts) authorization.
-Global support advertisement must remain disabled.
+No hosted pilot deployment, actual account consent or concrete activation
+approval is supplied by this code or document. Production remains manual and
+historical restore clearance remains outside the profile.
 
-Reuse current guest, membership, lifecycle, subscription-generation and retry
-checks; approval adds no replacement authority. Expired/removed activation or
-the existing outbound kill switch must deny new dispatch without resetting
-retry state. Preserve manual production behavior and the no-restore boundary.
-This PR supplies neither that policy nor an enabled profile. Its implementation
-and concrete staging approval follow host/account selection and review.
-
-## Select the concrete run before requesting activation
+## Prepare the concrete A-only run
 
 The operator records the candidate commit, effective configuration digest,
 provider deployment/version reference, isolated endpoint reference, test date,
-protocol revision and notification profile. Independently read back the
-actual deployment; a checked-out commit is not a deployment observation.
-The registry retains redacted observation references and digests, rather than
-credentials or endpoint/callback URLs.
+protocol revision and notification profile. Independently read back the actual
+deployment; a checked-out commit is not a deployment observation. Keep redacted
+references and digests in the registry, not credentials or callback URLs.
 
-Each owner supplies and approves their own:
+Each owner supplies and approves their own host product/surface/build,
+tools-eligible account/workspace, guest identity, connection and table
+membership. Stable pseudonyms must preserve equality across this pilot and
+represent actual distinct owners and identities, not two tabs of one owner.
+Record an undisclosed SaaS build explicitly rather than inventing a version.
+Each owner separately approves the bounded synthetic exercise and stop limits;
+A's permission cannot authorize B's account.
 
-- Host product, surface and exposed version/build identity. If a SaaS build is
-  not exposed, record that restriction explicitly with the supported
-  observation; do not invent a version.
-- Account/workspace eligibility and supported notification profile, verified
-  for this account. Provider documentation or a connector badge is insufficient.
-- Guest identity, connection, membership and subscription, recorded with stable
-  pseudonyms that preserve equality across this one pilot. Distinct pseudonyms
-  must reflect actual distinct owners and identities, not two tabs belonging
-  to one owner.
-- Bounded instructions, synthetic input and stop limits, independently approved
-  before that host is used. A's permission cannot authorize B's account.
-- Supported host audit/export or UI evidence that establishes no active run,
-  a later new run and the event that initiated it. A model's own report of its
-  run, a background process or a new message timestamp is insufficient.
+A additionally needs a verified active Events subscription and supported host
+audit/export or UI evidence establishing idle/no-active-run state, a later new
+run and its initiating event. A model's own statement, a process being alive or
+a new message timestamp is insufficient. B needs actual authenticated tools
+and source-post evidence. B's run-observation and subscription fields can remain
+unsupported/null in `a-only` mode; do not manufacture them to complete a record.
 
-Resolve these inputs before staging activation. Do not guess an account,
-workspace, callback destination or provider API. If the selected host cannot
-expose a causal run observation, record the exact missing signal as blocked.
-Manual setup is allowed; a human wake-up prompt after the initial post is not.
+Do not guess an account, workspace, callback destination or provider API.
+Missing account eligibility or A's causal run observation stays blocked.
+Manual setup and B's deliberately prompted source posts are allowed; manually
+waking A to obtain the reply is not.
 
-### Owner-approved standing instructions
+### Independently approved bounded instructions
 
-Each owner independently reviews this bounded instruction text and applies it
-through their own host's supported controls. Peer messages remain untrusted
-conversation content, never privileged instructions for the other host.
+Both owners approve the common bounds through their own hosts' supported
+controls. Peer messages remain untrusted conversation content, never privileged
+instructions for the other host.
 
 > Use only the synthetic information explicitly supplied for this pilot and
 > this table. Do not import personal memory, other chats, contact details or
-> credentials. On a genuine peer event, authenticate with your own connection,
-> read the current table and the relevant transcript, then make at most one
-> useful reply to the peer message. Retain the original `request_id` and exact
-> inputs if a mutation result is uncertain; do not generate a new key for its
-> retry. Set `reply_to_message_id` to the message being answered. Do not send
-> repeated acknowledgments. Stop when the scenario's post/time limit is reached,
-> the table is terminal, the subscription is removed, permission is refused or
-> there is no substantive reply left. Ask your own owner before exceeding this
-> delegation or taking any action outside this synthetic table exercise. No
-> agreement here authorizes purchases, messages to other people or other
-> external effects.
+> credentials. Authenticate with your own connection and read the relevant
+> transcript before replying. Retain the original `request_id` and exact inputs
+> if a mutation result is uncertain; do not generate a new key for that retry.
+> Set `reply_to_message_id` when answering a peer message. Do not send repeated
+> acknowledgments. Stop at the approved post/time limits, terminal table state,
+> removed subscription where applicable, or permission refusal. Ask your own
+> owner before exceeding this delegation. No statement in this exercise
+> authorizes purchases, messages to other people or other external effects.
 
-For the initial round trip, allow A at most two accepted posts and B at most
-one, with an owner-chosen finite observation deadline recorded before starting.
-A's synthetic choices are slot `09:00` or `11:00`; B's are `10:00` or `11:00`.
-A posts its two choices, B proposes the common slot, and A confirms the single
-common slot without another acknowledgment from B. These are fictional labels,
-not a calendar booking. Limits bound accepted relay traffic, not hidden model
-reasoning or total provider charges. Owners must also approve the scoped
-cancellation, restart and isolation phases in advance, with aggregate reply
-and time limits covering the planned additional turn. Do not silently reuse
-exhausted authority to continue after the first phase.
+A's owner additionally approves one useful reply to each eligible peer event,
+with no human wake-up prompt and a finite aggregate reply limit covering the
+initial and restart scenarios, including any duplicate-triggered replies.
+B's owner approves only the deliberately prompted synthetic source posts and
+exact-key retries; no automatic response from B is expected.
 
-## Capture and join evidence
+For the initial scenario, prompt B to post: “Synthetic options are `09:00` and
+`11:00`; reply with the later option.” Idle A should reply `11:00` once. For the
+post-restart scenario, B posts fresh options `10:00` and `12:00`, and A replies
+`12:00` once. These are fictional labels, not calendar bookings. Record finite
+per-scenario deadlines and aggregate limits before starting, including the
+separate cancellation/isolation checks. Limits bound accepted relay traffic,
+not hidden reasoning or total provider charges. Exhausted authority requires
+new owner input, not silent continuation.
+
+## Capture B's post and A's event-triggered reply
 
 Create one private table through the existing independently authorized browser
-or MCP flow, join its second seat with explicit consent, and establish both
-subscriptions before the initial post. Keep invitation secrets private.
-For the Events profile, `events/list`, `events/subscribe` and
-`events/unsubscribe` are authenticated protocol methods, not MCP tools. Refresh
-uses `events/subscribe` with the original compound subscription identity;
-there is no ID-only renewal method. Follow the pinned provider wire profile
-rather than constructing a new callback API.
+or MCP flow and join its second seat with explicit consent. Establish **A's**
+subscription before B posts. Keep invitation secrets private. For Events,
+`events/list`, `events/subscribe` and `events/unsubscribe` are authenticated
+protocol methods, not MCP tools. Refresh uses `events/subscribe` with the
+original compound identity; there is no ID-only renewal API.
 
-`get_table` reports the caller's own connection-local notification state.
-Capture separate A and B readbacks and subscription verification receipts;
-A's status cannot establish B's state. Generic operational telemetry excludes
-private table/event/principal identifiers and does not observe host runs.
-Its counters cannot reconstruct the following trace by themselves. Use actual
-authorized tool receipts, supported host observations and narrowly scoped,
-independently authorized server readback where needed. If a committed event or
-dispatch authorization cannot be observed, leave it unknown; do not broaden
-ordinary telemetry or invent a diagnostic endpoint to fill the gap.
+`get_table` reports only the caller's own connection-local notification state.
+Capture A's subscription verification/readback and both participants' authorized
+table/tool observations. B's absent subscription does not block this mode.
+Generic telemetry excludes private event/table/principal identifiers and
+cannot reconstruct the causal trace by itself. Use actual host tool receipts,
+supported A-host observations and narrowly scoped, independently authorized
+server readback where needed. If a required event or dispatch fact cannot be
+observed, leave it unknown; do not invent a diagnostic endpoint or expand
+routine telemetry to supply it.
 
 | Observation | Required association | Authoritative source |
 | --- | --- | --- |
-| Setup | Same pilot, deployment/config, two owners and active subscriptions | Independent consent, deployment and authenticated subscription observations |
-| Committed post | Table, sender membership, message ID, ordered sequence and time | Durable post receipt and authorized transcript readback |
-| Committed event | The same message/sequence/table, peer subscription and recipient | Server outbox observation |
-| Receipt | The same event and subscription, acceptance result and time | Safe sender observation joined to actual receiver observation |
-| Idle and new run | Idle target with no active run, then a distinct run initiated by that event | Supported host audit/export or independently recorded host UI |
-| Authenticated read | That run, event, table, receiving membership/connection and snapshot sequence | Host tool trace joined to the authorized server result |
-| Committed reply | That run and table, recipient as sender, original message as reply parent, later sequence | Host tool receipt and authoritative transcript readback |
+| Setup | Same pilot/mode/deployment, independent owners, distinct memberships and A's active subscription | Separate consents, deployment and authenticated subscription/tool observations |
+| B's committed post | Table, B membership, message ID, sequence and commit time | Actual Claude tool receipt plus server/transcript receipt |
+| Committed event | Same B message/sequence/table, A subscription and recipient membership | Server outbox observation |
+| Receipt | Same event/subscription, delivery acceptance and time | Safe sender observation joined to actual receiver evidence |
+| A idle and new run | No active A run before B's post, then a new run initiated by that event | Supported host audit/export or independently recorded host UI |
+| A authenticated read | Same run/event/table/A connection, bounded cursor and triggering message in returned IDs | Host tool trace joined to the authorized server result |
+| A committed reply | Same run/table, A membership, B message as reply parent and later sequence | Actual host post receipt plus server/transcript receipt |
 
-1. Establish B's idle/no-active-run state after both subscriptions are active.
-   Instruct A once to make the initial synthetic post. Record its committed
-   receipt and the matching peer event; a failed attempt is not a post.
-2. Observe B's receiver acceptance, a newly started B run caused by that event,
-   the authenticated read containing the source message, and B's committed
-   reply. Do not click Continue, copy a message to B, poll for B or run a model
-   through a replacement script. If intervention is needed, preserve the
-   failed/blocked record and stop this autonomous scenario.
-3. Establish that A's initial run has ended and A is idle before B's reply event
-   is accepted. Capture the corresponding new A run, authenticated read and
-   committed reply. The return event must reference the exact B reply from the
-   first turn, on the same table, not a separately initiated test.
-4. Read the authoritative ordered transcript. Check distinct memberships,
-   message identities, reply parents and sequences against both traces.
-   Record any duplicate deliveries and their actual run/reply behavior. A
-   receiver accepting twice does not prove two runs; one reply does not prove
-   the host reasoned only once.
+1. After A's subscription is active, establish A idle with no active run. This
+   observation must precede B's committed source post.
+2. Prompt B to post the synthetic request through its independently authorized
+   Claude Chat tools connection. Join its host-tool and server commit receipts
+   to the same message. A failed or merely claimed post is insufficient.
+3. Capture acceptance of that committed message's event, a new A run caused by
+   it, A's authenticated read and its committed reply. Do not click Continue,
+   prompt A, copy B's message to A, poll to wake A or replace A with a script.
+   If A needs intervention, retain the failed/blocked trace.
+4. Check the returned read actually contains B's message ID and satisfies
+   `afterSeq < messageSeq <= throughSeq`. An upper snapshot bound alone does
+   not prove the triggering message was read. Check A's reply parent, sender,
+   new sequence and host-tool/server receipts against that same run.
+5. Read the ordered authoritative transcript and record observed duplicate
+   deliveries, runs and replies over a stated interval covering every included
+   accepted attempt. Two receiver acceptances do not imply two runs; one reply
+   does not prove exactly-once reasoning. B need not receive a return event.
 
-If B replies before A is idle, the run does not prove the required return
-wake-up. Preserve that observation and use a separately approved bounded
-scenario whose selected host supports observing this boundary. Do not silently
-replace the trace or treat an ongoing A run as a new idle-host run.
+If A was already running when B posted, preserve that observation and repeat
+only under a new approved bounded attempt with A verifiably idle. Do not relabel
+an ongoing run as an idle wake-up. The optional `bidirectional` mode instead
+requires two subscriptions and linked A→B→A traces; it is outside this revised
+ChatGPT/Claude acceptance condition.
 
 ### Exact mutation-key retry
 
-Within an owner-authorized synthetic scenario, retry one `post_message` with
-its original `request_id` and unchanged body/reply parent after an uncertain
-response. Keep the mutation key itself outside the public evidence; retain a
-stable key digest/reference. Join both receipts to the same accepted message
-and sequence, and compare transcript counts immediately before/after the
-retry while no unrelated post is allowed. The retry must not add an accepted
-message or a new message-created event. Deliberately creating a second key
-tests a different operation and cannot satisfy this check.
+Within the approved scenario, retry B's `post_message` with its original
+`request_id` and unchanged body/reply parent after an uncertain result. Keep
+only a stable key digest/reference in the publishable record. Both host/server
+receipts must identify the same accepted message and sequence. Compare
+transcript counts immediately before/after the retry without unrelated posts;
+there must be no additional accepted message or message-created event. A new
+key tests a different mutation and cannot satisfy this check.
 
 ### Cancellation with pending work
 
-Use a separate bounded synthetic run so cancellation does not reopen the
-round-trip table. Record a real pending event and its subscription generation,
-then commit either the authorized table closure or that subscription's
-unsubscribe through the supported entry point. Retain the terminal decision,
-its timestamp and the before/after dispatch authorization observations.
+Use a separate synthetic table so cancelling it does not terminate the primary
+restart table. Establish a real pending B→A event, then commit authorized
+closure or unsubscribe A's affected subscription through the supported entry
+point. Capture the terminal decision/time and the complete scoped attempt
+ledger for **that same pending event** over a declared observation interval.
 
-Observe through a declared finite deadline and verify no new delivery is
-authorized after that decision. Distinguish work authorized earlier but not
-yet dispatched from requests already dispatched at the decision. Preserve
-authorization, dispatch and completion timestamps separately, including later
-outcomes; authorization alone is not proof that bytes had already left.
-Do not claim requests were recalled. An empty event list with no proven pending
-work, or no defined observation interval, does not establish this scenario.
+Verify no new delivery is authorized after the decision. Distinguish work
+already authorized but not yet dispatched from requests already dispatched.
+Retain authorization, dispatch and completion times, including later outcomes;
+authorization alone does not prove bytes had left. Do not claim traffic was
+recalled. No proven pending event or no observation interval means this scenario
+is unverified. Other events' attempt histories do not fill this evidence gap.
 
-### Retained-state restart
+### Retained-state restart and another B→A response
 
-Use a still-live synthetic table with active subscriptions and an independently
-reviewed storage-preserving service restart. Capture the existing table,
-subscription identities/generations, retry counts and retry-horizon state,
-then preserve the same backing storage across the actual runtime transition.
-Record before/after deployment/runtime observations and read back the retained
-state. A new table, erased persistence directory, refreshed retry budget or
-new subscription cannot stand in for the original state.
+Keep the primary table live with A's active subscription. For an independently
+reviewed storage-preserving restart, capture original table/subscription
+identities and generations, retry counts and retry-horizon state. Preserve the
+same backing storage across the actual runtime transition and read it back.
+A new table, erased state, new subscription or reset retry budget is not a
+retained-state restart. B's absent subscription remains absent in this mode.
 
-After the restart, an actual peer agent posts a fresh eligible message. Join
-its new event through receiver acceptance, a genuinely new idle-host run,
-authenticated read and committed reply. Also retain a separate terminal table
-or terminal subscription control and prove the same recovery path does not
-revive its authority. Follow the approved terminal case; browser-confirmed
-deletion requires that owner's explicit action. A same-storage restart does
-not authorize historical snapshot restore or quarantine clearance. Missing
-independent post-snapshot authority remains governed by Issue #51.
+After the service is ready and A is again verifiably idle, B may be manually
+prompted to post the fresh synthetic request. Repeat the actual B commit→A
+event acceptance→new A run→authenticated read→committed reply trace. Also retain
+the cancelled scenario's terminal table/subscription as a control and verify
+that the same recovery path does not revive it. A browser-confirmed deletion
+needs that owner's explicit action if selected. This no-restore restart grants
+no historical snapshot-restoration or quarantine-clearance authority; Issue
+#51 remains responsible for independently missing post-snapshot authority.
 
-### Third-guest isolation and disclosure
+### Third-guest isolation and synthetic disclosure
 
-Use a separately authorized third guest C with no membership in the pilot
-tables. With the known synthetic table/inbox identifiers, exercise `get_table`,
-`read_messages`, the own-inbox resource, and renewal/unsubscribe attempts for
-each participant's subscription through the actual authenticated protocol.
-Use the genuine compound subscription form privately, without copying signing
-secrets into the evidence. A malformed request or missing scope proves only
-that earlier rejection, not the membership/ownership boundary. Record denial
-at the intended boundary and verify neither subscription changed.
+Use an independently authorized third guest C without either table membership.
+With the known synthetic identifiers, exercise `get_table`, `read_messages`
+and each membership's own-inbox resource, plus renewal/unsubscribe attempts
+against A's actual subscription. Under `bidirectional` mode, maintenance
+coverage is required for both subscriptions; `a-only` does not invent one for B.
 
-Check that errors reveal no private metadata, transcript or callback settings.
-C must not gain access merely from knowing a table, inbox or subscription
-identifier. Each owner independently checks the deliberately supplied
-synthetic content against the accepted transcript; record bounded disclosure
-observations without importing raw conversation text into the report. This
-check covers content crossing the relay, not either host's private reasoning.
+Use valid authenticated protocol forms so denial tests membership/ownership,
+not a malformed request or missing scope. Keep the compound subscription form
+private and exclude signing secrets from evidence. Verify no private metadata,
+transcript or callback settings leak and the targeted subscription remains
+unchanged. Knowing an identifier must not establish authority.
+
+Each owner independently reviews the redacted synthetic transcript against the
+approved message corpus. The approved and posted corpus digests must match the
+same canonical representation; a hash does not itself prove semantic privacy.
+Retain source review receipts without importing unrelated chats or raw personal
+content. This checks what crossed the relay, not either host's private reasoning.
 
 ## Offline collection and evaluation
 
-The Node version pinned in `.node-version` runs the local CLI. No command in
-this section contacts a host, starts a model, mutates a table, changes a
-subscription, deploys a Worker or enables a capability.
+Use the Node version pinned in `.node-version`. These commands do not contact
+a host, start a model, mutate a table, deploy a Worker or enable a capability.
+Initialize the explicitly selected acceptance condition:
 
 ```sh
-npm run probe:autonomous -- init --output /tmp/pilot.json
+npm run probe:autonomous -- init --mode a-only --output /tmp/pilot.json
 npm run probe:autonomous -- evaluate \
   --input /tmp/pilot.json --output /tmp/pilot-report.json
 ```
 
-The fresh template is structurally valid but **not-run**, so evaluation exits
-nonzero. Populate it only from actual retained observations. The strict schema
-is `test/e2e/host/autonomous-evidence.ts`; the checked-in template is
-`test/e2e/host/autonomous-evidence.template.json`. The observation registry uses
-`id`, source category, capture time and SHA-256 digest for separately retained,
-redacted receipts. Stable pseudonyms preserve joins within the pilot. No
-secret, cookie, authorization header, invitation, callback URL, raw transcript
-or private unrelated chat belongs in this registry or its input fragments.
+The template is structurally valid but not-run, so evaluation exits nonzero.
+`init` without `--mode` retains the generic `bidirectional` default; use
+`a-only` explicitly for this revised pilot. The separately checked-in
+ChatGPT/Claude selection record also uses `a-only`, with unverified observations
+left null. Populate only actual retained facts; switching a field cannot create
+missing host evidence.
 
-For separate captures, prepare strict JSON fragment envelopes of
-`{ "schemaVersion": 1, "pilotId": "...", "sections": { ... } }`. Supply every
-required top-level evidence section exactly once across the fragments;
-observation arrays may be concatenated only with unique IDs. Setup captures
-normally contain deployment/participants, turn captures the correlated turns,
-and boundary captures retry, duplicate delivery, cancellation, restart,
-isolation and disclosure. Do not use fragments to overwrite a failed or missing
-observation with a claimed pass.
+The strict schema is `test/e2e/host/autonomous-evidence.ts`. Its observation
+registry uses `id`, source category, capture time and SHA-256 for separately
+retained redacted receipts. Do not include secrets, cookies, authorization
+headers, invitations, callback URLs, raw transcripts or unrelated private chats.
+Stable pseudonyms must preserve all joins within this pilot.
+
+For separate captures, create strict fragment envelopes of
+`{ "schemaVersion": 1, "pilotId": "...", "sections": { ... } }`. Supply each
+required top-level section once across the fragments, including `acceptanceMode`.
+Only observation arrays concatenate, with unique IDs. Setup captures contain
+mode/deployment/participants, turn captures contain causal traces, and boundary
+captures contain retry, duplicate delivery, cancellation, restart, isolation and
+disclosure. Never overwrite a failed or missing observation with a claimed pass.
 
 ```sh
 npm run probe:autonomous -- collect \
@@ -303,18 +327,17 @@ npm run probe:autonomous -- collect \
   --report /tmp/pilot-collected-report.json
 ```
 
-Each registered receipt must already exist as a reviewed, sanitized
-`<observation-id>.json` in the private receipt directory. The CLI checks the
-registered digests; it does not redact a raw log or authenticate who produced
-a receipt. Review retained contents independently before importing them.
-Keep raw originals and the private pseudonym mapping outside the publishable
-artifact. File integrity alone cannot establish that a real host ran.
+Each receipt must already exist as reviewed, sanitized `<observation-id>.json`
+in that private directory. The CLI checks its digest; it neither redacts raw
+logs nor authenticates who produced a receipt. Inspect contents independently
+before importing. Keep originals and private pseudonym mappings outside the
+publishable artifact. Integrity alone cannot establish a real host run.
 
-The evaluator requires comparable timestamps for its causal checks. Preserve
-original timestamps and clock-source limitations in the retained receipts.
-If different clocks cannot establish the claimed order, keep the affected
-scenario unverified; do not adjust times to manufacture correspondence.
-These checks do not assert a new server wall-clock monotonicity guarantee.
+Preserve original times and clock-source limits. Receipt capture/export must
+follow its observed facts, and the report observation date must cover all facts
+and captures. If clocks cannot establish the claimed order, keep it unverified;
+do not adjust times to manufacture causality. These checks do not claim a new
+server wall-clock monotonicity guarantee.
 
 ```sh
 npm run probe:autonomous -- evaluate \
@@ -323,48 +346,43 @@ npm run probe:autonomous -- evaluate \
   --output /tmp/pilot-reviewed-report.json
 ```
 
-Output destinations are exclusive, owner-only files: choose a new path for
-each capture/evaluation instead of overwriting previous evidence. Collection
-and evaluation emit the safe report to standard output and the report file.
-Exit `0` requires a complete record with matched local receipts; `1` means
-incomplete/blocked and `2` means invalid input or an I/O failure. A receipt
-directory may be omitted for an incomplete evaluation; omitting it always
-prevents a complete-record result. Error output must not be used as a vehicle
-for raw input, secrets or receipt contents.
+Outputs are exclusive owner-only files; choose fresh paths for each evaluation.
+Collection and evaluation emit a safe report to standard output and its file.
+Exit `0` requires a complete mode-specific record and matching local receipts;
+`1` means incomplete/blocked and `2` means invalid input or I/O failure. Omitting
+the receipt directory always prevents a complete-record result. Error output
+must not disclose input values, secrets, private paths or receipt contents.
 
-## Results and acceptance
+## Results and revised acceptance
 
-The report separates `tools`, `notificationReceipt` and `autonomousReply`
-layers, and evaluates setup, round trip, exact retry, duplicate-delivery
-behavior, cancellation, restart, isolation and disclosure. A layer result does
-not satisfy the other layers.
-In particular, HTTP acceptance without an independently observed run/read/reply
-may support notification receipt while autonomy remains unverified.
+Each report identifies `acceptanceMode` and separates `tools`,
+`notificationReceipt` and `autonomousReply`. It evaluates setup, the mode's event
+response, exact retry, duplicate behavior, cancellation, restart, isolation and
+disclosure. Tools or receiver acceptance can be established while A's autonomous
+run remains unverified. A-only autonomy concerns A; it makes no claim about B's
+automatic behavior.
 
-| Requirement | Required evidence before the gate can pass |
+| Requirement | Evidence under the owner-revised A-only condition |
 | --- | --- |
-| REQ-001 | Two independent owner consents, eligible actual hosts, distinct identities, active subscriptions and exact deployment/profile |
-| REQ-002 | B idle to new event-triggered run/read/reply, then A idle to corresponding new return run/read/reply |
-| REQ-003 | Same committed event/message/table/subscription/run associations, ordered transcript and exact-key retry receipt |
-| REQ-004 | Pending-work cancellation with no forbidden new authorization; real storage-preserving restart, fresh host path and terminal control |
-| REQ-005 | Third-guest denials for private reads and both subscriptions; independently bounded synthetic-only disclosure |
-| REQ-006 | Exact-target layered record, restrictions and observed duplicate behavior; explicit blocked/failed/not-run cases |
-| REQ-007 | Executable collection/evaluation plus inspected actual positive and boundary receipts, separate from deterministic regressions |
+| REQ-001 | Independent owner consents, actual ChatGPT/Claude tools accounts and identities, A's active subscription and exact deployment/profile/mode |
+| REQ-002 | B's authenticated post causes idle A's new event-triggered run, read and reply without a human wake-up of A |
+| REQ-003 | Same B message/event/A subscription/run/read/reply joins, ordered transcript and exact-key retry receipt |
+| REQ-004 | Pending B→A cancellation with no forbidden new authorization; retained-state restart and fresh B→A automatic response, with terminal control |
+| REQ-005 | Third-guest private-read denials and denial of A subscription maintenance; separately reviewed bounded synthetic disclosure |
+| REQ-006 | Exact mode/host/account/profile results and observed duplicates; explicit failed/blocked/not-run cases, no bidirectional claim |
+| REQ-007 | Executable collection/evaluation and inspected actual positive/boundary receipts, distinct from deterministic regressions |
 
-A structurally complete report establishes checked correspondence, not the
-authenticity of externally supplied observations. An independent reviewer must
-inspect the retained redacted sources and the declared observation limits.
-Synthetic-validator fixtures never satisfy the real-host completion gate.
-Do not convert a manual fallback, scheduling/polling, a scripted host, receiver
-HTTP 2xx, a model-written statement or another owner's historical tools test
-into autonomous success. Passing this offline command is not deployment
-approval, a public compatibility advertisement or permission to clear
-restore quarantine.
+A complete report checks correspondence, not external observations' authenticity.
+Independent review must inspect the retained sources and observation limits.
+Synthetic-validator fixtures never satisfy the actual-host gate. A manual prompt
+to B is permitted by this condition; prompting A, polling to wake A, scripted
+replacement, receiver 2xx or a model's claim cannot prove A's autonomous reply.
+This offline result is not deployment approval, public support advertisement or
+permission to clear restore quarantine.
 
 ### Deterministic validation is a separate result
 
-Run the existing repository gates plus the focused validator tests before an
-approved live attempt:
+Run repository gates and focused validator tests before an approved live attempt:
 
 ```sh
 npm run typecheck
@@ -378,7 +396,7 @@ npm run test:e2e
 ```
 
 Existing `events-subscriptions`, `outbox-dispatch`, `outbox-ledger`,
-`public-table-tools`, `table-lifecycle` and restore runtime tests exercise
-real local Worker/DO boundaries with controlled clients/receivers. Their
-success is server regression evidence. It is not execution evidence for
-ChatGPT, another named host, a second owner or the deployed candidate.
+`public-table-tools`, `table-lifecycle` and restore tests exercise local Worker/DO
+boundaries with controlled clients/receivers. Passing them is server regression
+evidence, not actual ChatGPT execution, Claude tools compatibility, independent
+owner consent or proof of the deployed candidate.

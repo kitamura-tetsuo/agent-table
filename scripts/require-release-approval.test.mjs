@@ -12,10 +12,11 @@ function inspect(
   environment = "staging",
   buildSha = sha,
   configDigest = configSha,
+  profile = "manual",
 ) {
   return spawnSync(
     process.execPath,
-    [gate.pathname, environment, buildSha, configDigest],
+    [gate.pathname, environment, buildSha, configDigest, profile],
     {
       input,
       encoding: "utf8",
@@ -94,6 +95,79 @@ test("release gate refuses a merely valid preflight, missing approval or mismatc
   ]) {
     assert.equal(inspect(input).status, 1);
   }
+});
+
+test("private gate binds the explicit staging profile and rechecks its finite send window", () => {
+  const current = Date.now();
+  const manifest = {
+    preflightValid: true,
+    deploymentApproved: true,
+    environment: "staging",
+    profile: "private-pilot-a-only",
+    buildSha: sha,
+    configSha256: configSha,
+    approvalSource: "protected-environment-and-live-provider-readback",
+    workflowRunId: "2345",
+    workflowRunAttempt: "1",
+    ciRunId: "1234",
+    providerReceiptSha256: "c".repeat(64),
+    providerReceipt: {
+      environment: "staging",
+      workerName: "agent-table-staging",
+    },
+    privatePilot: {
+      mode: "a-only",
+      policySha256: "d".repeat(64),
+      notBefore: new Date(current - 60_000).toISOString(),
+      expiresAt: new Date(current + 60_000).toISOString(),
+      deliveryEnabled: true,
+    },
+  };
+  const check = (
+    value,
+    environment = "staging",
+    profile = "private-pilot-a-only",
+  ) =>
+    inspect(
+      `RELEASE_APPROVAL_VALID ${JSON.stringify(value)}\n`,
+      environment,
+      sha,
+      configSha,
+      profile,
+    ).status;
+  assert.equal(check(manifest), 0);
+  assert.equal(check(manifest, "staging", "manual"), 1);
+  assert.equal(
+    check({ ...manifest, environment: "production" }, "production"),
+    1,
+  );
+  for (const change of [
+    { mode: "bidirectional" },
+    { policySha256: "bad" },
+    { notBefore: new Date(current + 30_000).toISOString() },
+    { expiresAt: new Date(current - 30_000).toISOString() },
+    { expiresAt: new Date(current + 3 * 60 * 60_000).toISOString() },
+    { deliveryEnabled: "false" },
+  ]) {
+    assert.equal(
+      check({
+        ...manifest,
+        privatePilot: { ...manifest.privatePilot, ...change },
+      }),
+      1,
+    );
+  }
+  assert.equal(
+    check({
+      ...manifest,
+      privatePilot: {
+        ...manifest.privatePilot,
+        expiresAt: new Date(current - 30_000).toISOString(),
+        deliveryEnabled: false,
+      },
+    }),
+    0,
+  );
 });
 
 test("current offline validator never manufactures a deployment approval", async () => {
@@ -189,6 +263,13 @@ test("release workflows remain explicit main-only manual dispatches with environ
   assert.match(shared, /sha256sum "\$config"/);
   assert.match(shared, /wrangler deploy --config "\$config"/);
   assert.match(shared, /verifyCurrentMainHead/);
+  assert.match(shared, /"\$RELEASE_PROFILE" == "private-pilot-a-only"/);
+  assert.match(shared, /"\$TARGET_ENVIRONMENT" == "staging"/);
+  assert.match(shared, /"\$BOOTSTRAP_STAGING" == "false"/);
+  assert.equal(
+    (shared.match(/node scripts\/require-release-approval\.mjs/g) ?? []).length,
+    2,
+  );
   assert.match(shared, /CLOUDFLARE_API_TOKEN/);
   assert.match(shared, /if: steps\.gate\.outputs\.approved == 'true'/);
   assert.match(shared, /if: always\(\)/);

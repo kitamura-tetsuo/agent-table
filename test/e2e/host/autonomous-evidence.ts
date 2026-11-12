@@ -85,7 +85,7 @@ const delivery = z.strictObject({
 });
 const turn = z.strictObject({
   id: ref,
-  scenario: z.enum(["roundtrip", "restart"]),
+  scenario: z.enum(["event-response", "restart"]),
   sender: role,
   recipient: role,
   post: committedMessage,
@@ -152,7 +152,7 @@ const snapshot = z.strictObject({
   buildSha,
   configSha256: digest,
   retryStateSha256: digest,
-  subscriptionIds: z.tuple([ref, ref]),
+  subscriptionIds: z.array(ref).min(1).max(2),
   observedAt: time,
   observationRef: ref,
 });
@@ -166,6 +166,7 @@ const cancellationAttempt = z.strictObject({
 
 export const autonomousEvidenceSchema = z.strictObject({
   schemaVersion: z.literal(1),
+  acceptanceMode: z.enum(["a-only", "bidirectional"]),
   pilotId: ref,
   evidenceKind: z.enum(["not-run", "real-host", "synthetic-validator"]),
   observedAt: time.nullable(),
@@ -216,6 +217,8 @@ export const autonomousEvidenceSchema = z.strictObject({
   cancellation: z
     .strictObject({
       tableId: ref,
+      recipient: role,
+      recipientGuestId: ref,
       action: z.enum(["close", "unsubscribe"]),
       subscriptionId: ref,
       pendingEventId: ref,
@@ -273,7 +276,7 @@ export const autonomousEvidenceSchema = z.strictObject({
         outsiderConnectionId: ref,
         tableId: ref,
         targetMembershipId: ref,
-        targetSubscriptionId: ref,
+        targetSubscriptionId: ref.nullable(),
         observedAt: time,
         outcome: z.enum(["denied", "allowed", "unknown"]),
         privateDataReturned: z.boolean(),
@@ -300,7 +303,7 @@ export type AutonomousObservation = z.infer<typeof autonomousObservationSchema>;
 export type EvidenceStatus = "not-run" | "blocked" | "failed" | "passed";
 export const AUTONOMOUS_SCENARIOS = [
   "setup",
-  "roundTrip",
+  "eventResponse",
   "exactRetry",
   "duplicateDelivery",
   "cancellation",
@@ -310,6 +313,7 @@ export const AUTONOMOUS_SCENARIOS = [
 ] as const;
 type Scenario = (typeof AUTONOMOUS_SCENARIOS)[number];
 export interface AutonomousEvidenceResult {
+  acceptanceMode: AutonomousEvidence["acceptanceMode"] | null;
   structurallyValid: boolean;
   completeRecord: boolean;
   missing: string[];
@@ -353,6 +357,7 @@ export function evaluateAutonomousEvidence(
   if (!parsed.success) {
     // Even unknown field names can contain secrets; never echo schema input.
     return {
+      acceptanceMode: null,
       structurallyValid: false,
       completeRecord: false,
       missing: [
@@ -478,6 +483,8 @@ export function evaluateAutonomousEvidence(
     "deployed build/configuration receipt",
   );
   const [a, b] = record.participants;
+  const requiredReceivers = record.acceptanceMode === "a-only" ? [a] : [a, b];
+  const expectedResponseTurns = record.acceptanceMode === "a-only" ? 1 : 2;
   check(
     "setup",
     a.role === "A" && b.role === "B",
@@ -489,7 +496,6 @@ export function evaluateAutonomousEvidence(
     "guestId",
     "connectionId",
     "membershipId",
-    "subscriptionId",
   ] as const) {
     check(
       "setup",
@@ -501,6 +507,12 @@ export function evaluateAutonomousEvidence(
     "setup",
     a.consent.observationRef !== b.consent.observationRef,
     "separate owner consent receipts",
+  );
+  check(
+    "setup",
+    requiredReceivers.every((person) => person.subscriptionId !== null) &&
+      unique(requiredReceivers.map((person) => person.subscriptionId)),
+    "distinct active subscriptions for the mode's required receivers",
   );
   for (const person of record.participants) {
     check(
@@ -517,11 +529,12 @@ export function evaluateAutonomousEvidence(
         knownBuild(person.host.exposedBuild),
       "exact host identity or explicit not-exposed-in-tested-host build marker",
     );
-    check(
-      "setup",
-      person.host.runObservation !== "unsupported",
-      "supported independent host idle/run observation surface",
-    );
+    if (requiredReceivers.includes(person))
+      check(
+        "setup",
+        person.host.runObservation !== "unsupported",
+        "supported independent idle/run observation surface for each required receiver",
+      );
     receipt(
       "setup",
       person.oauthEvidenceRef,
@@ -529,18 +542,20 @@ export function evaluateAutonomousEvidence(
       "actual-host guest OAuth/tool receipt for each participant",
     );
     const subscription = person.subscription;
-    check(
-      "setup",
-      subscription.tableId === record.tableId && subscription.activeAt,
-      "active subscriptions on the same primary table",
-    );
-    receipt(
-      "setup",
-      subscription.observationRef,
-      "server",
-      "active subscription authority receipt for each participant",
-      subscription.activeAt,
-    );
+    if (requiredReceivers.includes(person)) {
+      check(
+        "setup",
+        subscription.tableId === record.tableId && subscription.activeAt,
+        "active subscriptions on the same primary table",
+      );
+      receipt(
+        "setup",
+        subscription.observationRef,
+        "server",
+        "active subscription authority receipt for each participant",
+        subscription.activeAt,
+      );
+    }
     const consent = person.consent;
     check(
       "setup",
@@ -564,10 +579,24 @@ export function evaluateAutonomousEvidence(
         consent.askBeforeOutOfScope,
       "synthetic disclosure, read/retry/stop/authority and acknowledgment bounds",
     );
+    if (requiredReceivers.includes(person))
+      check(
+        "setup",
+        milliseconds(consent.approvedAt) <= milliseconds(subscription.activeAt),
+        "owner consent precedes active subscription",
+      );
+    const participantMessages = record.turns
+      .flatMap((item) => [item.post, ...(item.reply ? [item.reply] : [])])
+      .filter((message) => message.senderMembershipId === person.membershipId);
     check(
       "setup",
-      milliseconds(consent.approvedAt) <= milliseconds(subscription.activeAt),
-      "owner consent precedes active subscription",
+      consent.approvedAt !== null &&
+        participantMessages.every(
+          (message) =>
+            milliseconds(consent.approvedAt) <=
+            milliseconds(message.committedAt),
+        ),
+      "each owner's approval precedes their recorded posts and replies",
     );
   }
   check(
@@ -597,7 +626,7 @@ export function evaluateAutonomousEvidence(
   const mutationKeys = new Map<string, string>();
   let immutableMessagesValid = true;
   for (const item of record.turns) {
-    const scenario = item.scenario === "restart" ? "restart" : "roundTrip";
+    const scenario = item.scenario === "restart" ? "restart" : "eventResponse";
     for (const message of [item.post, ...(item.reply ? [item.reply] : [])]) {
       const immutable = JSON.stringify([
         message.tableId,
@@ -678,6 +707,12 @@ export function evaluateAutonomousEvidence(
     const { post, event } = item;
     check(
       scenario,
+      requiredReceivers.includes(recipient),
+      "event targets a receiver required by the explicit acceptance mode",
+      true,
+    );
+    check(
+      scenario,
       item.sender !== item.recipient,
       "peer membership rather than self-wakeup",
     );
@@ -703,12 +738,12 @@ export function evaluateAutonomousEvidence(
     );
     check(
       scenario,
-      record.participants.every(
+      requiredReceivers.every(
         (person) =>
           milliseconds(person.subscription.activeAt) <=
           milliseconds(post.committedAt),
       ),
-      "both subscriptions active before peer post",
+      "required receiver subscriptions active before peer post",
     );
     receipt(
       scenario,
@@ -874,43 +909,56 @@ export function evaluateAutonomousEvidence(
     return { notificationValid, autonomousValid: missing.length === start };
   };
 
-  const roundtrip = record.turns.filter(
-    (item) => item.scenario === "roundtrip",
+  const responses = record.turns.filter(
+    (item) => item.scenario === "event-response",
   );
   check(
-    "roundTrip",
-    roundtrip.length === 2,
-    "exactly two joined round-trip turns",
+    "eventResponse",
+    responses.length === expectedResponseTurns,
+    "exact event-response turn count for the explicit acceptance mode",
   );
-  const roundResults = roundtrip.map((item) => validateTurn(item, "roundTrip"));
-  const first = roundtrip.find(
-    (item) => item.sender === "A" && item.recipient === "B",
+  const responseResults = responses.map((item) =>
+    validateTurn(item, "eventResponse"),
   );
-  const back = roundtrip.find(
-    (item) => item.sender === "B" && item.recipient === "A",
-  );
-  const firstReply = first?.reply;
-  check(
-    "roundTrip",
-    first &&
-      back &&
-      firstReply &&
-      back.post.messageId === firstReply.messageId &&
-      back.post.seq === firstReply.seq &&
-      back.post.senderMembershipId === firstReply.senderMembershipId &&
-      back.post.mutationKeySha256 === firstReply.mutationKeySha256 &&
-      back.post.committedAt === firstReply.committedAt,
-    "B reply is the exact committed post causing the return A turn",
-  );
-  check(
-    "roundTrip",
-    first?.run &&
-      back?.run &&
-      first.run.runId !== back.run.runId &&
-      first.event.eventId !== back.event.eventId,
-    "distinct event-driven host runs in both directions",
-  );
-  finish("roundTrip", roundtrip.length > 0);
+  if (record.acceptanceMode === "bidirectional") {
+    const first = responses.find(
+      (item) => item.sender === "A" && item.recipient === "B",
+    );
+    const back = responses.find(
+      (item) => item.sender === "B" && item.recipient === "A",
+    );
+    const firstReply = first?.reply;
+    check(
+      "eventResponse",
+      first &&
+        back &&
+        firstReply &&
+        back.post.messageId === firstReply.messageId &&
+        back.post.seq === firstReply.seq &&
+        back.post.senderMembershipId === firstReply.senderMembershipId &&
+        back.post.mutationKeySha256 === firstReply.mutationKeySha256 &&
+        back.post.committedAt === firstReply.committedAt,
+      "B reply is the exact committed post causing the return A turn",
+    );
+    check(
+      "eventResponse",
+      first?.run &&
+        back?.run &&
+        first.run.runId !== back.run.runId &&
+        first.event.eventId !== back.event.eventId,
+      "distinct event-driven host runs in both directions",
+    );
+  } else {
+    check(
+      "eventResponse",
+      responses.length === 1 &&
+        responses[0].sender === "B" &&
+        responses[0].recipient === "A",
+      "A-only acceptance requires an actual B post followed by an event-driven A reply",
+      responses.length > 0,
+    );
+  }
+  finish("eventResponse", responses.length > 0);
 
   const retry = record.retry;
   check("exactRetry", retry !== null, "observed exact mutation-key retry");
@@ -1043,6 +1091,14 @@ export function evaluateAutonomousEvidence(
     "pending-work closure or unsubscribe exercise",
   );
   if (cancellation) {
+    const cancellationRecipient = cancellation.recipient === "A" ? a : b;
+    check(
+      "cancellation",
+      requiredReceivers.includes(cancellationRecipient) &&
+        cancellation.recipientGuestId === cancellationRecipient.guestId,
+      "cancellation targets the independently authorized guest of a required receiver",
+      true,
+    );
     const decision = milliseconds(cancellation.decisionAt);
     check(
       "cancellation",
@@ -1142,12 +1198,16 @@ export function evaluateAutonomousEvidence(
         after.configSha256 === deployment.configSha256,
       "same pinned build/configuration across service restart",
     );
-    const originalSubscriptions = [a.subscriptionId, b.subscriptionId];
+    const originalSubscriptions = requiredReceivers.map(
+      (person) => person.subscriptionId,
+    );
     check(
       "restart",
-      before.subscriptionIds.every(
-        (id, i) => id === originalSubscriptions[i],
-      ) &&
+      before.subscriptionIds.length === originalSubscriptions.length &&
+        after.subscriptionIds.length === originalSubscriptions.length &&
+        before.subscriptionIds.every(
+          (id, i) => id === originalSubscriptions[i],
+        ) &&
         after.subscriptionIds.every((id, i) => id === originalSubscriptions[i]),
       "original active subscriptions survive without replacement",
     );
@@ -1182,7 +1242,7 @@ export function evaluateAutonomousEvidence(
     const resumed = record.turns.find(
       (item) => item.id === restart.newTurnId && item.scenario === "restart",
     );
-    const previousMessages = roundtrip.flatMap((item) => [
+    const previousMessages = responses.flatMap((item) => [
       item.post,
       ...(item.reply ? [item.reply] : []),
     ]);
@@ -1197,7 +1257,7 @@ export function evaluateAutonomousEvidence(
             milliseconds(message.committedAt) <=
               milliseconds(resumed.post.committedAt),
         ),
-      "one genuinely new post and ordered sequence after the round trip",
+      "one genuinely new post and ordered sequence after the event-response phase",
       resumed !== undefined,
     );
     check(
@@ -1244,6 +1304,11 @@ export function evaluateAutonomousEvidence(
   ] as const;
   for (const person of record.participants) {
     for (const action of isolationActions) {
+      if (
+        (action === "renew-subscription" || action === "unsubscribe") &&
+        !requiredReceivers.includes(person)
+      )
+        continue;
       check(
         "isolation",
         record.isolation.some(
@@ -1252,7 +1317,7 @@ export function evaluateAutonomousEvidence(
             item.targetMembershipId === person.membershipId &&
             item.targetSubscriptionId === person.subscriptionId,
         ),
-        "third-guest read and subscription-maintenance coverage for both memberships",
+        "third-guest private-read coverage for both memberships and subscription maintenance for required receivers",
       );
     }
   }
@@ -1377,7 +1442,7 @@ export function evaluateAutonomousEvidence(
       ),
     ) &&
     record.tableId &&
-    record.participants.every(
+    requiredReceivers.every(
       (person) =>
         person.subscription.tableId === record.tableId &&
         person.subscription.activeAt &&
@@ -1391,21 +1456,22 @@ export function evaluateAutonomousEvidence(
       : "blocked";
   layers.notificationReceipt =
     notificationPrerequisite &&
-    roundResults.length === 2 &&
-    roundResults.every((item) => item.notificationValid)
+    responseResults.length === expectedResponseTurns &&
+    responseResults.every((item) => item.notificationValid)
       ? "passed"
-      : roundtrip.length
+      : responses.length
         ? "blocked"
         : "not-run";
   layers.autonomousReply =
-    prerequisite && scenarios.roundTrip === "passed"
+    prerequisite && scenarios.eventResponse === "passed"
       ? "passed"
-      : scenarios.roundTrip === "failed"
+      : scenarios.eventResponse === "failed"
         ? "failed"
-        : roundtrip.length
+        : responses.length
           ? "blocked"
           : "not-run";
   return {
+    acceptanceMode: record.acceptanceMode,
     structurallyValid: true,
     completeRecord: actual && missing.length === 0,
     missing: [...new Set(missing)],

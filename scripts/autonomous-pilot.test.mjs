@@ -63,6 +63,56 @@ test("initialization writes a private not-run record and refuses to overwrite it
   assert.equal(readFileSync(output, "utf8"), original);
 });
 
+test("initialization explicitly selects the required autonomous responders", () => {
+  for (const mode of ["a-only", "bidirectional"]) {
+    const output = join(workspace(), "candidate.json");
+    const result = run("init", "--mode", mode, "--output", output);
+    assert.equal(result.status, 0);
+    const record = JSON.parse(readFileSync(output, "utf8"));
+    assert.equal(record.acceptanceMode, mode);
+    assert.equal(record.evidenceKind, "not-run");
+    assert.equal(JSON.parse(result.stdout).acceptanceMode, mode);
+    const report = buildPilotReport(record);
+    assert.equal(report.acceptanceMode, mode);
+    assert.equal(report.target.acceptanceMode, mode);
+    assert.deepEqual(
+      report.target.requiredAutonomousResponders,
+      mode === "a-only" ? ["A"] : ["A", "B"],
+    );
+    assert.equal(report.completeRecord, false);
+  }
+});
+
+test("CLI rejects unknown modes and cannot override the scope of collected evidence", () => {
+  const dir = workspace();
+  assert.equal(
+    run("init", "--mode", "either-host", "--output", join(dir, "bad.json"))
+      .status,
+    2,
+  );
+  assert.equal(
+    run(
+      "evaluate",
+      "--input",
+      fileURLToPath(templatePath),
+      "--mode",
+      "a-only",
+      "--output",
+      join(dir, "report.json"),
+    ).status,
+    2,
+  );
+  const sections = sectionsOf(freshTemplate());
+  assert.throws(
+    () =>
+      collectEvidenceFragments([
+        fragment(sections),
+        fragment({ acceptanceMode: "a-only" }),
+      ]),
+    /more than once/,
+  );
+});
+
 test("CLI reports the unrun pilot as incomplete and emits the same JSON to file and stdout", () => {
   const output = join(workspace(), "report.json");
   const result = run(
@@ -78,6 +128,7 @@ test("CLI reports the unrun pilot as incomplete and emits the same JSON to file 
   assert.equal(report.completeRecord, false);
   assert.equal(report.receiptIntegrity.status, "not-checked");
   assert.equal(report.target.pilotId, freshTemplate().pilotId);
+  assert.equal(report.target.acceptanceMode, "bidirectional");
   assert.deepEqual(
     report.target.participants[0].host,
     freshTemplate().participants[0].host,

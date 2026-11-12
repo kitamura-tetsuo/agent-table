@@ -1,3 +1,7 @@
+import {
+  activePrivatePilotPolicy,
+  PRIVATE_PILOT_PROFILE,
+} from "./private-pilot";
 import { isRestoreQuarantined } from "./release-quarantine";
 
 /** Bounded Worker ingress and independently controlled admission switches. */
@@ -34,7 +38,10 @@ export function allowNewTables(env: Env): boolean {
  */
 export function allowOutboundNotifications(env: Env): boolean {
   return (
-    !isRestoreQuarantined(env) && env.ALLOW_OUTBOUND_NOTIFICATIONS === "true"
+    !isRestoreQuarantined(env) &&
+    env.ALLOW_OUTBOUND_NOTIFICATIONS === "true" &&
+    (env.RELEASE_PROFILE !== PRIVATE_PILOT_PROFILE ||
+      !!activePrivatePilotPolicy(env))
   );
 }
 

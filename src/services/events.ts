@@ -7,6 +7,12 @@ import {
   verifyCallbackControl,
 } from "../notifications/openai-events";
 import type { VerifiedConnectionActor } from "../shared/auth";
+import {
+  activePrivatePilotPolicy,
+  PRIVATE_PILOT_PROFILE,
+  privatePilotConfiguration,
+  privatePilotRecipientMatches,
+} from "../shared/private-pilot";
 
 export type EventServiceFailure =
   | "invalid"
@@ -55,9 +61,17 @@ export async function subscribeEvent(
 > {
   const parsed = parseEventSubscriptionParams(input, "subscribe");
   if (!parsed) return { ok: false, reason: "invalid" };
-  const reviewed = reviewedCallbackTargets(
-    env.EVENTS_REVIEWED_CALLBACK_TARGETS,
-  );
+  const privateProfile = env.RELEASE_PROFILE === PRIVATE_PILOT_PROFILE;
+  const pilot = activePrivatePilotPolicy(env);
+  if (
+    privateProfile &&
+    (!pilot ||
+      !privatePilotRecipientMatches(pilot, actor, parsed.arguments.table_id))
+  )
+    return { ok: false, reason: "denied" };
+  const reviewed =
+    pilot?.callbackTargets ??
+    reviewedCallbackTargets(env.EVENTS_REVIEWED_CALLBACK_TARGETS);
   if (!validateReviewedCallbackDestination(parsed.delivery.url, reviewed).ok)
     return { ok: false, reason: "callback_destination_rejected" };
 
@@ -67,9 +81,31 @@ export async function subscribeEvent(
     );
     const candidate = await table.beginEventSubscription(actor, parsed);
     if (!candidate.ok) return failed(candidate.code);
+    let verificationTargets = reviewed;
+    if (privateProfile) {
+      // Reservation can outlive its approved window while the RPC is pending.
+      // Recheck before any verification bytes leave this Worker.
+      const currentPilot = activePrivatePilotPolicy(env);
+      if (
+        !currentPilot ||
+        !privatePilotRecipientMatches(
+          currentPilot,
+          actor,
+          parsed.arguments.table_id,
+        ) ||
+        !validateReviewedCallbackDestination(
+          parsed.delivery.url,
+          currentPilot.callbackTargets,
+        ).ok
+      ) {
+        await table.discardEventCandidate(actor, candidate.value.candidateId);
+        return { ok: false, reason: "denied" };
+      }
+      verificationTargets = currentPilot.callbackTargets;
+    }
     const checked = await verifyCallbackControl(
       parsed.delivery.url,
-      reviewed,
+      verificationTargets,
       parsed.delivery.secret as string,
       candidate.value.subscriptionId,
     );
@@ -110,6 +146,14 @@ export async function unsubscribeEvent(
 ): Promise<EventServiceResult<Record<string, never>>> {
   const parsed = parseEventSubscriptionParams(input, "unsubscribe");
   if (!parsed) return { ok: false, reason: "invalid" };
+  if (env.RELEASE_PROFILE === PRIVATE_PILOT_PROFILE) {
+    const policy = privatePilotConfiguration(env);
+    if (
+      !policy ||
+      !privatePilotRecipientMatches(policy, actor, parsed.arguments.table_id)
+    )
+      return { ok: false, reason: "denied" };
+  }
   try {
     const table = env.TABLES.get(
       env.TABLES.idFromName(parsed.arguments.table_id),
