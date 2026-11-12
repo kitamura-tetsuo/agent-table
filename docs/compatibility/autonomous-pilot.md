@@ -13,7 +13,7 @@ causal trace, repeated after a retained-state restart. B's subscription or
 automatic wake-up is not required. Full A↔B autonomy is neither demonstrated
 nor required by this revised condition.
 
-Implementation baseline: `f6095e9ffdd583c06b4210a2bc168bdbf6efa177`.
+Implementation baseline: `e04cd3bed158aa1bf400cb5b3bf9b927ecff21cb`.
 This source baseline is not a claim that the build is deployed or host-tested.
 The existing [guest OAuth record](guest-oauth.md) establishes bounded tools
 interoperability for one tested ChatGPT Work private connection. It supplies
