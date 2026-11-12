@@ -115,9 +115,12 @@ describe("authenticated own connection inspection", () => {
       const f = await connection();
       await runInDurableObject(f.guest, async (_instance, state) => {
         if (terminal === "expired") {
+          const expiredAt = Date.now() - 1;
+          // Keep a valid lifetime even when creation and expiry setup share a millisecond.
           state.storage.sql.exec(
-            "UPDATE guest_connections SET expires_at = ? WHERE connection_id = ?",
-            Date.now() - 1,
+            "UPDATE guest_connections SET created_at = ?, expires_at = ? WHERE connection_id = ?",
+            expiredAt - 1,
+            expiredAt,
             f.grant.connectionId,
           );
         } else {
