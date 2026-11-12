@@ -217,6 +217,9 @@ test("mismatched public origin and recycled peer namespace deny release", async 
     enabled: true,
     previews_enabled: false,
   });
+  const duplicateDomains = duplicate.routes.get(domainPath);
+  duplicateDomains.resultInfo.count = duplicateDomains.result.length;
+  duplicateDomains.resultInfo.total_count = duplicateDomains.result.length;
   await assert.rejects(
     readCloudflareDeployment(config, peer, duplicate.read),
     /provider-origin-not-exclusive/,
@@ -300,17 +303,38 @@ test("domain readback requires all pages and refuses incomplete pagination", asy
   const pageTwo = `/client/v4/accounts/${config.account_id}/workers/domains?page=2&per_page=100`;
   const paginated = makeProviderMock(config, peer);
   const original = paginated.routes.get(pageOne);
+  const filler = Array.from({ length: 99 }, (_, index) => ({
+    service: `unrelated-worker-${index}`,
+    hostname: `unrelated-${index}.example.invalid`,
+    enabled: true,
+    previews_enabled: false,
+  }));
   paginated.routes.set(pageOne, {
-    result: original.result.slice(0, 1),
-    resultInfo: { ...original.resultInfo, total_pages: 2 },
+    result: [...filler, original.result[0]],
+    resultInfo: {
+      ...original.resultInfo,
+      count: 100,
+      total_count: 101,
+    },
   });
   paginated.routes.set(pageTwo, {
     result: original.result.slice(1),
-    resultInfo: { ...original.resultInfo, page: 2, total_pages: 2 },
+    resultInfo: {
+      ...original.resultInfo,
+      page: 2,
+      count: 1,
+      total_count: 101,
+    },
   });
   const result = await readCloudflareDeployment(config, peer, paginated.read);
   assert.equal(result.peerState.origin, peer.vars.PUBLIC_ORIGIN);
 
+  paginated.routes.get(pageTwo).resultInfo.total_count = 102;
+  await assert.rejects(
+    readCloudflareDeployment(config, peer, paginated.read),
+    /provider-domain-pagination-unverified/,
+  );
+  paginated.routes.get(pageTwo).resultInfo.total_count = 101;
   paginated.routes.get(pageTwo).resultInfo.page = 1;
   await assert.rejects(
     readCloudflareDeployment(config, peer, paginated.read),
@@ -321,10 +345,23 @@ test("domain readback requires all pages and refuses incomplete pagination", asy
 test("missing Durable Object namespace listing page fails closed", async () => {
   const mock = makeProviderMock(config, peer);
   const nsPath = `/client/v4/accounts/${config.account_id}/workers/durable_objects/namespaces?page=1&per_page=100`;
-  mock.routes.get(nsPath).resultInfo.total_pages = 2;
+  const first = mock.routes.get(nsPath);
+  const filler = Array.from({ length: 100 - first.result.length }, (_, i) => ({
+    id: `${String(i % 10).repeat(32)}`,
+    class: "Unrelated",
+    name: `Unrelated-${i}`,
+    script: "unrelated-worker",
+    use_sqlite: true,
+  }));
+  first.result.push(...filler);
+  first.resultInfo.count = 100;
+  first.resultInfo.total_count = 101;
   mock.routes.set(
     `/client/v4/accounts/${config.account_id}/workers/durable_objects/namespaces?page=2&per_page=100`,
-    { result: [], resultInfo: { page: 1, total_pages: 2 } },
+    {
+      result: [filler[0]],
+      resultInfo: { page: 1, per_page: 100, count: 1, total_count: 101 },
+    },
   );
   await assert.rejects(
     readCloudflareDeployment(config, peer, mock.read),
