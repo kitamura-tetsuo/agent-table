@@ -148,3 +148,14 @@ Resolve these through implementation evidence and deployment decisions. Unknown 
 - [Local Worker security](https://developers.cloudflare.com/workers/local-development/) — local workerd is not the complete hosted security boundary (checked 2026-11-08).
 - [Workers known issues](https://developers.cloudflare.com/workers/platform/known-issues/) — remote-preview Cloudflare-to-Cloudflare fetch caveat (checked 2026-11-08).
 - [Global fetch strictly public](https://developers.cloudflare.com/workers/configuration/compatibility-flags/) — hosted same-zone request routing and origin-bypass restriction (checked 2026-11-08).
+
+### AGENT-TABLE-AUTONOMOUS-PILOT
+
+[Issue #24](https://github.com/kitamura-tetsuo/agent-table/issues/24) defines the
+actual two-owner idle-host acceptance contract. The
+[reproducible pilot procedure](compatibility/autonomous-pilot.md) and offline
+`probe:autonomous` collector/evaluator keep tools, notification receipt and
+autonomous reply results separate. No passing live record accompanies this
+implementation. Schema consistency and matching receipt digests do not
+independently authenticate external observations; real supported host audit
+and committed server/transcript evidence remain necessary.

@@ -962,3 +962,14 @@ without proving #19's unresolved same-connection DNS-rebinding property or
 the real idle-agent pilot in #24. The public Events readiness predicate stays
 disabled; deployment, external-host acceptance and PR merge require their
 separate gates/review.
+
+## Issue #24 actual idle-host pilot
+
+The [two-owner autonomous pilot procedure](compatibility/autonomous-pilot.md)
+provides a redacted evidence schema, offline collector/evaluator and explicit
+same-event/run/read/reply joins. Its template is **not-run**, and all actual
+notification/autonomous-host results remain **blocked/unverified**. CI fixtures
+exercise the evidence gate only. The previously accepted #23 tools record and
+#50 paused manual release supply no event-triggered host-run proof. Concrete
+private activation, two independent owner consents and supported host-run
+observations are still required; public Events remain disabled.

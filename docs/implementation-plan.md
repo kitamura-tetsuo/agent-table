@@ -82,3 +82,15 @@ Every stage should leave: an implemented production path; focused regression tes
 Before a public release, verify privacy and retention text, rate/admission controls, dependency versions, callback policy, production origin, key rotation procedure, and emergency switches. Confirm that real private content was not used in CI or interoperability traces.
 
 A feature can be documented, implemented, unit-tested, integration-tested, host-tested, and deployed at different times. Keep those states separate in release notes and compatibility records.
+
+## Stage Y — reproducible autonomous-host evidence (#24)
+
+Use the [two-owner idle-host pilot](compatibility/autonomous-pilot.md) and
+`probe:autonomous` offline collector/evaluator for exact deployment/profile
+observations. The implementation supplies strict joins and deterministic
+negative regressions; the checked-in template remains not-run. Completion
+requires independently approved actual owners/hosts, both idle-triggered turns,
+exact-key retry, cancellation, retained-state restart and third-guest isolation.
+The paused manual release and one-owner tools interoperability do not complete
+this stage. Missing account eligibility, observable host-run causality or an
+approved private Events activation remain explicit blockers.

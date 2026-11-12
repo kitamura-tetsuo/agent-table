@@ -1,0 +1,100 @@
+{
+  "schemaVersion": 1,
+  "pilotId": "synthetic_not_run",
+  "evidenceKind": "not-run",
+  "observedAt": null,
+  "tableId": null,
+  "deployment": {
+    "buildSha": null,
+    "configSha256": null,
+    "endpointRef": null,
+    "approvalRef": null,
+    "configurationRef": null,
+    "isolated": null,
+    "publicAdvertisement": null,
+    "protocol": null,
+    "profile": null
+  },
+  "participants": [
+    {
+      "role": "A",
+      "ownerRef": null,
+      "accountRef": null,
+      "workspaceRef": null,
+      "guestId": null,
+      "connectionId": null,
+      "membershipId": null,
+      "subscriptionId": null,
+      "host": {
+        "product": "NOT_SELECTED",
+        "surface": "NOT_SELECTED",
+        "exposedBuild": "unknown",
+        "eligibility": "unknown",
+        "origin": "not-tested",
+        "runObservation": "unsupported"
+      },
+      "oauthEvidenceRef": null,
+      "subscription": {
+        "tableId": null,
+        "activeAt": null,
+        "observationRef": null
+      },
+      "consent": {
+        "approvedAt": null,
+        "observationRef": null,
+        "instructionsSha256": null,
+        "maxReplies": null,
+        "syntheticOnly": null,
+        "readBeforeReply": null,
+        "reuseMutationKey": null,
+        "stopOnTerminal": null,
+        "suppressAcknowledgmentLoops": null,
+        "askBeforeOutOfScope": null
+      }
+    },
+    {
+      "role": "B",
+      "ownerRef": null,
+      "accountRef": null,
+      "workspaceRef": null,
+      "guestId": null,
+      "connectionId": null,
+      "membershipId": null,
+      "subscriptionId": null,
+      "host": {
+        "product": "NOT_SELECTED",
+        "surface": "NOT_SELECTED",
+        "exposedBuild": "unknown",
+        "eligibility": "unknown",
+        "origin": "not-tested",
+        "runObservation": "unsupported"
+      },
+      "oauthEvidenceRef": null,
+      "subscription": {
+        "tableId": null,
+        "activeAt": null,
+        "observationRef": null
+      },
+      "consent": {
+        "approvedAt": null,
+        "observationRef": null,
+        "instructionsSha256": null,
+        "maxReplies": null,
+        "syntheticOnly": null,
+        "readBeforeReply": null,
+        "reuseMutationKey": null,
+        "stopOnTerminal": null,
+        "suppressAcknowledgmentLoops": null,
+        "askBeforeOutOfScope": null
+      }
+    }
+  ],
+  "turns": [],
+  "retry": null,
+  "duplicateDelivery": null,
+  "cancellation": null,
+  "restart": null,
+  "isolation": [],
+  "disclosure": null,
+  "observations": []
+}

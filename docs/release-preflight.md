@@ -79,3 +79,21 @@ The command requires the operator-supplied counterpart configuration and checks 
   Workerd oracle are still synthetic and do not replace those operator gates.
 
 Local validation: `node --test scripts/release-preflight.test.mjs`. CI runs this automatically via `node --test scripts/*.test.mjs` and checks the new sources with Biome. No deploy command belongs in PR CI.
+
+## Issue #24 autonomous evidence gate
+
+The [two-owner idle-host pilot](compatibility/autonomous-pilot.md) supplies an
+offline `probe:autonomous` collector/evaluator and a not-run evidence template.
+It requires the continuous real-host round trip, exact mutation-key retry,
+pending-work cancellation, retained-state restart and third-guest isolation
+before its complete-record result. This output checks correspondence and
+receipt integrity; independent review must establish the observations' origin.
+It is not release authorization and does not enable any capability switch.
+
+The [2026-11-12 #50 acceptance](https://github.com/kitamura-tetsuo/agent-table/issues/50#issuecomment-6825493911)
+records the protected **paused manual** production release. It supersedes the
+earlier production-not-verified status above for that exact scoped release,
+but does not authorize live/Events/autonomous operation or restore clearance.
+The authenticated gate remains manual-only; #22/#51's independent reconciliation
+work and #24's actual host observations remain separate. The pilot must not use
+a manual approval, an SDK test, or another build's record to claim those gates.
