@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import {
+  activePrivatePilotDiscoveryPolicy,
   activePrivatePilotPolicy,
   PRIVATE_PILOT_PROFILE,
   privatePilotConfiguration,
@@ -223,7 +224,10 @@ export function verifyPrivatePilotDecision(record, vars, now) {
   const policy = privatePilotConfiguration(vars);
   const deliveryEnabled = vars.ALLOW_OUTBOUND_NOTIFICATIONS === "true";
   requireDecision(
-    policy && (!deliveryEnabled || activePrivatePilotPolicy(vars, now)),
+    policy &&
+      (policy.mode === "a-only-discovery"
+        ? activePrivatePilotDiscoveryPolicy(vars, now)
+        : !deliveryEnabled || activePrivatePilotPolicy(vars, now)),
     "private-pilot-not-active",
   );
   const policySha256 = createHash("sha256")
@@ -231,18 +235,26 @@ export function verifyPrivatePilotDecision(record, vars, now) {
     .digest("hex");
   const decision = record?.privatePilot;
   requireDecision(
-    decision?.mode === "a-only" &&
+    decision?.mode === policy.mode &&
       decision.policySha256 === policySha256 &&
       decision.approvalRef === policy.approvalRef &&
       decision.independentOwnerConsentsReviewed === true &&
-      decision.callbackControlReviewed === true &&
-      decision.nativeFetchRiskAccepted === true &&
+      (policy.mode === "a-only-discovery"
+        ? decision.callbackDiscoveryReviewed === true &&
+          decision.noOutboundReviewed === true
+        : decision.callbackControlReviewed === true &&
+          decision.nativeFetchRiskAccepted === true) &&
+      (policy.observationMode === undefined ||
+        decision.privateObservationReviewed === true) &&
       decision.boundedCanaryReviewed === true &&
       decision.stopPlanReviewed === true,
     "private-pilot-scope-not-approved",
   );
   return {
-    mode: "a-only",
+    mode: policy.mode,
+    ...(policy.observationMode === undefined
+      ? {}
+      : { observationMode: policy.observationMode }),
     policySha256,
     notBefore: policy.notBefore,
     expiresAt: policy.expiresAt,

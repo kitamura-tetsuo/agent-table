@@ -59,7 +59,9 @@ export async function verifyPublishedRelease({
   );
   if (privatePolicy) {
     requirePost(
-      approval.privatePilot?.mode === "a-only" &&
+      approval.privatePilot?.mode === privatePolicy.mode &&
+        approval.privatePilot.observationMode ===
+          privatePolicy.observationMode &&
         approval.privatePilot.policySha256 ===
           createHash("sha256")
             .update(config.vars.PRIVATE_PILOT_POLICY)

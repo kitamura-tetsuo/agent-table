@@ -14,7 +14,8 @@ const REFERENCE = /^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$/;
 /** Nonsecret policy delivered only through the protected staging release. */
 export interface PrivatePilotPolicy {
   schemaVersion: 1;
-  mode: "a-only";
+  mode: "a-only" | "a-only-discovery";
+  observationMode?: "private-redacted";
   buildSha: string;
   approvedAt: string;
   notBefore: string;
@@ -78,10 +79,14 @@ export function parsePrivatePilotPolicy(
     "callbackTargets",
   ];
   if (
-    Object.keys(row).length !== keys.length ||
+    Object.keys(row).some(
+      (key) => !keys.includes(key) && key !== "observationMode",
+    ) ||
     !keys.every((key) => Object.hasOwn(row, key)) ||
     row.schemaVersion !== 1 ||
-    row.mode !== "a-only" ||
+    (row.mode !== "a-only" && row.mode !== "a-only-discovery") ||
+    (Object.hasOwn(row, "observationMode") &&
+      row.observationMode !== "private-redacted") ||
     typeof row.buildSha !== "string" ||
     !SHA.test(row.buildSha) ||
     typeof row.approvalRef !== "string" ||
@@ -108,13 +113,24 @@ export function parsePrivatePilotPolicy(
     )
   )
     return null;
-  const callbackTargets = reviewedCallbackTargets(
-    JSON.stringify(row.callbackTargets),
-  );
-  if (!callbackTargets.length) return null;
+  const discovery = row.mode === "a-only-discovery";
+  const callbackTargets = discovery
+    ? []
+    : reviewedCallbackTargets(JSON.stringify(row.callbackTargets));
+  if (
+    discovery
+      ? row.observationMode !== "private-redacted" ||
+        !Array.isArray(row.callbackTargets) ||
+        row.callbackTargets.length !== 0
+      : !callbackTargets.length
+  )
+    return null;
   return {
     schemaVersion: 1,
-    mode: "a-only",
+    mode: row.mode,
+    ...(row.observationMode === "private-redacted"
+      ? { observationMode: "private-redacted" as const }
+      : {}),
     buildSha: row.buildSha,
     approvedAt: row.approvedAt as string,
     notBefore: row.notBefore as string,
@@ -141,7 +157,12 @@ export function privatePilotConfiguration(
   )
     return null;
   const policy = parsePrivatePilotPolicy(env.PRIVATE_PILOT_POLICY);
-  return policy && policy.buildSha === env.RELEASE_BUILD_SHA ? policy : null;
+  return policy &&
+    policy.buildSha === env.RELEASE_BUILD_SHA &&
+    (policy.mode !== "a-only-discovery" ||
+      env.ALLOW_OUTBOUND_NOTIFICATIONS === "false")
+    ? policy
+    : null;
 }
 
 export function activePrivatePilotPolicy(
@@ -150,12 +171,41 @@ export function activePrivatePilotPolicy(
 ): PrivatePilotPolicy | null {
   const policy = privatePilotConfiguration(env);
   return policy &&
+    policy.mode === "a-only" &&
     env.ALLOW_OUTBOUND_NOTIFICATIONS === "true" &&
     Number.isFinite(now) &&
     Date.parse(policy.notBefore) <= now &&
     now < Date.parse(policy.expiresAt)
     ? policy
     : null;
+}
+
+/** Discovery accepts a real host request but never authorizes a callback. */
+export function activePrivatePilotDiscoveryPolicy(
+  env: PrivatePilotBindings,
+  now = Date.now(),
+): PrivatePilotPolicy | null {
+  const policy = privatePilotConfiguration(env);
+  return policy &&
+    policy.mode === "a-only-discovery" &&
+    Number.isFinite(now) &&
+    Date.parse(policy.notBefore) <= now &&
+    now < Date.parse(policy.expiresAt)
+    ? policy
+    : null;
+}
+
+/** Advertisement is separate from the delivery authorization predicate. */
+export function privatePilotDiscoveryAllowed(
+  env: PrivatePilotBindings,
+  actor: { guestId: string; connectionId: string },
+  tableId?: string,
+  now = Date.now(),
+): boolean {
+  const policy =
+    activePrivatePilotPolicy(env, now) ??
+    activePrivatePilotDiscoveryPolicy(env, now);
+  return !!policy && privatePilotRecipientMatches(policy, actor, tableId);
 }
 
 export function privatePilotRecipientMatches(

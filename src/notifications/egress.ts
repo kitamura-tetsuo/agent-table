@@ -208,6 +208,21 @@ export function validateReviewedCallbackDestination(
   return { ok: true, url };
 }
 
+/** Syntax inspection only. Returning an origin never permits outbound traffic. */
+export function sanitizedCallbackOrigin(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  try {
+    const origin = new URL(raw).origin;
+    return validateReviewedCallbackDestination(raw, [
+      { origin, pathPrefix: "/" },
+    ]).ok
+      ? origin
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 const ALLOWED_HEADER_NAMES = new Set([
   "content-type",
   "webhook-id",
@@ -395,6 +410,21 @@ export interface SendVerifiedHttpsOptions {
    * Diagnostic / probe worker use only; defaults to false in production.
    */
   diagnostics?: boolean;
+  /** Synchronous private observations; no URL, header or body is supplied. */
+  observer?: CallbackTransportObserver;
+}
+
+export interface CallbackTransportObserver {
+  transportInvoked(at: number): void;
+  responseHeaders(at: number, status: number): void;
+}
+
+function observe(callback: (() => void) | undefined): void {
+  try {
+    callback?.();
+  } catch {
+    // Missing observations make evidence incomplete, never change transport.
+  }
 }
 
 /**
@@ -432,6 +462,9 @@ export async function sendVerifiedHttps(
     }, PLANNED_CALLBACK_TIMEOUT_MS);
   });
   try {
+    // This point is after every synchronous preflight and immediately before
+    // native fetch invocation. It does not claim that bytes reached the peer.
+    observe(() => options?.observer?.transportInvoked(Date.now()));
     const response = await Promise.race([
       fetch(destination.url.toString(), {
         method: "POST",
@@ -442,6 +475,10 @@ export async function sendVerifiedHttps(
       }),
       deadline,
     ]);
+    // Headers can be 2xx even if the later bounded body read fails.
+    observe(() =>
+      options?.observer?.responseHeaders(Date.now(), response.status),
+    );
     if (
       response.type === "opaqueredirect" ||
       (response.status >= 300 && response.status < 400)

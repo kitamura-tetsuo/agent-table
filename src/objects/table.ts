@@ -1,5 +1,9 @@
 import { DurableObject } from "cloudflare:workers";
 import {
+  observePrivateAttempt,
+  observePrivateCallbackOrigin,
+} from "../evidence/private-pilot";
+import {
   requestFingerprint,
   stagingEvidenceEnabled,
 } from "../evidence/staging";
@@ -11,9 +15,11 @@ import {
 } from "../mcp/subscriptions";
 import {
   type CallbackRequest,
+  type CallbackTransportObserver,
   type CallbackTransportOutcome,
   callbackTransportReadiness,
   reviewedCallbackTargets,
+  sanitizedCallbackOrigin,
   sendVerifiedHttps,
   validateReviewedCallbackDestination,
 } from "../notifications/egress";
@@ -66,6 +72,7 @@ import type {
 } from "../shared/lifecycle";
 import { TABLE_LIMITS } from "../shared/limits";
 import {
+  activePrivatePilotDiscoveryPolicy,
   activePrivatePilotPolicy,
   PRIVATE_PILOT_MAX_MESSAGE_SEQ,
   PRIVATE_PILOT_PROFILE,
@@ -336,6 +343,133 @@ export class TableDO extends DurableObject<Env> {
         !table && tombstone?.table_id === tableId
           ? tombstone.terminal_state
           : null,
+    };
+  }
+
+  /**
+   * Operator-only projection reached through the existing staging secret gate.
+   * Policy identity is independent of a revoked guest grant, so cancellation
+   * can still be inspected. No credential, URL, lease token or text is returned.
+   */
+  readPrivatePilotEvidence(
+    tableId: string,
+    guestId: string,
+    connectionId: string,
+  ) {
+    const policy = privatePilotConfiguration(this.env);
+    if (
+      !stagingEvidenceEnabled(this.env) ||
+      isRestoreQuarantined(this.env) ||
+      !policy ||
+      policy.observationMode !== "private-redacted" ||
+      !privatePilotRecipientMatches(
+        policy,
+        { guestId, connectionId },
+        tableId,
+      ) ||
+      !this.ctx.id.equals(this.env.TABLES.idFromName(tableId))
+    )
+      throw new Error("Private pilot evidence is disabled");
+    const table = this.metadataRow();
+    const member = this.memberFor(guestId);
+    const common = {
+      schema: "agent-table.private-pilot-snapshot.v1",
+      buildSha: policy.buildSha,
+      approvalRef: policy.approvalRef,
+      capturedAt: Date.now(),
+    };
+    if (!table || !member || table.table_id !== tableId)
+      return {
+        ...common,
+        table: null,
+        subscription: null,
+        messages: [],
+        outbox: [],
+        retention: "unavailable",
+      };
+    const subscription = this.eventSubscription(member.membership_id);
+    const messages = this.ctx.storage.sql
+      .exec<{
+        messageId: string;
+        seq: number;
+        senderMembershipId: string;
+        createdAt: number;
+        replyToMessageId: string | null;
+      }>(
+        `SELECT message_id AS messageId, seq,
+                sender_membership_id AS senderMembershipId,
+                created_at AS createdAt, reply_to_message_id AS replyToMessageId
+         FROM table_messages WHERE seq <= ? ORDER BY seq LIMIT ?`,
+        PRIVATE_PILOT_MAX_MESSAGE_SEQ,
+        PRIVATE_PILOT_MAX_MESSAGE_SEQ,
+      )
+      .toArray();
+    const outbox = this.ctx.storage.sql
+      .exec<{
+        eventId: string;
+        messageId: string;
+        seq: number;
+        membershipId: string;
+        subscriptionId: string;
+        generation: number;
+        status: string;
+        attemptCount: number;
+        firstAttemptAt: number | null;
+        nextAttemptAt: number | null;
+        leaseDeadline: number | null;
+        createdAt: number;
+        expiresAt: number;
+        lastErrorCategory: string | null;
+      }>(
+        `SELECT event_id AS eventId, message_id AS messageId,
+                message_seq AS seq, recipient_membership_id AS membershipId,
+                subscription_id AS subscriptionId,
+                subscription_generation AS generation, status,
+                attempt_count AS attemptCount, first_attempt_at AS firstAttemptAt,
+                next_attempt_at AS nextAttemptAt, lease_deadline AS leaseDeadline,
+                created_at AS createdAt, expires_at AS expiresAt,
+                CASE
+                  WHEN last_error_category IN (
+                    'transport-error', 'deadline', 'rate-limited', 'server-error',
+                    'receiver-gone', 'payload-rejected', 'authorization-revoked',
+                    'retry-exhausted'
+                  ) THEN last_error_category
+                  WHEN last_error_category IS NULL THEN NULL
+                  ELSE 'unknown'
+                END AS lastErrorCategory
+         FROM table_event_outbox
+         WHERE recipient_membership_id = ? AND message_seq <= ?
+         ORDER BY message_seq LIMIT ?`,
+        member.membership_id,
+        PRIVATE_PILOT_MAX_MESSAGE_SEQ,
+        PRIVATE_PILOT_MAX_MESSAGE_SEQ,
+      )
+      .toArray();
+    return {
+      ...common,
+      table: {
+        tableId,
+        state: table.state,
+        createdAt: table.created_at,
+        expiresAt: table.expires_at,
+        closedAt: table.closed_at,
+        lastSeq: table.last_seq,
+      },
+      subscription: subscription
+        ? {
+            membershipId: member.membership_id,
+            subscriptionId: subscription.subscription_id,
+            generation: subscription.generation,
+            status: subscription.status,
+            expiresAt: subscription.expires_at,
+            recipientConnectionMatches:
+              subscription.guest_id === guestId &&
+              subscription.connection_id === connectionId,
+          }
+        : null,
+      messages,
+      outbox,
+      retention: "retained",
     };
   }
 
@@ -839,6 +973,75 @@ export class TableDO extends DurableObject<Env> {
       return Number.POSITIVE_INFINITY;
     const policy = activePrivatePilotPolicy(this.env);
     return policy ? Date.parse(policy.expiresAt) : 0;
+  }
+
+  /**
+   * Inspect a genuine host registration without persisting its destination or
+   * secret, creating a candidate/subscription, or invoking any network sender.
+   */
+  async observeEventCallback(
+    actor: VerifiedConnectionActor,
+    input: unknown,
+  ): Promise<EventResult<Record<string, never>>> {
+    const parsed = parseEventSubscriptionParams(input, "subscribe");
+    if (!parsed) return { ok: false, code: "INVALID_REQUEST" };
+    const policy = activePrivatePilotDiscoveryPolicy(this.env);
+    if (
+      !policy ||
+      actor?.kind !== "verified-connection" ||
+      actor.scope !== "events:subscribe" ||
+      !privatePilotRecipientMatches(policy, actor, parsed.arguments.table_id)
+    )
+      return { ok: false, code: "TABLE_NOT_FOUND" };
+    const origin = sanitizedCallbackOrigin(parsed.delivery.url);
+    if (!origin) return { ok: false, code: "INVALID_REQUEST" };
+    try {
+      // Reuse the existing durable rate authority, with a dedicated namespace.
+      // One observation/minute across all policy tables bounds a two-hour
+      // discovery window to at most 120 accepted requests, across restarts.
+      const key = `pilot-origin-v1:${policy.buildSha}:${policy.approvalRef}:${policy.recipientGuestId}:${policy.recipientConnectionId}`;
+      const admission = await this.env.ADMISSION.get(
+        this.env.ADMISSION.idFromName(key),
+      ).consume("application", 1);
+      if (!admission.allowed)
+        return { ok: false, code: "TEMPORARILY_UNAVAILABLE" };
+      const fresh = await this.freshEventActor(actor);
+      const currentPolicy = activePrivatePilotDiscoveryPolicy(this.env);
+      const table = this.metadataRow();
+      const member = fresh ? this.memberFor(fresh.guestId) : undefined;
+      const now = Date.now();
+      if (
+        !fresh ||
+        !currentPolicy ||
+        !privatePilotRecipientMatches(
+          currentPolicy,
+          fresh,
+          parsed.arguments.table_id,
+        ) ||
+        !table ||
+        !member ||
+        table.table_id !== parsed.arguments.table_id ||
+        !this.ctx.id.equals(this.env.TABLES.idFromName(table.table_id))
+      )
+        return { ok: false, code: "TABLE_NOT_FOUND" };
+      if (
+        fresh.expiresAt <= now ||
+        table.expires_at <= now ||
+        (table.state !== "waiting" && table.state !== "open")
+      )
+        return { ok: false, code: "TABLE_TERMINAL" };
+      return observePrivateCallbackOrigin(
+        this.env,
+        fresh,
+        table.table_id,
+        member.membership_id,
+        origin,
+      )
+        ? { ok: true, value: {} }
+        : { ok: false, code: "TABLE_NOT_FOUND" };
+    } catch {
+      return { ok: false, code: "TEMPORARILY_UNAVAILABLE" };
+    }
   }
 
   /**
@@ -2755,6 +2958,7 @@ export class TableDO extends DurableObject<Env> {
   private sendOutboxWebhook(
     destination: string,
     request: CallbackRequest,
+    observer?: CallbackTransportObserver,
   ): Promise<CallbackTransportOutcome> {
     const pilot = activePrivatePilotPolicy(this.env);
     if (this.env.RELEASE_PROFILE === PRIVATE_PILOT_PROFILE && !pilot)
@@ -2767,6 +2971,7 @@ export class TableDO extends DurableObject<Env> {
       pilot?.callbackTargets ??
         reviewedCallbackTargets(this.env.EVENTS_REVIEWED_CALLBACK_TARGETS),
       request,
+      { observer },
     );
   }
 
@@ -2957,6 +3162,23 @@ export class TableDO extends DurableObject<Env> {
         continue;
       }
       // No await between local authority checks, signing, and transport start.
+      const observation = observePrivateAttempt(
+        this.env,
+        {
+          tableId: work.table_id,
+          eventId: work.event_id,
+          messageId: work.message_id,
+          seq: work.message_seq,
+          membershipId: work.membership_id,
+          subscriptionId: work.subscription_id as string,
+          generation: work.generation,
+          attempt: lease.attemptCount,
+          createdAt: work.created_at,
+          guestId: work.guest_id as string,
+          connectionId: work.connection_id as string,
+        },
+        now,
+      );
       let outcome: CallbackTransportOutcome;
       try {
         const signed = signWebhook(
@@ -2975,10 +3197,11 @@ export class TableDO extends DurableObject<Env> {
         );
         recordFutureMetric({ name: "outbox.attempt", value: 1 });
         try {
-          outcome = await this.sendOutboxWebhook(work.callback_url as string, {
-            method: "POST",
-            ...signed,
-          });
+          outcome = await this.sendOutboxWebhook(
+            work.callback_url as string,
+            { method: "POST", ...signed },
+            observation,
+          );
         } catch {
           // Ambiguous transport failures keep their persisted attempt charge.
           outcome = { ok: false, reason: "transport-error" };
@@ -2987,6 +3210,7 @@ export class TableDO extends DurableObject<Env> {
         // Invalid provider serialization/signing is a permanent payload failure.
         outcome = { ok: false, reason: "invalid-headers" };
       }
+      const completedAt = Date.now();
       const settled = this.ctx.storage.transactionSync(() =>
         settleOutboxAttempt(
           this.ctx.storage.sql,
@@ -2995,6 +3219,7 @@ export class TableDO extends DurableObject<Env> {
           classifyAttemptOutcome(outcome),
         ),
       );
+      observation?.completed(outcome, settled, completedAt);
       if (settled === "pending")
         recordFutureMetric({ name: "outbox.retry", value: 1 });
       if (settled === "failed")

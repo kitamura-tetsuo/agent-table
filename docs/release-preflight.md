@@ -6,6 +6,12 @@ The staging-only [`private-pilot-a-only` verification profile](compatibility/pri
 uses the same protected release path with a separately reviewed finite policy.
 It gathers actual host evidence while global/public Events flags remain false;
 it does not assert that the real-host compatibility gate has already passed.
+Its separately reviewed `a-only-discovery` mode accepts an actual host callback
+origin with zero outbound traffic and no active subscription. It requires an
+empty target list, explicit private redacted observations and an active finite
+window; it cannot be substituted for the reviewed `a-only` delivery policy.
+Observation collection may be incomplete and cannot turn missing host evidence
+into acceptance. Both modes retain the same exact-main protected release path.
 
 ## Boundaries
 

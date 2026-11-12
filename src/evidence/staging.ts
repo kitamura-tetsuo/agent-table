@@ -1,4 +1,9 @@
 /** A temporary, staging-only, read-only Durable Objects SQLite diagnostic. */
+import {
+  privatePilotConfiguration,
+  privatePilotRecipientMatches,
+} from "../shared/private-pilot";
+
 const STAGING_ORIGIN = "https://agent-table-test.outliner-online.com";
 const UUID_V4 =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -7,6 +12,7 @@ type InspectionRequest = {
   guestId: string;
   tableId?: string;
   connectionId?: string;
+  view?: "private-pilot";
 };
 
 export function stagingEvidenceEnabled(env: Env): boolean {
@@ -49,7 +55,7 @@ function inspectionRequest(value: unknown): InspectionRequest | null {
   const input = value as Record<string, unknown>;
   if (
     Object.keys(input).some(
-      (key) => !["guestId", "tableId", "connectionId"].includes(key),
+      (key) => !["guestId", "tableId", "connectionId", "view"].includes(key),
     ) ||
     typeof input.guestId !== "string" ||
     !UUID_V4.test(input.guestId) ||
@@ -57,7 +63,11 @@ function inspectionRequest(value: unknown): InspectionRequest | null {
       (typeof input.tableId !== "string" || !UUID_V4.test(input.tableId))) ||
     (input.connectionId !== undefined &&
       (typeof input.connectionId !== "string" ||
-        !UUID_V4.test(input.connectionId)))
+        !UUID_V4.test(input.connectionId))) ||
+    (Object.hasOwn(input, "view") &&
+      (input.view !== "private-pilot" ||
+        input.tableId === undefined ||
+        input.connectionId === undefined))
   ) {
     return null;
   }
@@ -76,7 +86,8 @@ function jsonResponse(body: unknown, status = 200): Response {
 
 /**
  * Disabled by default and locked to the exact staging origin. Response contains
- * no raw identifiers, messages, guest identity, table title, or bearer credentials.
+ * The default view has no raw identifiers or content. An explicitly approved
+ * private-pilot view adds only scoped random IDs and delivery metadata.
  */
 export async function handleStagingEvidence(
   request: Request,
@@ -115,6 +126,25 @@ export async function handleStagingEvidence(
   const guestId = parameters.guestId.toLowerCase();
   const tableId = parameters.tableId?.toLowerCase();
   const connectionId = parameters.connectionId?.toLowerCase();
+  if (parameters.view === "private-pilot") {
+    const policy = privatePilotConfiguration(env);
+    if (
+      policy?.observationMode !== "private-redacted" ||
+      !tableId ||
+      !connectionId ||
+      !privatePilotRecipientMatches(policy, { guestId, connectionId }, tableId)
+    )
+      return jsonResponse({ error: "not_found" }, 404);
+    try {
+      return jsonResponse(
+        await env.TABLES.get(
+          env.TABLES.idFromName(tableId),
+        ).readPrivatePilotEvidence(tableId, guestId, connectionId),
+      );
+    } catch {
+      return jsonResponse({ error: "unavailable" }, 503);
+    }
+  }
   const guest = env.GUESTS.get(env.GUESTS.idFromName(guestId));
   const [guestSqlite, tableSqlite] = await Promise.all([
     guest.readStagingEvidence(guestId, tableId, connectionId),

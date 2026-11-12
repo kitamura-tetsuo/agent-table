@@ -87,6 +87,56 @@ test("private policy cannot be smuggled into manual or production release profil
     /invalid-private-pilot-configuration/,
   );
 });
+
+test("discovery preflight accepts only explicit redacted observation with zero outbound", () => {
+  const discovery = () => makePrivatePilotFixture({ mode: "a-only-discovery" });
+  const candidate = discovery();
+  assert.equal(
+    validateRelease({ ...candidate, secrets: candidate.inventory })
+      .preflightValid,
+    true,
+  );
+  for (const mutate of [
+    (config) => {
+      config.vars.ALLOW_OUTBOUND_NOTIFICATIONS = "true";
+    },
+    (config) => {
+      const policy = JSON.parse(config.vars.PRIVATE_PILOT_POLICY);
+      delete policy.observationMode;
+      config.vars.PRIVATE_PILOT_POLICY = JSON.stringify(policy);
+    },
+    (config) => {
+      const policy = JSON.parse(config.vars.PRIVATE_PILOT_POLICY);
+      policy.callbackTargets = [
+        { origin: "https://receiver.example.com", pathPrefix: "/" },
+      ];
+      config.vars.PRIVATE_PILOT_POLICY = JSON.stringify(policy);
+    },
+  ]) {
+    const value = discovery();
+    const config = JSON.parse(value.configText);
+    mutate(config);
+    value.configText = JSON.stringify(config);
+    assert.throws(
+      () => validateRelease({ ...value, secrets: value.inventory }),
+      /invalid-private-pilot-configuration/,
+    );
+  }
+  const production = discovery();
+  const stage = JSON.parse(production.configText);
+  const target = JSON.parse(production.peerText);
+  target.vars.RELEASE_PROFILE = production.profile;
+  target.vars.PRIVATE_PILOT_POLICY = stage.vars.PRIVATE_PILOT_POLICY;
+  production.environment = "production";
+  production.configText = JSON.stringify(target);
+  production.peerText = JSON.stringify(stage);
+  production.inventory.environment = "production";
+  production.inventory.workerName = "agent-table-production";
+  assert.throws(
+    () => validateRelease({ ...production, secrets: production.inventory }),
+    /invalid-private-pilot-configuration/,
+  );
+});
 const makeConfig = (environment, overrides = {}) => ({
   name: `agent-table-${environment}`,
   account_id: "f".repeat(32),
