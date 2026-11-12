@@ -142,15 +142,22 @@ Worker version, four SQLite DO namespaces, OAuth KV ID, actual secret names,
 domain, release vars and HTTPS `/health` build/profile. PR CI never receives
 release credentials; approval from a repository collaborator or a Slack DM
 alone does not bypass the protected Environment. The restricted implementation
-supports the `manual` profile only. Worker deployment is **not authorized**
-until all missing operator inputs and explicit approvals are provided.
+supports the `manual` profile only. The first protected staging release was
+separately approved and executed on 2026-11-12. **No protected production
+release is authorized** without a new exact-main gate, operator evidence and
+independent GitHub Environment approval.
 
 The full operator inputs, separate read/write Cloudflare tokens, private
 environment-scoped secrets, evidence schemas, rollback and measured hosted
 acceptance checklist are in [release-runbook.md](release-runbook.md). It
-records **not run** for staging and production actual #50 deployments; the
-previous settings-only [credential read](https://github.com/kitamura-tetsuo/agent-table/actions/runs/42969129958)
-did not authorize release or verify private DO/KV ownership.
+records the [protected staging deployment](https://github.com/kitamura-tetsuo/agent-table/actions/runs/43151011535),
+[same-config provider rollback rehearsal](https://github.com/kitamura-tetsuo/agent-table/issues/50#issuecomment-6815095095),
+[text-binding mismatch and repaired pause](https://github.com/kitamura-tetsuo/agent-table/issues/50#issuecomment-6818264043),
+and [synthetic browser Close/Delete acceptance](https://github.com/kitamura-tetsuo/agent-table/issues/50#issuecomment-6820766589).
+For any rollback or emergency pause, run the read-only
+`scripts/release-pause-readback.mjs` verifier before claiming service settings
+and active-version text bindings agree. Production release, independently
+verified account backup/log retention and actual billed usage remain blocked.
 
 ## Deployment procedure after implementation
 

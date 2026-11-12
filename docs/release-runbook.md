@@ -10,13 +10,16 @@ version state **before** permitting `wrangler deploy`. It reads the deployed
 resources and public `/health` build receipt again after publication. A local
 preflight success or a PR merge is never deployment authorization.
 
-**Not completed by committing this code:** selecting or provisioning a
-production HTTPS hostname, provisioning missing production resources, supplying
-release Environment secrets, obtaining protected approvals, running staging or
-production deployment, testing a retained-state provider rollback, and
-recording measured hosted usage/retention facts. They are operator gates,
-not assertions that the code has already deployed. The checked-in local
-`wrangler.jsonc` is neither a staging nor a production release candidate.
+**Hosted evidence as of 2026-11-12:** owner-approved protected staging bootstrap,
+same-config live update and pinned code rollback, and the existing-guest
+browser Close/Delete rehearsal have succeeded against synthetic retained state.
+The later staging temporary-admission experiment exposed a Wrangler
+service-settings/active-version text-binding mismatch; an independently
+verified canonical paused-config redeploy repaired it. Production HTTPS and
+identity have been read back, but a **separately approved protected production
+release has not run**. Account-specific backup/log retention, billed storage
+and pricing/usage acceptance are still unresolved. These are distinct gates;
+the checked-in `wrangler.jsonc` is not a hosted release candidate.
 
 The authenticated gate initially supports **`manual` only**. Every production
 or staging release must have `RESTORE_QUARANTINE=false` only for a verified
@@ -333,7 +336,39 @@ action; it is not permission to delete or reset private namespaces.
   `RESTORE_QUARANTINE=false`. Confirm on the *real* host that new admission
   and table creation stop, but existing owner browser close/delete and
   authorized reads/exports continue to work. Record the observed status and
-  current DO state, not just intended bindings.
+  current DO state, not just intended bindings. A successful Wrangler command
+  is insufficient: **both** service settings and active-version text bindings
+  must independently show all five switches disabled and must agree with the
+  reviewed canonical config.
+- **Normal-pause provider receipt (read-only):** after a no-intake deploy or a
+  version rollback, first independently obtain the expected 100%-traffic
+  active version ID, then run the following script on an authorized operator
+  host with the environment's `CLOUDFLARE_READ_TOKEN` available in the
+  process environment. Both config files must be the real, reviewed private
+  JSON inputs; the peer config is required to verify environment isolation.
+
+  ```sh
+  node scripts/release-pause-readback.mjs \
+    --config /secure/operator/wrangler.staging.json \
+    --peer-config /secure/operator/wrangler.production.json \
+    --expected-version-id '<independently-observed-version-uuid>'
+  ```
+
+  The only success receipt is `PAUSE_READBACK_VERIFIED` with environment,
+  Worker, active version, deployment ID and build SHA (no secrets/private
+  data). On any `PAUSE_READBACK_BLOCKED` code, treat the pause as **unverified**
+  and stop promotion; do not trust a provider version selector or proceed to
+  production. In particular `provider-version-config-unverified` means
+  Cloudflare service-level settings and the active version's bindings disagree.
+  This exact condition was observed after the 2026-11-12 staging
+  `ALLOW_NEW_TABLES` temporary-admission rollback, despite Wrangler reporting
+  success. It was resolved only by a **separately owner-approved, byte-for-byte
+  canonical paused-config redeploy** followed by independent dual-surface
+  verification. For a repeat incident, preserve evidence, evaluate ongoing
+  exposure and seek fresh authorization for the contained settings repair;
+  **never automatically redeploy, clear quarantine, delete namespaces or
+  silently declare intake stopped**. Follow a verified pause receipt with
+  real HTTPS health, admission-denial and existing-guest lifecycle tests.
 - **Security incident, unknown backup history or stale authority:** first
   stop external intake/delivery, then install a separately approved
   `RESTORE_QUARANTINE=true` candidate using the offline
@@ -352,6 +387,9 @@ action; it is not permission to delete or reset private namespaces.
   if an older reader is unsafe, leave the data quarantined and deploy a
   forward-compatible repair instead. Recheck both Worker versions, domain,
   secrets, active DO/KV identity, public `/health` and lifecycle invariants.
+  Run the normal-pause dual-surface readback above; a code-version rollback
+  may **not** restore the old text-binding service settings. The successful
+  same-config staging rollback is not proof of older-schema compatibility.
 - **Point-in-time restoration** is not code rollback. The recovery candidate
   remains inaccessible until independent authority reconciliation. The
   platform's advertised backup window is not a substitute for measured
@@ -374,9 +412,11 @@ can change, and privacy data cannot be guaranteed erased by rollback.
 | Structural preflight, fail-closed checks and generated-restore local oracle | Local and CI tests, PR #46 | Implemented code; not hosted approval |
 | Staging secret/config access | [protected config readback #43115024418](https://github.com/kitamura-tetsuo/agent-table/actions/runs/43115024418), commit `70cfe1c`, SHA-256 `22b619dd3af71bce1688a7f3ec2e451654cea0a28ac6e166f70bfa98513bb867` | Verified no-publish only; stale after new `main` commit |
 | Separate configured protected Environments | Human reviewer and `main` branch protection readback 2026-11-11; staging and production Cloudflare GET access [#43104683889](https://github.com/kitamura-tetsuo/agent-table/actions/runs/43104683889), [#43104688167](https://github.com/kitamura-tetsuo/agent-table/actions/runs/43104688167) | Verified read-only; each deployment still needs a separate approval |
-| Both true Cloudflare Worker/DO/KV identities, origins, inventories | Read-only Worker/domain/namespace/version/secret-name checks recorded on [Issue #50](https://github.com/kitamura-tetsuo/agent-table/issues/50) | Staging active Worker is missing `RELEASE_*` bindings and needs separately reviewed bootstrap; production active Worker already has them |
-| Staging protected deploy, host smoke, retained-state update/rollback | No #50 approved live run | **Not run** |
-| Production origin, scoped tokens, protected deploy and host smoke | `agent-table.outliner-online.com` domain/HTTPS health verified; production no-publish config still required | **No deployment** |
+| Both true Cloudflare Worker/DO/KV identities, origins, inventories | Independent authenticated metadata checks and [protected staging deploy #43151011535](https://github.com/kitamura-tetsuo/agent-table/actions/runs/43151011535); [provider receipt](https://github.com/kitamura-tetsuo/agent-table/issues/50#issuecomment-6814836152) | **Verified** for the recorded 2026-11-12 source and staging state; recheck before next release |
+| Staging protected deploy, host smoke, retained-state update/rollback | [Staging bootstrap](https://github.com/kitamura-tetsuo/agent-table/issues/50#issuecomment-6814836152), [same-config update + pinned rollback](https://github.com/kitamura-tetsuo/agent-table/issues/50#issuecomment-6815095095), [binding-drift finding and canonical repair](https://github.com/kitamura-tetsuo/agent-table/issues/50#issuecomment-6818264043) | **Passed** for same-source/same-config retained synthetic data; older-schema rollback and real PITR untested |
+| Normal pause and existing-guest browser Close/Delete | [7-day synthetic fixture and settings repair](https://github.com/kitamura-tetsuo/agent-table/issues/50#issuecomment-6818264043), [browser Close/Delete and independent `TABLE_NOT_FOUND` postconditions](https://github.com/kitamura-tetsuo/agent-table/issues/50#issuecomment-6820766589) | **Passed** on staging; prior browser POST refresh showed CSRF rejection and stale response label, but a fresh GET confirmed closed |
+| Staging pause after text-binding change | Independent provider check rejected a Wrangler rollback with settings/version divergence; fully canonical redeploy yielded active version `f0701beb-db3a-4c6a-b224-7e988d438bc4` and matching disabled intake [receipt](https://github.com/kitamura-tetsuo/agent-table/issues/50#issuecomment-6818264043) | **Repaired and verified**; perform new readback before subsequent changes |
+| Production origin, scoped tokens, protected deploy and host smoke | `agent-table.outliner-online.com` HTTPS `/health` and current Worker identity verified; recorded production active version `8e099f35-8fa7-4e16-878c-43daa89fa218` | **Protected #50 production deploy not run**; new exact-main, owner and Environment approvals required |
 | Measured hosted CPU/requests/DO/KV/logs plus current pricing | Cloudflare GraphQL for 2026-11-04–11 UTC: staging Worker 5,293 requests/0 errors, production Worker 271/0, temporary PR46 Worker 33/0, DO invocation group 2,090 requests; account billing usage GET returned 403 (`insufficient_permissions`), DO storage groups returned no records; Workers Logs `logpush=false` and settings `observability=null` | **Partial measurement; billed usage, retention and actual DO/KV storage unresolved** |
 | Post-snapshot independent authority reconciliation | [Issue #51](https://github.com/kitamura-tetsuo/agent-table/issues/51) | **Out of scope; quarantined** |
 

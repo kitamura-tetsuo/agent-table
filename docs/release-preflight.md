@@ -63,6 +63,19 @@ The command requires the operator-supplied counterpart configuration and checks 
 - Separate manual staging/production workflows require the exact main SHA and a selected GitHub Environment. GitHub API readback on 2026-11-11 UTC confirmed required owner reviewers and protected-branch restrictions for **both** Environments; this is historical configuration evidence, not an approval of a deployment. The [protected staging credential check #42969129958](https://github.com/kitamura-tetsuo/agent-table/actions/runs/42969129958) verified staging-only read access to settings, **not** full release resource ownership or promotion.
 - The protected workflow's **authenticated** `release-authorization.mjs` now emits a short-lived in-job `RELEASE_APPROVAL_VALID` only after exact-main CI provenance and live Cloudflare readback of both environments. `require-release-approval.mjs` must verify that manifest before publishing. Missing read tokens, production configuration, named secret inventory, selected domain, independently verified retention/usage disclosures, and required profile evidence remain **blocked**, rather than being replaced by fabricated metadata. See [release-runbook.md](release-runbook.md) for required Environment secret names, operator JSON schemas, current scope and the exact approval sequence.
 - Only the `manual` profile is implemented in the authenticated gate. New `live`, Events and autonomous host validation and **independently reconciled restore-quarantine release** remain blocked. Future DO-only outbound producers must apply the independent dispatch-time guard too. A restored copy of an older successful operator record does not clear missing post-snapshot revocations/deletions/expiry.
-- Retained-state newer-schema rollback through a real staging/production deployment, production host provision and privately disclosed current account backup/log retention and pricing/usage remain **not run/not verified**. The checked-in constructor and Workerd oracle is synthetic only. Actual operator evidence is required before Issue #50 operational acceptance.
+- A separately approved protected staging bootstrap and same-source,
+  same-config, ID-pinned rollback **did** preserve retained synthetic Durable
+  Object data [on 2026-11-12](https://github.com/kitamura-tetsuo/agent-table/issues/50#issuecomment-6815095095).
+  A subsequent temporary-intake rollback exposed divergent service settings
+  and active-version text bindings; a full canonical staging redeploy restored
+  independently verified pause [receipt](https://github.com/kitamura-tetsuo/agent-table/issues/50#issuecomment-6818264043).
+  The owner also completed synthetic browser Close/Delete
+  [acceptance](https://github.com/kitamura-tetsuo/agent-table/issues/50#issuecomment-6820766589).
+  Future paused-state claims must use the read-only
+  `scripts/release-pause-readback.mjs` verifier. **Different-schema rollback
+  and actual PITR restoration remain untested**; protected production
+  deployment and private current-account backup/log retention and billed
+  pricing/usage remain **not verified**. The checked-in constructor and
+  Workerd oracle are still synthetic and do not replace those operator gates.
 
 Local validation: `node --test scripts/release-preflight.test.mjs`. CI runs this automatically via `node --test scripts/*.test.mjs` and checks the new sources with Biome. No deploy command belongs in PR CI.
