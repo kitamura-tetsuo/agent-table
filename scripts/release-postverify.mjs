@@ -1,5 +1,10 @@
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
+import {
+  PRIVATE_PILOT_PROFILE,
+  privatePilotConfiguration,
+} from "../src/shared/private-pilot.ts";
 import {
   cloudflareReader,
   ProviderVerificationError,
@@ -12,12 +17,60 @@ function requirePost(value, code) {
 }
 
 export async function verifyPublishedRelease({
-  config,
+  configText,
   peer,
   approval,
   cloudflareRead,
   httpFetch = fetch,
 }) {
+  let config;
+  try {
+    requirePost(typeof configText === "string", "post-deploy-config-invalid");
+    config = JSON.parse(configText);
+  } catch {
+    throw new ProviderVerificationError("post-deploy-config-invalid");
+  }
+  requirePost(
+    config &&
+      typeof config === "object" &&
+      !Array.isArray(config) &&
+      config.vars &&
+      typeof config.vars === "object" &&
+      !Array.isArray(config.vars),
+    "post-deploy-config-invalid",
+  );
+  requirePost(
+    approval?.deploymentApproved === true &&
+      approval.environment === config?.vars?.RELEASE_ENVIRONMENT &&
+      approval.buildSha === config?.vars?.RELEASE_BUILD_SHA &&
+      approval.profile === config?.vars?.RELEASE_PROFILE &&
+      approval.configSha256 ===
+        createHash("sha256").update(configText).digest("hex"),
+    "post-deploy-approval-target-mismatch",
+  );
+  const profile = config.vars.RELEASE_PROFILE;
+  const privatePolicy =
+    profile === PRIVATE_PILOT_PROFILE
+      ? privatePilotConfiguration(config.vars)
+      : null;
+  requirePost(
+    profile === "manual" || privatePolicy,
+    "post-deploy-profile-unverified",
+  );
+  if (privatePolicy) {
+    requirePost(
+      approval.privatePilot?.mode === "a-only" &&
+        approval.privatePilot.policySha256 ===
+          createHash("sha256")
+            .update(config.vars.PRIVATE_PILOT_POLICY)
+            .digest("hex") &&
+        approval.privatePilot.notBefore === privatePolicy.notBefore &&
+        approval.privatePilot.expiresAt === privatePolicy.expiresAt &&
+        approval.privatePilot.deliveryEnabled ===
+          (config.vars.ALLOW_OUTBOUND_NOTIFICATIONS === "true"),
+      "post-deploy-private-pilot-approval-mismatch",
+    );
+  }
   const state = await readCloudflareDeployment(config, peer, cloudflareRead);
   verifyDeployedConfiguration(state.targetState, config);
   const before = approval.providerReceipt;
@@ -103,16 +156,10 @@ async function main() {
     const approval = JSON.parse(
       approvalText.slice("RELEASE_APPROVAL_VALID ".length),
     );
-    const config = JSON.parse(readFileSync(cliArg("config"), "utf8"));
+    const configText = readFileSync(cliArg("config"), "utf8");
     const peer = JSON.parse(readFileSync(cliArg("peer-config"), "utf8"));
-    requirePost(
-      approval.deploymentApproved === true &&
-        approval.environment === config.vars.RELEASE_ENVIRONMENT &&
-        approval.buildSha === config.vars.RELEASE_BUILD_SHA,
-      "post-deploy-approval-target-mismatch",
-    );
     const result = await verifyPublishedRelease({
-      config,
+      configText,
       peer,
       approval,
       cloudflareRead: cloudflareReader(process.env.CLOUDFLARE_READ_TOKEN),

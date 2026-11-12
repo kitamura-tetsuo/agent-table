@@ -21,8 +21,8 @@ export type SafeTableMetadata = {
   ownInboxUri: string;
   /** Only present on the authenticated get_table MCP read. */
   notifications?: {
-    available: false;
-    reason: "delivery_not_ready";
+    available: boolean;
+    reason: "delivery_not_ready" | "private_pilot_only";
     status: "active" | "expired" | "disabled";
     /** Number of this connection's pending or leased deliveries, not host runs. */
     pendingCount: number;

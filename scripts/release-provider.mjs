@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { PRIVATE_PILOT_PROFILE } from "../src/shared/private-pilot.ts";
 
 // All provider calls are GETs to the fixed Cloudflare API origin. The raw
 // responses, which may include secrets, never enter logs or persisted receipts.
@@ -257,6 +258,34 @@ export async function inspectWorker(
       "provider-version-config-unverified",
     );
   }
+  // Older manual deployments legitimately omit the private policy. If either
+  // surface retains it, verify its exact bytes and unique nonsecret type on both.
+  // Do not require the new candidate's policy during a pre-deploy manual readback.
+  const policyName = "PRIVATE_PILOT_POLICY";
+  const policyPresent =
+    settings.bindings.some((binding) => binding?.name === policyName) ||
+    versionBindings.some((binding) => binding?.name === policyName);
+  if (policyPresent) {
+    const settingsPolicy = readBinding(
+      settings.bindings,
+      policyName,
+      "plain_text",
+    );
+    const versionPolicy = readBinding(
+      versionBindings,
+      policyName,
+      "plain_text",
+    );
+    ensure(
+      typeof settingsPolicy.text === "string" &&
+        settingsPolicy.text === versionPolicy.text,
+      "provider-private-pilot-policy-unverified",
+    );
+  }
+  ensure(
+    textBindings.RELEASE_PROFILE !== PRIVATE_PILOT_PROFILE || policyPresent,
+    "provider-private-pilot-policy-unverified",
+  );
   if (bootstrapStaging) {
     ensure(
       config.name === "agent-table-staging" &&
@@ -307,6 +336,14 @@ export function verifyDeployedConfiguration(observed, config) {
       "provider-deployed-config-mismatch",
     );
   }
+  const policy = config.vars.PRIVATE_PILOT_POLICY;
+  ensure(
+    (policy === undefined || typeof policy === "string") &&
+      observed.textBindings.PRIVATE_PILOT_POLICY === policy &&
+      (config.vars.RELEASE_PROFILE !== PRIVATE_PILOT_PROFILE ||
+        typeof policy === "string"),
+    "provider-deployed-private-pilot-policy-mismatch",
+  );
 }
 
 export function redactedProviderReceipt(observed, environment, timestamp) {

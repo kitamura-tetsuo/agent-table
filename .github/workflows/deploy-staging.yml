@@ -1,4 +1,4 @@
-name: Staging deployment (manual, protected)
+name: Staging deployment (protected)
 
 on:
   workflow_dispatch:
@@ -7,6 +7,14 @@ on:
         description: Exact reviewed main commit SHA (40 lowercase hex digits)
         required: true
         type: string
+      release_profile:
+        description: Paused manual release or separately reviewed A-only private verification
+        required: true
+        type: choice
+        default: manual
+        options:
+          - manual
+          - private-pilot-a-only
       bootstrap_staging:
         description: First-time staging identity bootstrap; disables new guest/table intake and preserves existing DO/KV
         type: boolean
@@ -28,6 +36,7 @@ jobs:
     with:
       target_environment: staging
       expected_sha: ${{ inputs.expected_sha }}
+      release_profile: ${{ inputs.release_profile }}
       bootstrap_staging: ${{ inputs.bootstrap_staging }}
       expected_active_version_id: ${{ inputs.expected_active_version_id }}
     secrets: inherit

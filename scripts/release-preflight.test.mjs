@@ -12,6 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { makePrivatePilotFixture } from "../test/helpers/release-fixtures.mjs";
 import {
   PreflightError,
   prepareQuarantinedRestoreConfig,
@@ -19,6 +20,73 @@ import {
 } from "./release-preflight.mjs";
 
 const buildSha = "a".repeat(40);
+
+test("private staging preflight binds scope without claiming prior autonomous compatibility", () => {
+  const candidate = makePrivatePilotFixture();
+  const result = validateRelease({
+    ...candidate,
+    secrets: candidate.inventory,
+  });
+  assert.equal(result.preflightValid, true);
+  assert.equal(result.deploymentApproved, false);
+  assert.equal(result.profile, "private-pilot-a-only");
+  assert.equal(candidate.evidence.checks.real_host, undefined);
+  for (const mutate of [
+    (config) => {
+      delete config.vars.PRIVATE_PILOT_POLICY;
+    },
+    (config) => {
+      config.vars.ENABLE_OPENAI_EVENTS = "true";
+    },
+    (config) => {
+      config.vars.ENABLE_MCP_SUBSCRIPTIONS = "true";
+    },
+    (config) => {
+      config.vars.RESTORE_QUARANTINE = "true";
+    },
+    (config) => {
+      const policy = JSON.parse(config.vars.PRIVATE_PILOT_POLICY);
+      policy.buildSha = "b".repeat(40);
+      config.vars.PRIVATE_PILOT_POLICY = JSON.stringify(policy);
+    },
+  ]) {
+    const broken = structuredClone(candidate);
+    const config = JSON.parse(broken.configText);
+    mutate(config);
+    broken.configText = JSON.stringify(config);
+    assert.throws(
+      () => validateRelease({ ...broken, secrets: broken.inventory }),
+      /invalid-private-pilot-configuration/,
+    );
+  }
+});
+
+test("private policy cannot be smuggled into manual or production release profiles", () => {
+  const candidate = makePrivatePilotFixture();
+  const config = JSON.parse(candidate.configText);
+  candidate.profile = config.vars.RELEASE_PROFILE = "manual";
+  config.vars.ALLOW_OUTBOUND_NOTIFICATIONS = "false";
+  candidate.configText = JSON.stringify(config);
+  assert.throws(
+    () => validateRelease({ ...candidate, secrets: candidate.inventory }),
+    /private-pilot-policy-outside-private-profile/,
+  );
+  const production = makePrivatePilotFixture();
+  const target = JSON.parse(production.peerText);
+  const stage = JSON.parse(production.configText);
+  target.vars.RELEASE_PROFILE = production.profile;
+  target.vars.PRIVATE_PILOT_POLICY = stage.vars.PRIVATE_PILOT_POLICY;
+  target.vars.ALLOW_OUTBOUND_NOTIFICATIONS = "true";
+  production.environment = "production";
+  production.configText = JSON.stringify(target);
+  production.peerText = JSON.stringify(stage);
+  production.inventory.environment = "production";
+  production.inventory.workerName = "agent-table-production";
+  assert.throws(
+    () => validateRelease({ ...production, secrets: production.inventory }),
+    /invalid-private-pilot-configuration/,
+  );
+});
 const makeConfig = (environment, overrides = {}) => ({
   name: `agent-table-${environment}`,
   account_id: "f".repeat(32),

@@ -15,6 +15,7 @@ import {
   callbackTransportReadiness,
   reviewedCallbackTargets,
   sendVerifiedHttps,
+  validateReviewedCallbackDestination,
 } from "../notifications/egress";
 import {
   grantedSubscriptionTtlMs,
@@ -64,6 +65,14 @@ import type {
   PurgeTableReceipt,
 } from "../shared/lifecycle";
 import { TABLE_LIMITS } from "../shared/limits";
+import {
+  activePrivatePilotPolicy,
+  PRIVATE_PILOT_MAX_MESSAGE_SEQ,
+  PRIVATE_PILOT_PROFILE,
+  privatePilotConfiguration,
+  privatePilotRecipientAllowed,
+  privatePilotRecipientMatches,
+} from "../shared/private-pilot";
 import { digestSessionSecret, randomBase64Url } from "../shared/random";
 import {
   deferQuarantinedAlarm,
@@ -675,6 +684,14 @@ export class TableDO extends DurableObject<Env> {
         : row.status === "expired" || (row.expires_at ?? 0) <= Date.now()
           ? "expired"
           : "active";
+    const available = privatePilotRecipientAllowed(
+      this.env,
+      {
+        guestId: member.guest_id,
+        connectionId,
+      },
+      member.table_id,
+    );
     // A second connection belonging to the same guest must not observe this
     // subscription's queue or outcome. Never query callback/secret columns.
     if (!owned || !row?.subscription_id || status !== "active") {
@@ -720,8 +737,10 @@ export class TableDO extends DurableObject<Env> {
       "retry-exhausted",
     ]);
     return {
-      available: false as const,
-      reason: "delivery_not_ready" as const,
+      available,
+      reason: available
+        ? ("private_pilot_only" as const)
+        : ("delivery_not_ready" as const),
       status,
       pendingCount: counts.pending_count,
       lastAcceptedSeq: counts.last_accepted_seq,
@@ -781,6 +800,7 @@ export class TableDO extends DurableObject<Env> {
   private async freshEventActor(
     actor: VerifiedConnectionActor,
   ): Promise<VerifiedConnectionActor | null> {
+    if (isRestoreQuarantined(this.env)) return null;
     if (
       actor?.kind !== "verified-connection" ||
       actor.scope !== "events:subscribe" ||
@@ -798,6 +818,29 @@ export class TableDO extends DurableObject<Env> {
     return decision.allowed ? decision.actor : null;
   }
 
+  private eventRegistrationAllowed(
+    actor: VerifiedConnectionActor,
+    tableId: string,
+    destination: string,
+    now = Date.now(),
+  ): boolean {
+    if (this.env.RELEASE_PROFILE !== PRIVATE_PILOT_PROFILE) return true;
+    const policy = activePrivatePilotPolicy(this.env, now);
+    return (
+      !!policy &&
+      privatePilotRecipientMatches(policy, actor, tableId) &&
+      validateReviewedCallbackDestination(destination, policy.callbackTargets)
+        .ok
+    );
+  }
+
+  private eventPilotDeadline(): number {
+    if (this.env.RELEASE_PROFILE !== PRIVATE_PILOT_PROFILE)
+      return Number.POSITIVE_INFINITY;
+    const policy = activePrivatePilotPolicy(this.env);
+    return policy ? Date.parse(policy.expiresAt) : 0;
+  }
+
   /**
    * Reserve a fenced, encrypted candidate without changing an existing active
    * subscription. Network verification is deliberately outside this method.
@@ -810,6 +853,14 @@ export class TableDO extends DurableObject<Env> {
     if (!parsed) return { ok: false, code: "INVALID_REQUEST" };
     const fresh = await this.freshEventActor(actor);
     if (!fresh) return { ok: false, code: "TABLE_NOT_FOUND" };
+    if (
+      !this.eventRegistrationAllowed(
+        fresh,
+        parsed.arguments.table_id,
+        parsed.delivery.url,
+      )
+    )
+      return { ok: false, code: "TABLE_NOT_FOUND" };
     const table = this.metadataRow();
     const member = this.memberFor(fresh.guestId);
     if (!table || !member || table.table_id !== parsed.arguments.table_id)
@@ -836,6 +887,7 @@ export class TableDO extends DurableObject<Env> {
       Date.now() + EVENT_CANDIDATE_WINDOW_MS,
       table.expires_at,
       fresh.expiresAt,
+      this.eventPilotDeadline(),
     );
     if (deadline <= Date.now()) return { ok: false, code: "STALE" };
     try {
@@ -848,6 +900,15 @@ export class TableDO extends DurableObject<Env> {
             !currentTable ||
             !currentMember ||
             currentTable.table_id !== parsed.arguments.table_id
+          )
+            return { ok: false, code: "TABLE_NOT_FOUND" } as const;
+          if (
+            !this.eventRegistrationAllowed(
+              fresh,
+              parsed.arguments.table_id,
+              parsed.delivery.url,
+              now,
+            )
           )
             return { ok: false, code: "TABLE_NOT_FOUND" } as const;
           if (
@@ -947,9 +1008,17 @@ export class TableDO extends DurableObject<Env> {
       candidate.connection_id !== fresh.connectionId
     )
       return { ok: false, code: "STALE" };
+    if (
+      !this.eventRegistrationAllowed(
+        fresh,
+        table.table_id,
+        candidate.callback_url,
+      )
+    )
+      return { ok: false, code: "TABLE_NOT_FOUND" };
     const granted = grantedSubscriptionTtlMs(
       candidate.requested_ttl_ms,
-      table.expires_at - Date.now(),
+      Math.min(table.expires_at, this.eventPilotDeadline()) - Date.now(),
       fresh.expiresAt - Date.now(),
     );
     if (granted < 1000) return { ok: false, code: "STALE" };
@@ -985,6 +1054,15 @@ export class TableDO extends DurableObject<Env> {
             pending.connection_id !== fresh.connectionId
           )
             return { ok: false, code: "STALE" } as const;
+          if (
+            !this.eventRegistrationAllowed(
+              fresh,
+              table.table_id,
+              pending.callback_url,
+              now,
+            )
+          )
+            return { ok: false, code: "TABLE_NOT_FOUND" } as const;
           // A pending refresh cannot resurrect an active subscription that expired
           // before the external verification returned, even before alarm cleanup.
           if (current.status === "active" && (current.expires_at ?? 0) <= now) {
@@ -1008,7 +1086,7 @@ export class TableDO extends DurableObject<Env> {
             return { ok: false, code: "CONFLICT" } as const;
           const actualTtl = grantedSubscriptionTtlMs(
             pending.requested_ttl_ms,
-            currentTable.expires_at - now,
+            Math.min(currentTable.expires_at, this.eventPilotDeadline()) - now,
             fresh.expiresAt - now,
           );
           if (actualTtl < 1000) return { ok: false, code: "STALE" } as const;
@@ -1102,6 +1180,14 @@ export class TableDO extends DurableObject<Env> {
     if (!parsed) return { ok: false, code: "INVALID_REQUEST" };
     const fresh = await this.freshEventActor(actor);
     if (!fresh) return { ok: false, code: "TABLE_NOT_FOUND" };
+    if (this.env.RELEASE_PROFILE === PRIVATE_PILOT_PROFILE) {
+      const policy = privatePilotConfiguration(this.env);
+      if (
+        !policy ||
+        !privatePilotRecipientMatches(policy, fresh, parsed.arguments.table_id)
+      )
+        return { ok: false, code: "TABLE_NOT_FOUND" };
+    }
     const table = this.metadataRow();
     const member = this.memberFor(fresh.guestId);
     if (!table || !member || table.table_id !== parsed.arguments.table_id)
@@ -1152,7 +1238,12 @@ export class TableDO extends DurableObject<Env> {
   ): Promise<boolean> {
     if (
       !allowOutboundNotifications(this.env) ||
-      !callbackTransportReadiness().enabled
+      (!callbackTransportReadiness().enabled &&
+        !privatePilotRecipientAllowed(
+          this.env,
+          actor,
+          this.metadataRow()?.table_id,
+        ))
     )
       return false;
     const fresh = await this.freshEventActor(actor);
@@ -1169,6 +1260,8 @@ export class TableDO extends DurableObject<Env> {
     const row = this.eventSubscription(member.membership_id);
     return (
       !!row &&
+      (this.env.RELEASE_PROFILE !== PRIVATE_PILOT_PROFILE ||
+        privatePilotRecipientAllowed(this.env, fresh, table.table_id)) &&
       row.status === "active" &&
       row.guest_id === fresh.guestId &&
       row.connection_id === fresh.connectionId &&
@@ -2644,8 +2737,13 @@ export class TableDO extends DurableObject<Env> {
     return committed.value;
   }
 
-  /** No configuration, RPC argument or stored record can override readiness. */
+  /** Public readiness and the protected staging-only trial remain distinct. */
   private outboxDispatchEnabled(): boolean {
+    if (this.env.RELEASE_PROFILE === PRIVATE_PILOT_PROFILE) {
+      const policy = activePrivatePilotPolicy(this.env);
+      const table = this.metadataRow();
+      return !!policy && !!table && policy.tableIds.includes(table.table_id);
+    }
     return (
       this.env.ENABLE_OPENAI_EVENTS === "true" &&
       allowOutboundNotifications(this.env) &&
@@ -2658,9 +2756,16 @@ export class TableDO extends DurableObject<Env> {
     destination: string,
     request: CallbackRequest,
   ): Promise<CallbackTransportOutcome> {
+    const pilot = activePrivatePilotPolicy(this.env);
+    if (this.env.RELEASE_PROFILE === PRIVATE_PILOT_PROFILE && !pilot)
+      return Promise.resolve({
+        ok: false,
+        reason: "connection-boundary-unverified",
+      });
     return sendVerifiedHttps(
       destination,
-      reviewedCallbackTargets(this.env.EVENTS_REVIEWED_CALLBACK_TARGETS),
+      pilot?.callbackTargets ??
+        reviewedCallbackTargets(this.env.EVENTS_REVIEWED_CALLBACK_TARGETS),
       request,
     );
   }
@@ -2697,6 +2802,27 @@ export class TableDO extends DurableObject<Env> {
         now,
       )
       .toArray()[0];
+    if (work && this.env.RELEASE_PROFILE === PRIVATE_PILOT_PROFILE) {
+      const policy = activePrivatePilotPolicy(this.env, now);
+      if (
+        !policy ||
+        !privatePilotRecipientMatches(
+          policy,
+          {
+            guestId: work.guest_id ?? "",
+            connectionId: work.connection_id ?? "",
+          },
+          work.table_id,
+        ) ||
+        work.created_at < Date.parse(policy.notBefore) ||
+        work.message_seq > PRIVATE_PILOT_MAX_MESSAGE_SEQ ||
+        !validateReviewedCallbackDestination(
+          work.callback_url ?? "",
+          policy.callbackTargets,
+        ).ok
+      )
+        return undefined;
+    }
     return work &&
       Number.isSafeInteger(work.expires_at) &&
       Number.isSafeInteger(work.table_expires_at)
