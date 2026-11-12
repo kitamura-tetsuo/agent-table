@@ -237,7 +237,7 @@ export function makeProviderMock(config, peer) {
       resultInfo: {
         page: 1,
         per_page: 100,
-        total_pages: 1,
+        count: domains.length,
         total_count: domains.length,
       },
     },
@@ -249,7 +249,7 @@ export function makeProviderMock(config, peer) {
       resultInfo: {
         page: 1,
         per_page: 100,
-        total_pages: 1,
+        count: namespaces.length,
         total_count: namespaces.length,
       },
     },

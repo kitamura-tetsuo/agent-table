@@ -427,21 +427,42 @@ export async function readCloudflareDeployment(
 
 async function readAllPages(reader, path, code) {
   const items = [];
+  const perPage = 100;
   let totalPages = 1;
+  let totalCount;
   for (let page = 1; page <= totalPages; page++) {
-    const response = await reader(`${path}?page=${page}&per_page=100`, true);
+    const response = await reader(
+      `${path}?page=${page}&per_page=${perPage}`,
+      true,
+    );
     const info = response?.resultInfo;
+    const count = response?.result?.length;
+    const reportedTotal = info?.total_count;
+    // Cloudflare uses total_count rather than total_pages on these endpoints.
+    // Validate every returned page and refuse incomplete or shifting listings.
+    const pages = Math.max(1, Math.ceil(reportedTotal / perPage));
+    const expectedCount = Math.min(
+      perPage,
+      Math.max(0, reportedTotal - (page - 1) * perPage),
+    );
     ensure(
       Array.isArray(response?.result) &&
         info?.page === page &&
-        Number.isSafeInteger(info.total_pages) &&
-        info.total_pages >= 1 &&
-        info.total_pages <= 20 &&
-        (page === 1 || info.total_pages === totalPages),
+        info.per_page === perPage &&
+        info.count === count &&
+        Number.isSafeInteger(reportedTotal) &&
+        reportedTotal >= 0 &&
+        pages <= 20 &&
+        (info.total_pages === undefined || info.total_pages === pages) &&
+        (page === 1 ||
+          (pages === totalPages && reportedTotal === totalCount)) &&
+        count === expectedCount,
       code,
     );
-    totalPages = info.total_pages;
+    totalPages = pages;
+    totalCount = reportedTotal;
     items.push(...response.result);
   }
+  ensure(items.length === totalCount, code);
   return items;
 }
