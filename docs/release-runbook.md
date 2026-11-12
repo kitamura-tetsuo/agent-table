@@ -29,13 +29,32 @@ the separate reconciliation work in Issue #51 is complete.
 
 This flow assumes a **preexisting** target and peer Worker with known DO/KV
 ownership. It deliberately rejects first-time bootstrapping of an unknown
-Worker. An operator must separately approve initial **quarantined and
-non-public** provisioning, with all admission/intake/outbound flags disabled,
-then verify the Worker/DO/KV/domain ownership and secret injection. Do not
-copy a live Worker configuration, recycle namespace IDs, rename an existing
-namespace or use `wrangler deploy` on an unreviewed candidate to satisfy the
-gate. The initial bootstrap is **not automated here** and requires its own
-reviewed change/receipt; it is not permission to release or unquarantine.
+Worker. Initial provisioning of an unknown Worker still needs a separate
+approved **quarantined and non-public** workflow, with all intake and
+outbound disabled. Do not copy a live Worker configuration, recycle namespace
+IDs, rename a namespace, or publish an unreviewed candidate.
+
+**One-time existing-staging migration only:** `deploy-staging.yml` now has a
+`bootstrap_staging` opt-in and `expected_active_version_id` field. This is
+restricted to the existing `agent-table-staging` Worker when precisely the
+four `RELEASE_ENVIRONMENT`, `RELEASE_BUILD_SHA`, `RELEASE_PROFILE` and
+`RESTORE_QUARANTINE` text bindings are absent from both its settings and
+active version. Before publishing, the independent protected Environment
+review, successful exact-main manual CI, actual retention/cost/restore
+operator disclosures, intact four SQLite DO namespaces, OAuth KV, secret
+names, custom domain and expected active version must all be verified. The
+existing staging admission settings must be `true` while the approved
+candidate switches **both** new-guest and new-table intake to `false`; all
+outbound/subscription/Events flags remain `false`. This intentionally pauses
+new admissions, not existing owner read/close/delete privileges. It is not
+an exception for production, unknown Workers, changed namespaces, restored
+snapshots, or already bootstrapped Workers. The bootstrap operations record
+must specify `bootstrap.mode: "staging-legacy-identity"`, the exact current
+version ID and `retainedStateImpactReviewed: true`; it must leave
+`schema.nonDestructiveRollback: false` until a real retained-state staging
+rehearsal succeeds. Never substitute this one-time waiver for a verified
+rollback or clear a quarantine. The workflow read-checks the active version
+again just before writing and performs normal strict post-deploy verification.
 
 ## 1. Resource and access preparation
 

@@ -148,7 +148,15 @@ export async function verifyProtectedEnvironmentApproval(workflow, githubRead) {
 
 export function verifyOperationalDecision(
   record,
-  { environment, profile, buildSha, configSha256, origin, now },
+  {
+    environment,
+    profile,
+    buildSha,
+    configSha256,
+    origin,
+    now,
+    bootstrapStaging = false,
+  },
 ) {
   requireDecision(
     record?.environment === environment &&
@@ -179,7 +187,12 @@ export function verifyOperationalDecision(
   }
   requireDecision(
     record?.schema?.testedVersion === 11 &&
-      record.schema.nonDestructiveRollback === true &&
+      record.schema.nonDestructiveRollback === !bootstrapStaging &&
+      (!bootstrapStaging ||
+        (environment === "staging" &&
+          record.bootstrap?.mode === "staging-legacy-identity" &&
+          /^[0-9a-f-]{36}$/i.test(record.bootstrap.expectedActiveVersionId) &&
+          record.bootstrap.retainedStateImpactReviewed === true)) &&
       record.schema.rollbackRunbook ===
         `https://github.com/${REPOSITORY}/blob/${buildSha}/docs/operations.md`,
     "schema-rollback-approval-unavailable",
@@ -214,6 +227,8 @@ export async function authorizeRelease({
   evidence,
   operations,
   workflow,
+  bootstrapStaging = false,
+  requestedActiveVersionId = "",
   cloudflareRead,
   githubRead,
   now = Date.now(),
@@ -240,6 +255,20 @@ export async function authorizeRelease({
   requireDecision(
     profile === "manual",
     "profile-real-host-evidence-not-verified",
+  );
+  requireDecision(
+    !bootstrapStaging ||
+      (environment === "staging" &&
+        workflow.bootstrapStaging === true &&
+        workflow.eventSender === "kitamura-tetsuo" &&
+        workflow.expectedActiveVersionId === requestedActiveVersionId &&
+        workflow.expectedActiveVersionId ===
+          operations?.bootstrap?.expectedActiveVersionId),
+    "staging-bootstrap-unapproved",
+  );
+  requireDecision(
+    bootstrapStaging || workflow.bootstrapStaging !== true,
+    "bootstrap-dispatch-mismatch",
   );
   const config = JSON.parse(configText);
   const peer = JSON.parse(peerText);
@@ -270,13 +299,39 @@ export async function authorizeRelease({
     configSha256: offline.configSha256,
     origin: config.vars.PUBLIC_ORIGIN,
     now,
+    bootstrapStaging,
   });
   const [ciRunId, observed] = await Promise.all([
     verifyCiEvidence(evidence, buildSha, githubRead),
-    readCloudflareDeployment(config, peer, cloudflareRead),
+    readCloudflareDeployment(config, peer, cloudflareRead, {
+      bootstrapStaging,
+    }),
     verifyCurrentMainHead(buildSha, githubRead),
     verifyProtectedEnvironmentApproval(workflow, githubRead),
   ]);
+  if (bootstrapStaging) {
+    const active = observed.targetState.textBindings;
+    requireDecision(
+      observed.targetState.versionId === workflow.expectedActiveVersionId &&
+        active.PUBLIC_ORIGIN === config.vars.PUBLIC_ORIGIN &&
+        active.GUEST_CHALLENGE_MODE === config.vars.GUEST_CHALLENGE_MODE &&
+        active.TURNSTILE_SITE_KEY === config.vars.TURNSTILE_SITE_KEY &&
+        active.OAUTH_AUDIT_MODE === config.vars.OAUTH_AUDIT_MODE &&
+        active.STAGING_EVIDENCE_MODE === config.vars.STAGING_EVIDENCE_MODE &&
+        [
+          "ENABLE_MCP_SUBSCRIPTIONS",
+          "ENABLE_OPENAI_EVENTS",
+          "ALLOW_OUTBOUND_NOTIFICATIONS",
+        ].every(
+          (name) => active[name] === "false" && config.vars[name] === "false",
+        ) &&
+        active.ALLOW_NEW_GUESTS === "true" &&
+        active.ALLOW_NEW_TABLES === "true" &&
+        config.vars.ALLOW_NEW_GUESTS === "false" &&
+        config.vars.ALLOW_NEW_TABLES === "false",
+      "staging-bootstrap-live-state-changed",
+    );
+  }
   requireDecision(
     observed.targetState.textBindings.RESTORE_QUARANTINE !== "true" &&
       observed.peerState.textBindings.RESTORE_QUARANTINE !== "true",
@@ -295,6 +350,7 @@ export async function authorizeRelease({
   );
   return {
     ...offline,
+    bootstrapStaging,
     deploymentApproved: true,
     approvalSource: "protected-environment-and-live-provider-readback",
     workflowRunId: workflow.runId,
@@ -367,13 +423,32 @@ function cliArgument(args, name) {
   return args[index + 1];
 }
 
+function cliOptionalArgument(args, name) {
+  const index = args.indexOf(`--${name}`);
+  return index < 0 ? undefined : args[index + 1];
+}
+
 async function main() {
   try {
     const args = process.argv.slice(2);
     const environment = cliArgument(args, "environment");
     const profile = cliArgument(args, "profile");
     const buildSha = cliArgument(args, "build-sha");
+    const bootstrapFlag = cliOptionalArgument(args, "bootstrap-staging");
+    requireDecision(
+      bootstrapFlag === undefined ||
+        bootstrapFlag === "true" ||
+        bootstrapFlag === "false",
+      "invalid-staging-bootstrap-flag",
+    );
+    const bootstrapStaging = bootstrapFlag === "true";
+    const expectedVersion =
+      cliOptionalArgument(args, "expected-active-version-id") ?? "";
+    const dispatch = process.env.GITHUB_EVENT_PATH
+      ? JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, "utf8"))
+      : {};
     const result = await authorizeRelease({
+      bootstrapStaging,
       environment,
       profile,
       buildSha,
@@ -395,7 +470,14 @@ async function main() {
         runId: process.env.GITHUB_RUN_ID,
         runAttempt: process.env.GITHUB_RUN_ATTEMPT,
         cloudflareAccountId: process.env.CLOUDFLARE_ACCOUNT_ID,
+        bootstrapStaging:
+          String(dispatch?.inputs?.bootstrap_staging) === "true",
+        expectedActiveVersionId: String(
+          dispatch?.inputs?.expected_active_version_id ?? "",
+        ),
+        eventSender: dispatch?.sender?.login,
       },
+      requestedActiveVersionId: expectedVersion,
       cloudflareRead: cloudflareReader(process.env.CLOUDFLARE_READ_TOKEN),
       githubRead: githubReader(process.env.GITHUB_TOKEN),
     });

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { test } from "node:test";
 import {
   buildSha,
@@ -46,6 +47,164 @@ test("protected exact-main run plus independent provider and CI reads authorize 
     JSON.stringify(approval),
     /NEVER_ECHO_ME|secretNames|textBindings/,
   );
+});
+
+function legacyStagingHarness() {
+  const fixture = makeFixture();
+  const config = JSON.parse(fixture.configText);
+  config.vars.ALLOW_NEW_TABLES = "false";
+  config.vars.GUEST_CHALLENGE_MODE = "required";
+  config.vars.TURNSTILE_SITE_KEY = "synthetic-stage-site-key";
+  config.vars.OAUTH_AUDIT_MODE = "off";
+  config.vars.STAGING_EVIDENCE_MODE = "off";
+  fixture.configText = JSON.stringify(config);
+  const digest = createHash("sha256").update(fixture.configText).digest("hex");
+  fixture.evidence.configSha256 = digest;
+  fixture.operations.configSha256 = digest;
+  fixture.operations.schema.nonDestructiveRollback = false;
+  const oldVersion = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+  fixture.operations.bootstrap = {
+    mode: "staging-legacy-identity",
+    expectedActiveVersionId: oldVersion,
+    retainedStateImpactReviewed: true,
+  };
+  fixture.workflow.bootstrapStaging = true;
+  fixture.workflow.expectedActiveVersionId = oldVersion;
+  fixture.workflow.eventSender = "kitamura-tetsuo";
+
+  const cloudflare = makeProviderMock(config, JSON.parse(fixture.peerText));
+  const prefix = `/client/v4/accounts/${config.account_id}/workers/scripts/${config.name}`;
+  for (const bindings of [
+    cloudflare.routes.get(`${prefix}/settings`).bindings,
+    cloudflare.routes.get(`${prefix}/versions/${oldVersion}`).resources
+      .bindings,
+  ]) {
+    for (const entry of bindings) {
+      if (
+        entry.name === "ALLOW_NEW_GUESTS" ||
+        entry.name === "ALLOW_NEW_TABLES"
+      ) {
+        entry.text = "true";
+      }
+    }
+  }
+  const absent = new Set([
+    "RELEASE_ENVIRONMENT",
+    "RELEASE_BUILD_SHA",
+    "RELEASE_PROFILE",
+    "RESTORE_QUARANTINE",
+  ]);
+  const settings = cloudflare.routes.get(`${prefix}/settings`);
+  const version = cloudflare.routes.get(`${prefix}/versions/${oldVersion}`);
+  settings.bindings = settings.bindings.filter(
+    (binding) => !absent.has(binding.name),
+  );
+  version.resources.bindings = version.resources.bindings.filter(
+    (binding) => !absent.has(binding.name),
+  );
+  cloudflare.routes.get(`${prefix}/secrets`).push({
+    name: "TURNSTILE_SECRET",
+    type: "secret_text",
+    text: "NEVER_ECHO_ME",
+  });
+  return { fixture, cloudflare, github: makeGithubMock(), oldVersion };
+}
+
+test("reviewed first-time staging bootstrap preserves existing resources without claiming rollback success", async () => {
+  const { fixture, cloudflare, github, oldVersion } = legacyStagingHarness();
+  const result = await authorizeRelease({
+    ...fixture,
+    bootstrapStaging: true,
+    requestedActiveVersionId: oldVersion,
+    cloudflareRead: cloudflare.read,
+    githubRead: github.read,
+    now,
+  });
+  assert.equal(result.bootstrapStaging, true);
+  assert.equal(result.providerReceipt.versionId, oldVersion);
+  assert.equal(result.deploymentApproved, true);
+  await assert.rejects(
+    authorizeRelease({
+      ...fixture,
+      bootstrapStaging: false,
+      cloudflareRead: cloudflare.read,
+      githubRead: github.read,
+      now,
+    }),
+    /bootstrap-dispatch-mismatch/,
+  );
+  fixture.workflow.eventSender = "unapproved-bot";
+  await assert.rejects(
+    authorizeRelease({
+      ...fixture,
+      bootstrapStaging: true,
+      requestedActiveVersionId: oldVersion,
+      cloudflareRead: cloudflare.read,
+      githubRead: github.read,
+      now,
+    }),
+    /staging-bootstrap-unapproved/,
+  );
+});
+
+test("bootstrap cannot waive review, safe-intake transition, or exact version", async () => {
+  const cases = [
+    {
+      label: "old version changed",
+      mutate: ({ fixture }) => {
+        fixture.workflow.expectedActiveVersionId =
+          "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+      },
+      error: /staging-bootstrap-unapproved/,
+    },
+    {
+      label: "rollback already claimed",
+      mutate: ({ fixture }) => {
+        fixture.operations.schema.nonDestructiveRollback = true;
+      },
+      error: /schema-rollback-approval-unavailable/,
+    },
+    {
+      label: "impact review absent",
+      mutate: ({ fixture }) => {
+        fixture.operations.bootstrap.retainedStateImpactReviewed = false;
+      },
+      error: /schema-rollback-approval-unavailable/,
+    },
+    {
+      label: "existing intake unexpectedly paused",
+      mutate: ({ fixture, cloudflare }) => {
+        const config = JSON.parse(fixture.configText);
+        const base = `/client/v4/accounts/${config.account_id}/workers/scripts/${config.name}`;
+        for (const bindings of [
+          cloudflare.routes.get(`${base}/settings`).bindings,
+          cloudflare.routes.get(
+            `${base}/versions/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb`,
+          ).resources.bindings,
+        ]) {
+          bindings.find((binding) => binding.name === "ALLOW_NEW_TABLES").text =
+            "false";
+        }
+      },
+      error: /staging-bootstrap-live-state-changed/,
+    },
+  ];
+  for (const { label, mutate, error } of cases) {
+    const resources = legacyStagingHarness();
+    mutate(resources);
+    await assert.rejects(
+      authorizeRelease({
+        ...resources.fixture,
+        bootstrapStaging: true,
+        requestedActiveVersionId: resources.oldVersion,
+        cloudflareRead: resources.cloudflare.read,
+        githubRead: resources.github.read,
+        now,
+      }),
+      error,
+      label,
+    );
+  }
 });
 
 test("production needs its own protected workflow and separate owned resources", async () => {
