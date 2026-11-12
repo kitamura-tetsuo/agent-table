@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   makeConfig,
+  makePrivatePilotFixture,
   makeProviderMock,
 } from "../test/helpers/release-fixtures.mjs";
 import {
@@ -409,5 +410,175 @@ test("network reader is GET-only, fixed-origin, bounded and never echoes secrets
   await assert.rejects(
     oversized("/client/v4/accounts/abc/workers/domains"),
     /provider-body-oversized/,
+  );
+});
+
+function privateProvider() {
+  const fixture = makePrivatePilotFixture();
+  const candidate = JSON.parse(fixture.configText);
+  const peerConfig = JSON.parse(fixture.peerText);
+  const mock = makeProviderMock(candidate, peerConfig);
+  const prefix = `/client/v4/accounts/${candidate.account_id}/workers/scripts/${candidate.name}`;
+  return {
+    candidate,
+    peerConfig,
+    mock,
+    settings: mock.routes.get(`${prefix}/settings`),
+    version: mock.routes.get(
+      `${prefix}/versions/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb`,
+    ),
+  };
+}
+
+test("private policy readback matches active version and settings without entering the receipt", async () => {
+  const { candidate, peerConfig, mock } = privateProvider();
+  const { targetState } = await readCloudflareDeployment(
+    candidate,
+    peerConfig,
+    mock.read,
+  );
+  verifyDeployedConfiguration(targetState, candidate);
+  assert.equal(
+    targetState.textBindings.PRIVATE_PILOT_POLICY,
+    candidate.vars.PRIVATE_PILOT_POLICY,
+  );
+  const serialized = JSON.stringify(
+    redactedProviderReceipt(targetState, "staging", "2026-11-11T12:00:00Z"),
+  );
+  const policy = JSON.parse(candidate.vars.PRIVATE_PILOT_POLICY);
+  for (const privateValue of [
+    policy.recipientGuestId,
+    policy.recipientConnectionId,
+    ...policy.tableIds,
+    policy.callbackTargets[0].origin,
+    policy.callbackTargets[0].pathPrefix,
+  ]) {
+    assert.equal(serialized.includes(privateValue), false);
+  }
+});
+
+test("missing, divergent, duplicated or secret-typed private policy bindings fail closed", async () => {
+  const mutations = [
+    ({ settings, version }) => {
+      settings.bindings = settings.bindings.filter(
+        (binding) => binding.name !== "PRIVATE_PILOT_POLICY",
+      );
+      version.resources.bindings = version.resources.bindings.filter(
+        (binding) => binding.name !== "PRIVATE_PILOT_POLICY",
+      );
+    },
+    ({ settings }) => {
+      settings.bindings = settings.bindings.filter(
+        (binding) => binding.name !== "PRIVATE_PILOT_POLICY",
+      );
+    },
+    ({ version }) => {
+      version.resources.bindings = version.resources.bindings.filter(
+        (binding) => binding.name !== "PRIVATE_PILOT_POLICY",
+      );
+    },
+    ({ version }) => {
+      version.resources.bindings.find(
+        (binding) => binding.name === "PRIVATE_PILOT_POLICY",
+      ).text += " ";
+    },
+    ({ settings }) => {
+      const binding = settings.bindings.find(
+        (item) => item.name === "PRIVATE_PILOT_POLICY",
+      );
+      settings.bindings.push(structuredClone(binding));
+    },
+    ({ version }) => {
+      const binding = version.resources.bindings.find(
+        (item) => item.name === "PRIVATE_PILOT_POLICY",
+      );
+      version.resources.bindings.push(structuredClone(binding));
+    },
+    ({ settings }) => {
+      settings.bindings.find(
+        (binding) => binding.name === "PRIVATE_PILOT_POLICY",
+      ).type = "secret_text";
+    },
+    ({ settings, version }) => {
+      for (const bindings of [settings.bindings, version.resources.bindings]) {
+        bindings.find(
+          (binding) => binding.name === "PRIVATE_PILOT_POLICY",
+        ).text = 7;
+      }
+    },
+  ];
+  for (const mutate of mutations) {
+    const fixture = privateProvider();
+    mutate(fixture);
+    await assert.rejects(
+      readCloudflareDeployment(
+        fixture.candidate,
+        fixture.peerConfig,
+        fixture.mock.read,
+      ),
+      /provider-private-pilot-policy-unverified|binding-mismatch/,
+    );
+  }
+});
+
+test("predeploy manual readback is allowed but postdeploy requires exact policy bytes and removal", async () => {
+  const privateFixture = privateProvider();
+  const manual = makeConfig("staging");
+  const manualMock = makeProviderMock(manual, privateFixture.peerConfig);
+  const manualState = await readCloudflareDeployment(
+    privateFixture.candidate,
+    privateFixture.peerConfig,
+    manualMock.read,
+  );
+  assert.equal(
+    manualState.targetState.textBindings.PRIVATE_PILOT_POLICY,
+    undefined,
+  );
+  assert.throws(
+    () =>
+      verifyDeployedConfiguration(
+        manualState.targetState,
+        privateFixture.candidate,
+      ),
+    /provider-deployed-config-mismatch|provider-deployed-private-pilot-policy-mismatch/,
+  );
+
+  // A manual candidate omits the policy; a retained text binding is not removal.
+  for (const response of manualMock.routes.values()) {
+    const bindings = response.bindings ?? response.resources?.bindings;
+    if (
+      bindings?.some(
+        (binding) =>
+          binding.name === "PUBLIC_ORIGIN" &&
+          binding.text === manual.vars.PUBLIC_ORIGIN,
+      )
+    ) {
+      bindings.push({
+        name: "PRIVATE_PILOT_POLICY",
+        type: "plain_text",
+        text: privateFixture.candidate.vars.PRIVATE_PILOT_POLICY,
+      });
+    }
+  }
+  const retained = await readCloudflareDeployment(
+    manual,
+    privateFixture.peerConfig,
+    manualMock.read,
+  );
+  assert.throws(
+    () => verifyDeployedConfiguration(retained.targetState, manual),
+    /provider-deployed-private-pilot-policy-mismatch/,
+  );
+
+  const exact = await readCloudflareDeployment(
+    privateFixture.candidate,
+    privateFixture.peerConfig,
+    privateFixture.mock.read,
+  );
+  const semanticallyEqual = structuredClone(privateFixture.candidate);
+  semanticallyEqual.vars.PRIVATE_PILOT_POLICY += " ";
+  assert.throws(
+    () => verifyDeployedConfiguration(exact.targetState, semanticallyEqual),
+    /provider-deployed-private-pilot-policy-mismatch/,
   );
 });

@@ -29,6 +29,10 @@ import { authorizeGuestConnection, type ConnectionScope } from "../shared/auth";
 import { validTableId } from "../shared/invitations";
 import { CREATION_LIMITS, TABLE_LIMITS } from "../shared/limits";
 import {
+  PRIVATE_PILOT_PROFILE,
+  privatePilotRecipientAllowed,
+} from "../shared/private-pilot";
+import {
   handleOwnedInboxListen,
   isListenRequest,
   MAX_MCP_HINTS_PER_STREAM,
@@ -158,6 +162,7 @@ function newServer(
   env: Env,
   identity: AuthenticatedMcpIdentity,
   liveSubscriptions: boolean,
+  privateEvents = false,
 ) {
   const server = new McpServer(
     { name: "agent-table", version: "0.1.0" },
@@ -168,6 +173,9 @@ function newServer(
       capabilities: {
         tools: { listChanged: false },
         resources: { listChanged: false, subscribe: liveSubscriptions },
+        ...(privateEvents && privatePilotRecipientAllowed(env, identity)
+          ? { events: {} }
+          : {}),
       },
     },
   );
@@ -182,15 +190,21 @@ function newServer(
     return checked.allowed ? checked.actor : null;
   };
 
-  // These are actual MCP extension methods, not tools. Public Events
-  // capabilities are intentionally NOT advertised before Issue #21 delivery.
+  // Public Events stay unadvertised. A separately approved staging pilot
+  // exposes the provider profile only to its freshly authorized recipient.
   server.server.setRequestHandler(
     "events/list",
     { params: z.unknown() },
     async (params) => {
       if (!validEventListParams(params))
         throw new ProtocolError(-32602, "Invalid Events cursor");
-      if (!(await scopedActor("events:subscribe"))) throw eventError("denied");
+      const actor = await scopedActor("events:subscribe");
+      if (
+        !actor ||
+        (env.RELEASE_PROFILE === PRIVATE_PILOT_PROFILE &&
+          !privatePilotRecipientAllowed(env, actor))
+      )
+        throw eventError("denied");
       return { events: [MESSAGE_EVENT_DEFINITION] };
     },
   );
@@ -483,6 +497,19 @@ export async function handleMcp(
         "events:subscribe",
       )
     ).allowed;
+  const privateEvents =
+    privatePilotRecipientAllowed(env, identity) &&
+    identity.scopes.includes("events:subscribe") &&
+    identity.tokenExpiresAtMs !== null &&
+    identity.tokenExpiresAtMs > Date.now() &&
+    (
+      await authorizeGuestConnection(
+        env,
+        identity.guestId,
+        identity.connectionId,
+        "events:subscribe",
+      )
+    ).allowed;
   if (liveSubscriptions && (await isListenRequest(request))) {
     return handleOwnedInboxListen(
       request,
@@ -495,7 +522,7 @@ export async function handleMcp(
   }
 
   const handler = createMcpHandler(
-    () => newServer(env, identity, liveSubscriptions),
+    () => newServer(env, identity, liveSubscriptions, privateEvents),
     {
       route: "/mcp",
       legacy: "reject",

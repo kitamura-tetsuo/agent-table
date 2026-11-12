@@ -1,8 +1,13 @@
 import { readFileSync } from "node:fs";
+import {
+  PRIVATE_PILOT_MAX_WINDOW_MS,
+  PRIVATE_PILOT_PROFILE,
+} from "../src/shared/private-pilot.ts";
 
 // A successful offline preflight is not an independently approved deployment.
 // This gate consumes only the output of the live verifier in the protected job.
-const [environment, buildSha, configSha256] = process.argv.slice(2);
+const [environment, buildSha, configSha256, profile = "manual"] =
+  process.argv.slice(2);
 let approved = false;
 try {
   const line = readFileSync(0, "utf8").trim();
@@ -16,7 +21,21 @@ try {
       manifest.environment === environment &&
       manifest.buildSha === buildSha &&
       manifest.configSha256 === configSha256 &&
-      manifest.profile === "manual" &&
+      manifest.profile === profile &&
+      (profile === "manual" ||
+        (profile === PRIVATE_PILOT_PROFILE &&
+          environment === "staging" &&
+          manifest.privatePilot?.mode === "a-only" &&
+          /^[a-f0-9]{64}$/.test(manifest.privatePilot.policySha256) &&
+          Date.parse(manifest.privatePilot.notBefore) <
+            Date.parse(manifest.privatePilot.expiresAt) &&
+          Date.parse(manifest.privatePilot.expiresAt) -
+            Date.parse(manifest.privatePilot.notBefore) <=
+            PRIVATE_PILOT_MAX_WINDOW_MS &&
+          (manifest.privatePilot.deliveryEnabled === false ||
+            (manifest.privatePilot.deliveryEnabled === true &&
+              Date.parse(manifest.privatePilot.notBefore) <= Date.now() &&
+              Date.parse(manifest.privatePilot.expiresAt) > Date.now())))) &&
       /^[1-9]\d*$/.test(manifest.workflowRunId) &&
       /^[1-9]\d*$/.test(manifest.workflowRunAttempt) &&
       /^[1-9]\d*$/.test(manifest.ciRunId) &&

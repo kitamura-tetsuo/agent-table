@@ -51,11 +51,17 @@ async function grantFor(
   guest: GuestStub,
   cookie: string,
   scopes: string,
+  registrationSource?: string,
 ) {
   const registration = await dispatch(
     new Request(`${ORIGIN}/oauth/register`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        ...(registrationSource
+          ? { "CF-Connecting-IP": registrationSource }
+          : {}),
+      },
       body: JSON.stringify({
         client_name: "Events integration fixture",
         redirect_uris: [REDIRECT],
@@ -167,12 +173,13 @@ async function grantFor(
 
 async function newPrincipal(
   scopes = "tables:read tables:write events:subscribe",
+  registrationSource?: string,
 ) {
   const guestId = crypto.randomUUID();
   const guest = env.GUESTS.get(env.GUESTS.idFromName(guestId));
   const session = await guest.createSession(guestId);
   const cookie = `__Host-agent_table_session=v1.${guestId}.${session.sessionId}.${session.secret}`;
-  return grantFor(guestId, guest, cookie, scopes);
+  return grantFor(guestId, guest, cookie, scopes, registrationSource);
 }
 
 function eventsOverlay(): Env {
@@ -3139,6 +3146,359 @@ describe("authenticated event producer through native alarm and HTTPS sender (co
     } finally {
       await peerClient.close();
       await ownerClient.close();
+    }
+  });
+});
+
+describe("protected private A-only staging pilot", () => {
+  it("uses real authority and native dispatch with scoped discovery, restart, pause, expiry, cap and closure", async () => {
+    // Keep this scenario's real DCR admissions in its own synthetic edge bucket.
+    const a = await newPrincipal(undefined, "192.0.2.24");
+    const b = await newPrincipal(undefined, "192.0.2.24");
+    const setupA = await clientFor(a.token);
+    const setupB = await clientFor(b.token);
+    const tables: string[] = [];
+    for (let index = 0; index < 2; index++) {
+      const tableId = await createTable(setupA);
+      tables.push(tableId);
+      const invite = toolOutput(
+        await setupA.callTool({
+          name: "create_invite",
+          arguments: { table_id: tableId, request_id: crypto.randomUUID() },
+        }),
+      );
+      expect(
+        (
+          await setupB.callTool({
+            name: "join_table",
+            arguments: {
+              invitation: invite.invitation,
+              request_id: crypto.randomUUID(),
+            },
+          })
+        ).isError,
+      ).not.toBe(true);
+    }
+    await setupA.close();
+    await setupB.close();
+    const [tableId, closureTable] = tables;
+    const started = Date.now();
+    const policy = {
+      schemaVersion: 1,
+      mode: "a-only",
+      buildSha: "a".repeat(40),
+      approvedAt: new Date(started - 2000).toISOString(),
+      notBefore: new Date(started - 1000).toISOString(),
+      expiresAt: new Date(started + 120_000).toISOString(),
+      approvalRef: "synthetic-private-pilot-review",
+      recipientGuestId: a.guestId,
+      recipientConnectionId: a.connectionId,
+      tableIds: tables,
+      callbackTargets: [
+        {
+          origin: "https://events.provider.example.org",
+          pathPrefix: "/callback",
+        },
+      ],
+    };
+    const overlay: Env = {
+      ...env,
+      RELEASE_ENVIRONMENT: "staging",
+      RELEASE_PROFILE: "private-pilot-a-only",
+      RELEASE_BUILD_SHA: policy.buildSha,
+      RESTORE_QUARANTINE: "false",
+      ENABLE_MCP_SUBSCRIPTIONS: "false",
+      ENABLE_OPENAI_EVENTS: "false",
+      ALLOW_OUTBOUND_NOTIFICATIONS: "true",
+      PRIVATE_PILOT_POLICY: JSON.stringify(policy),
+      // This unrelated legacy allowlist must not expand the approved pilot policy.
+      EVENTS_REVIEWED_CALLBACK_TARGETS: JSON.stringify([
+        { origin: "https://other.example.org", pathPrefix: "/" },
+      ]),
+    };
+    const configure = async (id: string, reconstruct = false) => {
+      const stub = env.TABLES.get(env.TABLES.idFromName(id));
+      if (reconstruct) await evictDurableObject(stub);
+      await runInDurableObject(stub, (instance) => {
+        const harness = instance as unknown as { env: Env };
+        harness.env = { ...harness.env, ...overlay };
+      });
+      return stub;
+    };
+    for (const id of tables) await configure(id);
+    const delivered: string[] = [];
+    let challenges = 0;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      expect(String(url)).toBe(CALLBACK);
+      const text = new TextDecoder().decode(init?.body as ArrayBuffer);
+      const body = JSON.parse(text);
+      if (body.type === "verification") {
+        challenges++;
+        return new Response(JSON.stringify({ challenge: body.challenge }));
+      }
+      const verified = new Webhook(SECRET).verify(
+        text,
+        Object.fromEntries(new Headers(init?.headers)),
+      ) as { eventId: string };
+      delivered.push(verified.eventId);
+      return new Response(null, { status: 204 });
+    });
+    const aClient = await clientFor(a.token, overlay);
+    const bClient = await clientFor(b.token, overlay);
+    const discovery = async (token: string) => {
+      const response = await dispatch(
+        new Request(RESOURCE, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Host: new URL(RESOURCE).host,
+            "Content-Type": "application/json",
+            Accept: "application/json, text/event-stream",
+            "MCP-Protocol-Version": "2026-07-28",
+            "Mcp-Method": "server/discover",
+          },
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: crypto.randomUUID(),
+            method: "server/discover",
+            params: {
+              _meta: {
+                "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                "io.modelcontextprotocol/clientCapabilities": {},
+              },
+            },
+          }),
+        }),
+        overlay,
+      );
+      expect(response.status, await response.clone().text()).toBe(200);
+      return response.json() as Promise<{
+        result: { capabilities: Record<string, unknown> };
+      }>;
+    };
+    const rows = async (id = tableId) =>
+      runInDurableObject(
+        env.TABLES.get(env.TABLES.idFromName(id)),
+        (_instance, state) =>
+          state.storage.sql
+            .exec<{
+              event_id: string;
+              message_seq: number;
+              status: string;
+              attempt_count: number;
+            }>(
+              "SELECT event_id, message_seq, status, attempt_count FROM table_event_outbox ORDER BY message_seq",
+            )
+            .toArray(),
+      );
+    const alarm = async (id = tableId, reconstruct = true) => {
+      const stub = await configure(id, reconstruct);
+      await runInDurableObject(stub, async (instance, state) => {
+        state.storage.sql.exec(
+          "UPDATE table_event_outbox SET next_attempt_at = ? WHERE status = 'pending'",
+          Date.now() - 1,
+        );
+        await instance.alarm();
+      });
+    };
+    const post = (id: string) =>
+      bClient.callTool({
+        name: "post_message",
+        arguments: {
+          table_id: id,
+          request_id: crypto.randomUUID(),
+          body: "SYNTHETIC PRIVATE PILOT",
+        },
+      });
+    try {
+      // The SDK client's typed capability schema strips provider extensions.
+      // Assert the actual discovery wire received by an Events-aware host.
+      expect((await discovery(a.token)).result.capabilities.events).toEqual({});
+      expect(
+        (await discovery(b.token)).result.capabilities.events,
+      ).toBeUndefined();
+      await expect(callEvent(bClient, "events/list")).rejects.toThrow();
+      await expect(
+        callEvent(bClient, "events/subscribe", subscriptionParams(tableId)),
+      ).rejects.toThrow();
+      await expect(
+        callEvent(
+          aClient,
+          "events/subscribe",
+          subscriptionParams(crypto.randomUUID()),
+        ),
+      ).rejects.toThrow();
+      await expect(
+        callEvent(
+          aClient,
+          "events/subscribe",
+          subscriptionParams(tableId, "https://other.example.org/callback"),
+        ),
+      ).rejects.toThrow();
+      expect(challenges).toBe(0);
+      await callEvent(aClient, "events/subscribe", subscriptionParams(tableId));
+      await callEvent(
+        aClient,
+        "events/subscribe",
+        subscriptionParams(closureTable),
+      );
+      expect(challenges).toBe(2);
+      await runInDurableObject(
+        env.TABLES.get(env.TABLES.idFromName(tableId)),
+        (_instance, state) => {
+          expect(
+            state.storage.sql
+              .exec<{ expires_at: number }>(
+                "SELECT expires_at FROM table_event_subscriptions WHERE status = 'active'",
+              )
+              .one().expires_at,
+          ).toBeLessThanOrEqual(Date.parse(policy.expiresAt));
+        },
+      );
+      expect((await post(tableId)).isError).not.toBe(true);
+      const first = (await rows())[0];
+      expect(first).toMatchObject({ status: "pending", attempt_count: 0 });
+      await alarm();
+      expect(delivered).toEqual([first.event_id]);
+      expect((await rows())[0]).toMatchObject({
+        status: "accepted",
+        attempt_count: 1,
+      });
+      await alarm();
+      expect(delivered).toEqual([first.event_id]);
+      const status = toolOutput(
+        await aClient.callTool({
+          name: "get_table",
+          arguments: { table_id: tableId },
+        }),
+      );
+      expect(status.notifications).toMatchObject({
+        available: true,
+        reason: "private_pilot_only",
+        lastAcceptedSeq: 1,
+      });
+      expect(
+        toolOutput(
+          await bClient.callTool({
+            name: "get_table",
+            arguments: { table_id: tableId },
+          }),
+        ).notifications,
+      ).toMatchObject({ available: false });
+
+      expect((await post(tableId)).isError).not.toBe(true);
+      const pending = (await rows())[1];
+      overlay.ALLOW_OUTBOUND_NOTIFICATIONS = "false";
+      await alarm();
+      expect(delivered).toHaveLength(1);
+      expect((await rows())[1]).toEqual(pending);
+      await expect(
+        callEvent(aClient, "events/subscribe", subscriptionParams(tableId)),
+      ).rejects.toThrow();
+      overlay.ALLOW_OUTBOUND_NOTIFICATIONS = "true";
+      await alarm();
+      expect(delivered).toEqual([first.event_id, pending.event_id]);
+      expect((await rows())[1]).toMatchObject({
+        attempt_count: 1,
+        status: "accepted",
+      });
+
+      expect((await post(tableId)).isError).not.toBe(true);
+      const old = (await rows())[2];
+      await runInDurableObject(
+        env.TABLES.get(env.TABLES.idFromName(tableId)),
+        (_instance, state) => {
+          // Model a persisted preapproval event without changing its retry budget.
+          state.storage.sql.exec(
+            "UPDATE table_event_outbox SET created_at = ? WHERE event_id = ?",
+            Date.parse(policy.notBefore) - 1,
+            old.event_id,
+          );
+        },
+      );
+      await alarm();
+      expect((await rows())[2]).toMatchObject({
+        status: "cancelled",
+        attempt_count: 0,
+      });
+      expect(delivered).toHaveLength(2);
+      await runInDurableObject(
+        env.TABLES.get(env.TABLES.idFromName(tableId)),
+        (_instance, state) => {
+          // The prior immutable sequence models an already consumed canary budget.
+          state.storage.sql.exec("UPDATE table_metadata SET last_seq = 12");
+        },
+      );
+      expect(toolOutput(await post(tableId)).seq).toBe(13);
+      await alarm();
+      expect((await rows()).at(-1)).toMatchObject({
+        message_seq: 13,
+        status: "cancelled",
+        attempt_count: 0,
+      });
+      expect(delivered).toHaveLength(2);
+
+      expect((await post(closureTable)).isError).not.toBe(true);
+      const terminalPending = (await rows(closureTable))[0];
+      overlay.PRIVATE_PILOT_POLICY = JSON.stringify({
+        ...policy,
+        approvedAt: new Date(started - 120_000).toISOString(),
+        notBefore: new Date(started - 119_000).toISOString(),
+        expiresAt: new Date(started - 1).toISOString(),
+      });
+      await alarm(closureTable);
+      expect((await rows(closureTable))[0]).toEqual(terminalPending);
+      expect(
+        (
+          await aClient.callTool({
+            name: "get_table",
+            arguments: { table_id: closureTable },
+          })
+        ).isError,
+      ).not.toBe(true);
+      await expect(
+        callEvent(
+          aClient,
+          "events/subscribe",
+          subscriptionParams(closureTable),
+        ),
+      ).rejects.toThrow();
+      overlay.PRIVATE_PILOT_POLICY = JSON.stringify(policy);
+      overlay.RESTORE_QUARANTINE = "true";
+      await alarm(closureTable);
+      expect((await rows(closureTable))[0]).toEqual(terminalPending);
+      expect(
+        (await dispatch(new Request(`${ORIGIN}/health`), overlay)).status,
+      ).toBe(503);
+      overlay.RESTORE_QUARANTINE = "false";
+      overlay.RELEASE_ENVIRONMENT = "production";
+      await alarm(closureTable);
+      expect((await rows(closureTable))[0]).toEqual(terminalPending);
+      expect(
+        (await dispatch(new Request(`${ORIGIN}/health`), overlay)).status,
+      ).toBe(503);
+      overlay.RELEASE_ENVIRONMENT = "staging";
+      await configure(closureTable);
+      expect(
+        (
+          await aClient.callTool({
+            name: "close_table",
+            arguments: {
+              table_id: closureTable,
+              request_id: crypto.randomUUID(),
+            },
+          })
+        ).isError,
+      ).not.toBe(true);
+      await alarm(closureTable);
+      expect((await rows(closureTable))[0]).toMatchObject({
+        status: "cancelled",
+        attempt_count: 0,
+      });
+      expect(delivered).toHaveLength(2);
+    } finally {
+      await aClient.close();
+      await bClient.close();
     }
   });
 });

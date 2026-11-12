@@ -2,6 +2,10 @@ import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { isIP } from "node:net";
 import { pathToFileURL } from "node:url";
+import {
+  PRIVATE_PILOT_PROFILE,
+  privatePilotConfiguration,
+} from "../src/shared/private-pilot.ts";
 
 const EXPECTED_DOS = new Map([
   ["TABLES", "TableDO"],
@@ -80,9 +84,18 @@ const REQUIRED_SECRETS = [
 ];
 const ACCOUNT_ID = /^[a-f0-9]{32}$/i;
 const BUILD_SHA = /^[a-f0-9]{40}$/;
-const RELEASE_PROFILES = new Set(["manual", "live", "events", "autonomous"]);
+const RELEASE_PROFILES = new Set([
+  "manual",
+  "live",
+  "events",
+  "autonomous",
+  PRIVATE_PILOT_PROFILE,
+]);
 const EVIDENCE_CHECKS = {
   manual: ["application", "security", "browser"],
+  // This isolated verification profile gathers real-host evidence; it does not
+  // advertise that the evidence already exists or authorize a public release.
+  [PRIVATE_PILOT_PROFILE]: ["application", "security", "browser"],
   live: ["application", "security", "browser", "live_runtime"],
   events: [
     "application",
@@ -300,6 +313,12 @@ function validatePeerIsolation(config, peer, environment) {
     "peer-release-identity-missing",
   );
   requireCondition(
+    peer.vars.RELEASE_PROFILE === PRIVATE_PILOT_PROFILE
+      ? peerEnvironment === "staging" && privatePilotConfiguration(peer.vars)
+      : peer.vars.PRIVATE_PILOT_POLICY === undefined,
+    "peer-private-pilot-configuration-invalid",
+  );
+  requireCondition(
     [
       "ENABLE_MCP_SUBSCRIPTIONS",
       "ENABLE_OPENAI_EVENTS",
@@ -402,12 +421,24 @@ export function validateRelease({
   const enabledEvents =
     vars.ENABLE_OPENAI_EVENTS === "true" ||
     vars.ALLOW_OUTBOUND_NOTIFICATIONS === "true";
+  if (profile === PRIVATE_PILOT_PROFILE) {
+    requireCondition(
+      environment === "staging" && privatePilotConfiguration(vars),
+      "invalid-private-pilot-configuration",
+    );
+  } else {
+    requireCondition(
+      vars.PRIVATE_PILOT_POLICY === undefined,
+      "private-pilot-policy-outside-private-profile",
+    );
+  }
   requireCondition(
     !enabledLive || ["live", "events", "autonomous"].includes(profile),
     "live-switch-without-live-evidence",
   );
   requireCondition(
-    !enabledEvents || ["events", "autonomous"].includes(profile),
+    !enabledEvents ||
+      ["events", "autonomous", PRIVATE_PILOT_PROFILE].includes(profile),
     "events-switch-without-events-evidence",
   );
   verifyEvidence(evidence, { environment, buildSha, configSha256, profile });

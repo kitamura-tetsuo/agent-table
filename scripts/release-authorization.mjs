@@ -1,5 +1,11 @@
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
+import {
+  activePrivatePilotPolicy,
+  PRIVATE_PILOT_PROFILE,
+  privatePilotConfiguration,
+} from "../src/shared/private-pilot.ts";
 import { validateRelease } from "./release-preflight.mjs";
 import {
   cloudflareReader,
@@ -212,10 +218,42 @@ export function verifyOperationalDecision(
   );
 }
 
+/** Bind private verification to a separately reviewed, finite policy. */
+export function verifyPrivatePilotDecision(record, vars, now) {
+  const policy = privatePilotConfiguration(vars);
+  const deliveryEnabled = vars.ALLOW_OUTBOUND_NOTIFICATIONS === "true";
+  requireDecision(
+    policy && (!deliveryEnabled || activePrivatePilotPolicy(vars, now)),
+    "private-pilot-not-active",
+  );
+  const policySha256 = createHash("sha256")
+    .update(vars.PRIVATE_PILOT_POLICY)
+    .digest("hex");
+  const decision = record?.privatePilot;
+  requireDecision(
+    decision?.mode === "a-only" &&
+      decision.policySha256 === policySha256 &&
+      decision.approvalRef === policy.approvalRef &&
+      decision.independentOwnerConsentsReviewed === true &&
+      decision.callbackControlReviewed === true &&
+      decision.nativeFetchRiskAccepted === true &&
+      decision.boundedCanaryReviewed === true &&
+      decision.stopPlanReviewed === true,
+    "private-pilot-scope-not-approved",
+  );
+  return {
+    mode: "a-only",
+    policySha256,
+    notBefore: policy.notBefore,
+    expiresAt: policy.expiresAt,
+    deliveryEnabled,
+  };
+}
+
 /**
- * Only the protected, manual, exact-main GitHub workflow can consume the
- * resulting in-job approval. Other profiles stay blocked until real-host
- * evidence can be independently checked, not merely flagged as passing.
+ * Only the protected exact-main workflow can consume this approval. Private
+ * A-only staging verification gathers missing host evidence; public capability
+ * profiles remain blocked until their independently observed evidence exists.
  */
 export async function authorizeRelease({
   environment,
@@ -253,8 +291,13 @@ export async function authorizeRelease({
     "unprotected-release-context",
   );
   requireDecision(
-    profile === "manual",
+    profile === "manual" ||
+      (profile === PRIVATE_PILOT_PROFILE && environment === "staging"),
     "profile-real-host-evidence-not-verified",
+  );
+  requireDecision(
+    profile !== PRIVATE_PILOT_PROFILE || !bootstrapStaging,
+    "private-pilot-cannot-bootstrap",
   );
   requireDecision(
     !bootstrapStaging ||
@@ -281,7 +324,8 @@ export async function authorizeRelease({
     config.vars.RESTORE_QUARANTINE === "false" &&
       config.vars.ENABLE_MCP_SUBSCRIPTIONS === "false" &&
       config.vars.ENABLE_OPENAI_EVENTS === "false" &&
-      config.vars.ALLOW_OUTBOUND_NOTIFICATIONS === "false",
+      (profile === PRIVATE_PILOT_PROFILE ||
+        config.vars.ALLOW_OUTBOUND_NOTIFICATIONS === "false"),
     "unsupported-capability-or-quarantine-clearance",
   );
   if (config.vars.ALLOW_NEW_GUESTS === "true") {
@@ -301,6 +345,10 @@ export async function authorizeRelease({
     now,
     bootstrapStaging,
   });
+  const privatePilot =
+    profile === PRIVATE_PILOT_PROFILE
+      ? verifyPrivatePilotDecision(operations, config.vars, now)
+      : undefined;
   const [ciRunId, observed] = await Promise.all([
     verifyCiEvidence(evidence, buildSha, githubRead),
     readCloudflareDeployment(config, peer, cloudflareRead, {
@@ -350,6 +398,7 @@ export async function authorizeRelease({
   );
   return {
     ...offline,
+    ...(privatePilot ? { privatePilot } : {}),
     bootstrapStaging,
     deploymentApproved: true,
     approvalSource: "protected-environment-and-live-provider-readback",

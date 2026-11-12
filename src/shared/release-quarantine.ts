@@ -1,3 +1,5 @@
+import { privatePilotConfiguration } from "./private-pilot";
+
 /**
  * This independent Worker binding is outside restored Durable Object state.
  * A missing mode, missing quarantine flag, or unknown value fails closed.
@@ -14,6 +16,7 @@ export function isRestoreQuarantined(
       | "ENABLE_MCP_SUBSCRIPTIONS"
       | "ENABLE_OPENAI_EVENTS"
       | "ALLOW_OUTBOUND_NOTIFICATIONS"
+      | "PRIVATE_PILOT_POLICY"
     >
   >,
 ): boolean {
@@ -23,6 +26,7 @@ export function isRestoreQuarantined(
     env.RELEASE_ENVIRONMENT === "production";
   if (!knownEnvironment || env.RESTORE_QUARANTINE !== "false") return true;
   if (env.RELEASE_ENVIRONMENT === "local") return false;
+  if (privatePilotConfiguration(env)) return false;
   // The initial public profile is manual-only. A feature flag or old Worker
   // configuration must not promote unverified live or autonomous capability.
   return !(
