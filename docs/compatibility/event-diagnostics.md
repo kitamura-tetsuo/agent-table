@@ -31,18 +31,22 @@ record is written only after the TableDO RPC returned, not before dispatch.
 
 ## Storage and access
 
-Detailed collection runs only during an active staging `a-only-discovery`
-policy with `private-redacted` observations. Each HTTP request has a fresh
-server-generated diagnostic ID. No client-supplied ID, authentication token,
-header value, message body, exception text or private identity is copied into
-a diagnostic record. Unmatched authenticated connections may produce coarse
-recipient/authorization categories but cannot read the selected recipient's
-records.
+Detailed collection runs only during an active staging `a-only-discovery` or
+`a-only` policy with `private-redacted` observations. Delivery mode also
+requires outbound to remain enabled; a pause or expiry stops new recording.
+The delivery trace retains categorical subscription success or callback
+destination, challenge and transport failures without callback values. Each
+HTTP request has a fresh server-generated diagnostic ID. No client-supplied
+ID, authentication token, header value, message body, exception text or private
+identity is copied into a diagnostic record. Unmatched authenticated connections
+may produce coarse recipient/authorization categories but cannot read the
+selected recipient's records.
 
 A single GuestDO KV value holds at most 64 records, written in batches of at
 most 16. Reads include a discarded-record count. The ring is bound to the
 exact effective policy and is replaced when its scope changes. Matching
-records remain readable for one hour after the policy expires; after that,
+records remain readable after a delivery pause and for one hour after the
+policy expires, subject to a fresh grant and unchanged policy; after that,
 they are hidden and a subsequent permitted write replaces them. This is not
 a claim of immediate physical deletion from provider backups.
 

@@ -1,5 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import {
+  activeEventDiagnosticPolicy,
   EVENT_DIAGNOSTIC_BATCH_LIMIT,
   EVENT_DIAGNOSTIC_RECORD_LIMIT,
   EVENT_DIAGNOSTIC_RETENTION_MS,
@@ -30,7 +31,6 @@ import {
 import { DurableDeadlineScheduler } from "../shared/deadlines";
 import { CREATION_LIMITS } from "../shared/limits";
 import {
-  activePrivatePilotDiscoveryPolicy,
   type PrivatePilotPolicy,
   privatePilotConfiguration,
   privatePilotRecipientMatches,
@@ -265,7 +265,7 @@ export class GuestDO extends DurableObject<Env> {
         !/^[a-f0-9]{64}$/.test(scope.policyDigest)
       )
         return false;
-      const policy = activePrivatePilotDiscoveryPolicy(this.env);
+      const policy = activeEventDiagnosticPolicy(this.env);
       if (
         policy?.observationMode !== "private-redacted" ||
         scope.buildSha !== policy.buildSha ||
@@ -290,10 +290,10 @@ export class GuestDO extends DurableObject<Env> {
         // Exact normalized bytes preserve the captured digest across awaits.
         JSON.stringify(current) === encodedPolicy;
       return await this.ctx.storage.transaction(async (transaction) => {
-        const current = activePrivatePilotDiscoveryPolicy(this.env);
+        const current = activeEventDiagnosticPolicy(this.env);
         if (!scopeStillMatches(current)) return false;
         const stored = await transaction.get<unknown>(EVENT_DIAGNOSTIC_KEY);
-        const latest = activePrivatePilotDiscoveryPolicy(this.env);
+        const latest = activeEventDiagnosticPolicy(this.env);
         if (!scopeStillMatches(latest)) return false;
         const prior =
           validDiagnosticRing(stored) &&
@@ -358,8 +358,7 @@ export class GuestDO extends DurableObject<Env> {
         context,
       });
       if (
-        policy?.mode !== "a-only-discovery" ||
-        policy.observationMode !== "private-redacted" ||
+        policy?.observationMode !== "private-redacted" ||
         !privatePilotRecipientMatches(policy, actor)
       )
         return empty(false);
