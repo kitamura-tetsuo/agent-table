@@ -6,6 +6,15 @@ host reports a generic subscription validation failure without the underlying
 MCP error. It requires both `tables:read` and `events:subscribe`; it grants no
 additional membership or subscription authority.
 
+An existing host catalog can also call `get_table({ table_id })` during an
+active private discovery window. For the exact configured recipient and table,
+the response adds `eventDiagnostics` after the same fresh scope and membership
+checks. This compatibility path uses the existing input schema, so a catalog
+rescan is not required. Ordinary metadata reads continue when optional
+diagnostics fail; a missing field or `status: "unknown"` is not evidence that no
+request occurred. Other profiles, expired windows and unmatched callers do not
+receive this additional payload.
+
 ## What the tool reports
 
 - The Worker, TableDO and GuestDO runtime contexts: release environment,

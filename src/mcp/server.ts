@@ -31,8 +31,10 @@ import { authorizeGuestConnection, type ConnectionScope } from "../shared/auth";
 import { validTableId } from "../shared/invitations";
 import { CREATION_LIMITS, TABLE_LIMITS } from "../shared/limits";
 import {
+  activePrivatePilotDiscoveryPolicy,
   PRIVATE_PILOT_PROFILE,
   privatePilotDiscoveryAllowed,
+  privatePilotRecipientMatches,
 } from "../shared/private-pilot";
 import { getOwnConnectionIdentity } from "./connection-identity";
 import type { EventDiagnosticTrace } from "./event-diagnostic-trace";
@@ -349,7 +351,7 @@ function newServer(
     "get_table",
     {
       description:
-        "Read only your membership-authorized table metadata and notification availability.",
+        "Read only your membership-authorized table metadata and notification availability. An authorized active private discovery pilot also includes bounded eventDiagnostics.",
       inputSchema: getInput,
       annotations: {
         readOnlyHint: true,
@@ -362,7 +364,43 @@ function newServer(
       const actor = await scopedActor("tables:read");
       if (!actor)
         return toolResult({ error: { code: "NOT_AUTHORIZED" } }, true);
-      return appResult(await getTable(env, actor, table_id), liveSubscriptions);
+      const result = await getTable(env, actor, table_id);
+      const policy = activePrivatePilotDiscoveryPolicy(env);
+      if (
+        result.ok &&
+        policy &&
+        privatePilotRecipientMatches(policy, actor, table_id)
+      ) {
+        // Existing host catalogs can read diagnostics without a tool rescan.
+        // The additional read keeps its own fresh scope and membership checks.
+        try {
+          const eventActor = await scopedActor("events:subscribe");
+          if (eventActor) {
+            const diagnostic = await getEventDiagnostics(
+              env,
+              eventActor,
+              table_id,
+            );
+            const currentPolicy = activePrivatePilotDiscoveryPolicy(env);
+            if (
+              !currentPolicy ||
+              JSON.stringify(currentPolicy) !== JSON.stringify(policy) ||
+              !privatePilotRecipientMatches(currentPolicy, actor, table_id)
+            )
+              return appResult(result, liveSubscriptions);
+            const value = {
+              ...result.value,
+              eventDiagnostics: diagnostic.ok
+                ? diagnostic.value
+                : { status: "unknown" },
+            };
+            return appResult({ ok: true, value }, liveSubscriptions);
+          }
+        } catch {
+          // Optional diagnostics must not break a successful metadata read.
+        }
+      }
+      return appResult(result, liveSubscriptions);
     },
   );
   server.registerTool(

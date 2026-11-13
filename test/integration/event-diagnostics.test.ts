@@ -90,7 +90,12 @@ async function wire(
   f: Fixture,
   actor: VerifiedConnectionActor,
   scopes: ConnectionScope[] = ["tables:read", "events:subscribe"],
+  options: {
+    toolName?: "get_event_diagnostics" | "get_table";
+    overlay?: Env;
+  } = {},
 ) {
+  const toolName = options.toolName ?? "get_event_diagnostics";
   // The real handler receives a synthetic already-validated OAuth identity;
   // real GuestDO grants and TableDO membership remain authoritative below it.
   const response = await handleMcp(
@@ -102,14 +107,14 @@ async function wire(
         Accept: "application/json, text/event-stream",
         "MCP-Protocol-Version": "2026-07-28",
         "Mcp-Method": "tools/call",
-        "Mcp-Name": "get_event_diagnostics",
+        "Mcp-Name": toolName,
       },
       body: JSON.stringify({
         jsonrpc: "2.0",
         id: crypto.randomUUID(),
         method: "tools/call",
         params: {
-          name: "get_event_diagnostics",
+          name: toolName,
           arguments: { table_id: f.tableId },
           _meta: {
             "io.modelcontextprotocol/protocolVersion": "2026-07-28",
@@ -118,7 +123,7 @@ async function wire(
         },
       }),
     }),
-    f.overlay,
+    options.overlay ?? f.overlay,
     createExecutionContext(),
     {
       guestId: actor.guestId,
@@ -140,28 +145,50 @@ async function wire(
   };
 }
 
+async function retainDiagnostic(f: Fixture) {
+  const record: EventDiagnosticRecord = {
+    diagnosticId: "0123456789ab",
+    observedAt: Date.now(),
+    method: "events/subscribe",
+    stage: "parameters",
+    outcome: "invalid",
+    detail: "delivery",
+  };
+  const policy = parsePrivatePilotPolicy(f.overlay.PRIVATE_PILOT_POLICY);
+  if (!policy) throw new Error("Missing parsed diagnostic fixture policy");
+  expect(
+    await f.owner.stub.recordEventDiagnostics([record], {
+      buildSha: policy.buildSha,
+      approvalRef: policy.approvalRef,
+      policyDigest: await eventDiagnosticPolicyDigest(policy),
+    }),
+  ).toBe(true);
+  return record;
+}
+
+function diagnosticRpcOverlay(
+  f: Fixture,
+  readEventDiagnostics: typeof f.table.readEventDiagnostics,
+): Env {
+  return {
+    ...f.overlay,
+    TABLES: {
+      idFromName: (name: string) => env.TABLES.idFromName(name),
+      get: () => ({
+        getMetadataForMcp: (actor: VerifiedConnectionActor) =>
+          f.table.getMetadataForMcp(actor),
+        readEventDiagnostics,
+      }),
+    } as unknown as Env["TABLES"],
+  };
+}
+
 afterEach(() => vi.restoreAllMocks());
 
 describe("membership-authorized Events diagnostics", () => {
   it("combines actual component reads without creating subscription work", async () => {
     const f = await fixture();
-    const record: EventDiagnosticRecord = {
-      diagnosticId: "0123456789ab",
-      observedAt: Date.now(),
-      method: "events/subscribe",
-      stage: "parameters",
-      outcome: "invalid",
-      detail: "delivery",
-    };
-    const policy = parsePrivatePilotPolicy(f.overlay.PRIVATE_PILOT_POLICY);
-    if (!policy) throw new Error("Missing parsed diagnostic fixture policy");
-    expect(
-      await f.owner.stub.recordEventDiagnostics([record], {
-        buildSha: policy.buildSha,
-        approvalRef: policy.approvalRef,
-        policyDigest: await eventDiagnosticPolicyDigest(policy),
-      }),
-    ).toBe(true);
+    const record = await retainDiagnostic(f);
     const before = await f.rows();
     const result = await getEventDiagnostics(f.overlay, f.actor, f.tableId);
     expect(result).toMatchObject({
@@ -580,4 +607,217 @@ describe("membership-authorized Events diagnostics", () => {
       value: { error: { code: "TABLE_NOT_FOUND" } },
     });
   });
+});
+
+describe("Events diagnostics through the existing get_table tool", () => {
+  it("adds the same scoped retained diagnostics while preserving ordinary metadata", async () => {
+    const f = await fixture();
+    const before = await f.rows();
+    const metadata = await wire(f, f.actor, ["tables:read"], {
+      toolName: "get_table",
+    });
+    expect(metadata.isError).toBe(false);
+    expect(metadata.value).not.toHaveProperty("eventDiagnostics");
+    const record = await retainDiagnostic(f);
+    vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const callback =
+      "https://events.provider.example.org/BRIDGE_PATH_SENTINEL?key=BRIDGE_QUERY_SENTINEL";
+    const secret = `whsec_${btoa("B".repeat(32))}`;
+    expect(
+      await f.table.observeEventCallback(f.actor, {
+        name: "table.message.created",
+        arguments: { table_id: f.tableId },
+        delivery: { mode: "webhook", url: callback, secret },
+        cursor: null,
+      }),
+    ).toEqual({ ok: true, value: {} });
+    const diagnostic = await getEventDiagnostics(f.overlay, f.actor, f.tableId);
+    if (!diagnostic.ok) throw new Error("Missing synthetic diagnostic read");
+    const result = await wire(f, f.actor, undefined, { toolName: "get_table" });
+    expect(result.isError).toBe(false);
+    const { eventDiagnostics, ...ordinaryMetadata } = result.value;
+    expect(ordinaryMetadata).toEqual(metadata.value);
+    expect(eventDiagnostics).toEqual({
+      ...diagnostic.value,
+      observedAt: expect.any(String),
+      table: { ...diagnostic.value.table, observedAt: expect.any(String) },
+    });
+    expect(eventDiagnostics.recent.records).toEqual([record]);
+    expect(eventDiagnostics.table.callbackOrigin).toBe(
+      "https://events.provider.example.org",
+    );
+    for (const privateValue of [
+      callback,
+      "BRIDGE_PATH_SENTINEL",
+      "BRIDGE_QUERY_SENTINEL",
+      secret,
+    ]) {
+      expect(JSON.stringify(eventDiagnostics)).not.toContain(privateValue);
+    }
+    expect(await f.rows()).toEqual(before);
+  });
+
+  it("omits diagnostics without delegated or currently granted Events scope", async () => {
+    const f = await fixture();
+    const tokenLimited = await wire(f, f.actor, ["tables:read"], {
+      toolName: "get_table",
+    });
+    expect(tokenLimited.isError).toBe(false);
+    expect(tokenLimited.value.tableId).toBe(f.tableId);
+    expect(tokenLimited.value).not.toHaveProperty("eventDiagnostics");
+    await runInDurableObject(f.owner.stub, (_instance, state) => {
+      state.storage.sql.exec(
+        "UPDATE guest_connections SET scopes_json = ? WHERE connection_id = ?",
+        JSON.stringify(["tables:read"]),
+        f.owner.grant.connectionId,
+      );
+    });
+    const grantLimited = await wire(f, f.actor, undefined, {
+      toolName: "get_table",
+    });
+    expect(grantLimited).toEqual(tokenLimited);
+  });
+
+  it("omits diagnostics outside the exact recipient, table, window and staging profile", async () => {
+    const f = await fixture();
+    const now = Date.now();
+    const secondGrant = await f.owner.stub.createConnection(
+      f.owner.session.sessionId,
+      f.owner.session.secret,
+      ["tables:read", "events:subscribe"],
+      now + 60_000,
+    );
+    if (!secondGrant) throw new Error("Missing synthetic bridge connection");
+    const scenarios: Array<{ actor: VerifiedConnectionActor; overlay: Env }> = [
+      { actor: f.peer.actor("events:subscribe"), overlay: f.overlay },
+      {
+        actor: { ...f.actor, connectionId: secondGrant.connectionId },
+        overlay: f.overlay,
+      },
+      {
+        actor: f.actor,
+        overlay: {
+          ...f.overlay,
+          PRIVATE_PILOT_POLICY: JSON.stringify({
+            ...f.policy,
+            tableIds: [crypto.randomUUID()],
+          }),
+        },
+      },
+      {
+        actor: f.actor,
+        overlay: {
+          ...f.overlay,
+          PRIVATE_PILOT_POLICY: JSON.stringify({
+            ...f.policy,
+            approvedAt: new Date(now - 120_000).toISOString(),
+            notBefore: new Date(now - 119_000).toISOString(),
+            expiresAt: new Date(now - 1).toISOString(),
+          }),
+        },
+      },
+      {
+        actor: f.actor,
+        overlay: {
+          ...f.overlay,
+          RELEASE_ENVIRONMENT: "production",
+          RELEASE_PROFILE: "manual",
+          PRIVATE_PILOT_POLICY: undefined,
+        },
+      },
+      {
+        actor: f.actor,
+        overlay: {
+          ...f.overlay,
+          ALLOW_OUTBOUND_NOTIFICATIONS: "true",
+          PRIVATE_PILOT_POLICY: JSON.stringify({
+            ...f.policy,
+            mode: "a-only",
+            callbackTargets: [
+              {
+                origin: "https://events.provider.example.org",
+                pathPrefix: "/callback",
+              },
+            ],
+          }),
+        },
+      },
+    ];
+    for (const scenario of scenarios) {
+      const result = await wire(f, scenario.actor, undefined, {
+        toolName: "get_table",
+        overlay: scenario.overlay,
+      });
+      expect(result.isError).toBe(false);
+      expect(result.value.tableId).toBe(f.tableId);
+      expect(result.value).not.toHaveProperty("eventDiagnostics");
+    }
+  });
+
+  it("does not turn policy membership claims into actual table access", async () => {
+    const f = await fixture();
+    const outsider = await inboxStreamFixture(env);
+    const actor = outsider.owner.actor("events:subscribe");
+    const overlay: Env = {
+      ...f.overlay,
+      PRIVATE_PILOT_POLICY: JSON.stringify({
+        ...f.policy,
+        recipientGuestId: actor.guestId,
+        recipientConnectionId: actor.connectionId,
+      }),
+    };
+    expect(
+      await wire(f, actor, undefined, { toolName: "get_table", overlay }),
+    ).toEqual({
+      isError: true,
+      value: { error: { code: "TABLE_NOT_FOUND" } },
+    });
+  });
+
+  it("keeps successful metadata when the optional diagnostic RPC fails", async () => {
+    const f = await fixture();
+    const metadata = await wire(f, f.actor, ["tables:read"], {
+      toolName: "get_table",
+    });
+    const overlay = diagnosticRpcOverlay(f, async () => {
+      throw new Error("BRIDGE_PRIVATE_RPC_SENTINEL");
+    });
+    const result = await wire(f, f.actor, undefined, {
+      toolName: "get_table",
+      overlay,
+    });
+    expect(result).toEqual({
+      isError: false,
+      value: { ...metadata.value, eventDiagnostics: { status: "unknown" } },
+    });
+    expect(JSON.stringify(result)).not.toContain("BRIDGE_PRIVATE_RPC_SENTINEL");
+  });
+
+  it.each(["expiry", "policy change"] as const)(
+    "omits optional diagnostics after %s during the read",
+    async (change) => {
+      const f = await fixture();
+      const metadata = await wire(f, f.actor, ["tables:read"], {
+        toolName: "get_table",
+      });
+      const overlay = diagnosticRpcOverlay(f, async (actor) => {
+        const result = await f.table.readEventDiagnostics(actor);
+        if (change === "expiry") {
+          vi.spyOn(Date, "now").mockReturnValue(Date.parse(f.policy.expiresAt));
+        } else {
+          overlay.PRIVATE_PILOT_POLICY = JSON.stringify({
+            ...f.policy,
+            approvalRef: "synthetic-replaced-bridge-policy",
+          });
+        }
+        return result;
+      });
+      const result = await wire(f, f.actor, undefined, {
+        toolName: "get_table",
+        overlay,
+      });
+      expect(result).toEqual(metadata);
+      expect(result.value).not.toHaveProperty("eventDiagnostics");
+    },
+  );
 });
