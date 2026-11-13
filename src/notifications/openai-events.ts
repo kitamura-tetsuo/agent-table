@@ -85,21 +85,43 @@ export function parseEventSubscriptionParams(
   value: unknown,
   operation: "subscribe" | "unsubscribe",
 ): EventSubscriptionParams | null {
+  const result = inspectEventSubscriptionParams(value, operation);
+  return result.ok ? result.value : null;
+}
+
+export type EventParameterFailure =
+  | "shape"
+  | "metadata"
+  | "event"
+  | "arguments"
+  | "delivery"
+  | "secret"
+  | "cursor"
+  | "ttl";
+
+/** Classify failures without retaining the rejected field or changing validation. */
+export function inspectEventSubscriptionParams(
+  value: unknown,
+  operation: "subscribe" | "unsubscribe",
+):
+  | { ok: true; value: EventSubscriptionParams }
+  | { ok: false; detail: EventParameterFailure } {
   const keys =
     operation === "subscribe"
       ? ["name", "arguments", "delivery", "cursor", "ttlMs", "_meta"]
       : ["name", "arguments", "delivery", "_meta"];
-  if (!exactRecord(value, keys)) return null;
+  if (!exactRecord(value, keys)) return { ok: false, detail: "shape" };
   // Official MCP clients inject protocol metadata into custom request params.
   // It has no authority and is never copied into the application arguments.
-  if ("_meta" in value && !acceptableProtocolMetadata(value._meta)) return null;
-  if (value.name !== MESSAGE_EVENT_NAME) return null;
+  if ("_meta" in value && !acceptableProtocolMetadata(value._meta))
+    return { ok: false, detail: "metadata" };
+  if (value.name !== MESSAGE_EVENT_NAME) return { ok: false, detail: "event" };
   if (
     !exactRecord(value.arguments, ["table_id"]) ||
     typeof value.arguments.table_id !== "string" ||
     !UUID_V4.test(value.arguments.table_id)
   )
-    return null;
+    return { ok: false, detail: "arguments" };
   const deliveryKeys =
     operation === "subscribe" ? ["mode", "url", "secret"] : ["mode", "url"];
   if (
@@ -109,35 +131,39 @@ export function parseEventSubscriptionParams(
     value.delivery.url.length > 2048 ||
     !value.delivery.url.startsWith("https://")
   )
-    return null;
+    return { ok: false, detail: "delivery" };
   if (
     operation === "subscribe" &&
     (typeof value.delivery.secret !== "string" ||
       !validSigningSecret(value.delivery.secret))
   )
-    return null;
-  if (operation === "unsubscribe" && "secret" in value.delivery) return null;
+    return { ok: false, detail: "secret" };
+  if (operation === "unsubscribe" && "secret" in value.delivery)
+    return { ok: false, detail: "secret" };
   if (operation === "subscribe" && "cursor" in value && value.cursor !== null)
-    return null;
+    return { ok: false, detail: "cursor" };
   const ttl =
     operation === "subscribe" && "ttlMs" in value ? value.ttlMs : null;
   if (
     ttl !== null &&
     (typeof ttl !== "number" || !Number.isSafeInteger(ttl) || ttl < 1000)
   )
-    return null;
+    return { ok: false, detail: "ttl" };
   return {
-    name: MESSAGE_EVENT_NAME,
-    arguments: { table_id: value.arguments.table_id },
-    delivery: {
-      mode: "webhook",
-      url: value.delivery.url,
-      ...(operation === "subscribe"
-        ? { secret: value.delivery.secret as string }
-        : {}),
+    ok: true,
+    value: {
+      name: MESSAGE_EVENT_NAME,
+      arguments: { table_id: value.arguments.table_id },
+      delivery: {
+        mode: "webhook",
+        url: value.delivery.url,
+        ...(operation === "subscribe"
+          ? { secret: value.delivery.secret as string }
+          : {}),
+      },
+      cursor: null,
+      ttlMs: ttl,
     },
-    cursor: null,
-    ttlMs: ttl,
   };
 }
 

@@ -5,6 +5,7 @@ import {
   OAuthError,
   OAuthResourceServer,
 } from "@cloudflare/workers-oauth-provider";
+import type { EventDiagnosticTrace } from "../mcp/event-diagnostic-trace";
 import { handleMcp } from "../mcp/server";
 import { validatedTokenDeadline } from "../mcp/subscriptions";
 import { checkPrincipalAdmission } from "../shared/admission";
@@ -446,7 +447,9 @@ export async function handleAuthenticatedMcp(
   request: Request,
   env: Env,
   ctx: ExecutionContext,
+  diagnostics?: EventDiagnosticTrace,
 ): Promise<Response> {
+  diagnostics?.record(diagnostics.methodHint, "authentication", "received");
   const origin = canonicalOAuthOrigin(env);
   const resource = canonicalMcpResource(env);
   const host = new OAuthResourceServer<Env, OAuthActorProps>({
@@ -478,6 +481,11 @@ export async function handleAuthenticatedMcp(
           scope,
         );
         if (!checked.allowed) {
+          diagnostics?.record(
+            diagnostics.methodHint,
+            "authentication",
+            "denied",
+          );
           return safeError("Connection not authorized", 401);
         }
         const rateRejected = await checkPrincipalAdmission(
@@ -487,12 +495,18 @@ export async function handleAuthenticatedMcp(
         if (rateRejected) return rateRejected;
         // The actor is request-local. Private tools must independently enforce
         // the scope of each operation and check TableDO membership.
-        return handleMcp(authRequest, environment, authCtx, {
-          guestId: props.guestId,
-          connectionId: props.connectionId,
-          scopes,
-          tokenExpiresAtMs: validatedTokenDeadline(authCtx.auth.expiresAt),
-        });
+        return handleMcp(
+          authRequest,
+          environment,
+          authCtx,
+          {
+            guestId: props.guestId,
+            connectionId: props.connectionId,
+            scopes,
+            tokenExpiresAtMs: validatedTokenDeadline(authCtx.auth.expiresAt),
+          },
+          diagnostics,
+        );
       },
     },
   });

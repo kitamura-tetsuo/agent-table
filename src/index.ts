@@ -14,6 +14,10 @@ import {
 } from "./auth/provider";
 import { handleStagingEvidence } from "./evidence/staging";
 import {
+  beginEventDiagnosticTrace,
+  type EventDiagnosticTrace,
+} from "./mcp/event-diagnostic-trace";
+import {
   checkEdgeAdmission,
   type EdgeAdmissionCategory,
   rejectOversizedIngress,
@@ -64,11 +68,12 @@ function edgeCategory(request: Request): EdgeAdmissionCategory | null {
   return null;
 }
 
-const handleRequest: ExportedHandler<Env>["fetch"] = async (
-  request,
-  env,
-  ctx,
-) => {
+const handleRequest = async (
+  request: Request,
+  env: Env,
+  ctx: ExecutionContext,
+  diagnostics?: EventDiagnosticTrace,
+): Promise<Response> => {
   const quarantine = rejectRestoredAccess(env);
   if (quarantine) return quarantine;
   const ingressRejected = await rejectOversizedIngress(request);
@@ -86,7 +91,7 @@ const handleRequest: ExportedHandler<Env>["fetch"] = async (
     url.pathname === "/mcp" ||
     url.pathname === "/.well-known/oauth-protected-resource/mcp"
   )
-    return handleAuthenticatedMcp(request, env, ctx);
+    return handleAuthenticatedMcp(request, env, ctx, diagnostics);
   if (url.pathname === "/authorize") return handleAuthorize(request, env);
   if (url.pathname === "/oauth/token") {
     if (env.OAUTH_AUDIT_MODE !== "metadata")
@@ -174,10 +179,12 @@ export default {
   async fetch(request, env, ctx) {
     const started = Date.now();
     const requestCorrelation = correlationId();
+    const diagnostics = beginEventDiagnosticTrace(request, env);
+    diagnostics?.record(diagnostics.methodHint, "request", "received");
     let outcome: "response" | "exception" = "exception";
     let status = 500;
     try {
-      const response = await handleRequest(request, env, ctx);
+      const response = await handleRequest(request, env, ctx, diagnostics);
       outcome = "response";
       status = response.status;
       return response;
@@ -188,6 +195,18 @@ export default {
         headers: { "Cache-Control": "no-store" },
       });
     } finally {
+      diagnostics?.record(
+        diagnostics.methodHint,
+        "response",
+        outcome === "exception"
+          ? "exception"
+          : status >= 500
+            ? "http_server_error"
+            : status >= 400
+              ? "http_client_error"
+              : "http_success",
+      );
+      diagnostics?.finish(ctx);
       emitOperationalEvent({
         kind: "http",
         route: edgeCategory(request) ?? "other",
