@@ -1,5 +1,9 @@
 import { DurableObject } from "cloudflare:workers";
 import {
+  EVENT_DIAGNOSTIC_RETENTION_MS,
+  eventDiagnosticContext,
+} from "../evidence/event-diagnostics";
+import {
   observePrivateAttempt,
   observePrivateCallbackOrigin,
 } from "../evidence/private-pilot";
@@ -39,6 +43,7 @@ import {
   reserveOutboxAttempt,
   settleOutboxAttempt,
 } from "../notifications/outbox";
+import type { TableEventDiagnostics } from "../services/event-diagnostics";
 import { allowOutboundNotifications } from "../shared/admission";
 import {
   authorizeGuestConnection,
@@ -76,6 +81,7 @@ import {
   activePrivatePilotPolicy,
   PRIVATE_PILOT_MAX_MESSAGE_SEQ,
   PRIVATE_PILOT_PROFILE,
+  type PrivatePilotPolicy,
   privatePilotConfiguration,
   privatePilotRecipientAllowed,
   privatePilotRecipientMatches,
@@ -233,6 +239,72 @@ const OUTBOX_DISPATCH_BATCH = 4;
 const OUTBOX_AUTHORITY_RETRY_MS = 60_000;
 const EVENT_CANDIDATE_WINDOW_MS = 15_000;
 const EVENT_ROTATION_WINDOW_MS = 5 * 60_000;
+const CALLBACK_ORIGIN_DIAGNOSTIC_KEY = "event-callback-origin:v1";
+
+async function callbackOriginPolicyDigest(
+  policy: PrivatePilotPolicy,
+): Promise<string> {
+  const digest = new Uint8Array(
+    await crypto.subtle.digest(
+      "SHA-256",
+      new TextEncoder().encode(JSON.stringify(policy)),
+    ),
+  );
+  return Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join(
+    "",
+  );
+}
+
+function retainedCallbackOrigin(
+  stored: unknown,
+  policy: PrivatePilotPolicy | null,
+  policyDigest: string | null,
+  actor: VerifiedConnectionActor,
+  tableId: string,
+  now: number,
+): string | null {
+  if (
+    policy?.mode !== "a-only-discovery" ||
+    !policyDigest ||
+    !privatePilotRecipientMatches(policy, actor, tableId) ||
+    !stored ||
+    typeof stored !== "object" ||
+    Array.isArray(stored)
+  )
+    return null;
+  const row = stored as Record<string, unknown>;
+  const keys = [
+    "schemaVersion",
+    "policyDigest",
+    "buildSha",
+    "approvalRef",
+    "recipientConnectionId",
+    "tableId",
+    "origin",
+    "observedAt",
+    "retentionUntil",
+  ];
+  return Object.keys(row).length === keys.length &&
+    keys.every((key) => Object.hasOwn(row, key)) &&
+    row.schemaVersion === 1 &&
+    row.policyDigest === policyDigest &&
+    row.buildSha === policy.buildSha &&
+    row.approvalRef === policy.approvalRef &&
+    row.recipientConnectionId === actor.connectionId &&
+    row.tableId === tableId &&
+    typeof row.observedAt === "number" &&
+    Number.isSafeInteger(row.observedAt) &&
+    row.observedAt >= Date.parse(policy.notBefore) &&
+    row.observedAt < Date.parse(policy.expiresAt) &&
+    row.observedAt <= now &&
+    row.retentionUntil ===
+      Date.parse(policy.expiresAt) + EVENT_DIAGNOSTIC_RETENTION_MS &&
+    now < row.retentionUntil &&
+    typeof row.origin === "string" &&
+    sanitizedCallbackOrigin(row.origin) === row.origin
+    ? row.origin
+    : null;
+}
 
 export type InvitationResult =
   | {
@@ -976,7 +1048,7 @@ export class TableDO extends DurableObject<Env> {
   }
 
   /**
-   * Inspect a genuine host registration without persisting its destination or
+   * Inspect a host registration without persisting its full callback URL or
    * secret, creating a candidate/subscription, or invoking any network sender.
    */
   async observeEventCallback(
@@ -1030,15 +1102,40 @@ export class TableDO extends DurableObject<Env> {
         (table.state !== "waiting" && table.state !== "open")
       )
         return { ok: false, code: "TABLE_TERMINAL" };
-      return observePrivateCallbackOrigin(
-        this.env,
-        fresh,
-        table.table_id,
-        member.membership_id,
-        origin,
+      if (
+        !observePrivateCallbackOrigin(
+          this.env,
+          fresh,
+          table.table_id,
+          member.membership_id,
+          origin,
+        )
       )
-        ? { ok: true, value: {} }
-        : { ok: false, code: "TABLE_NOT_FOUND" };
+        return { ok: false, code: "TABLE_NOT_FOUND" };
+      try {
+        // Retain one sanitized origin for this exact scope, independently of
+        // sampled tail output. This diagnostic never authorizes delivery.
+        const policyDigest = await callbackOriginPolicyDigest(currentPolicy);
+        const latestPolicy = privatePilotConfiguration(this.env);
+        if (JSON.stringify(latestPolicy) === JSON.stringify(currentPolicy)) {
+          await this.ctx.storage.put(CALLBACK_ORIGIN_DIAGNOSTIC_KEY, {
+            schemaVersion: 1,
+            policyDigest,
+            buildSha: currentPolicy.buildSha,
+            approvalRef: currentPolicy.approvalRef,
+            recipientConnectionId: fresh.connectionId,
+            tableId: table.table_id,
+            origin,
+            observedAt: now,
+            retentionUntil:
+              Date.parse(currentPolicy.expiresAt) +
+              EVENT_DIAGNOSTIC_RETENTION_MS,
+          });
+        }
+      } catch {
+        // A failed diagnostic write cannot change the authorized observation.
+      }
+      return { ok: true, value: {} };
     } catch {
       return { ok: false, code: "TEMPORARILY_UNAVAILABLE" };
     }
@@ -2118,6 +2215,66 @@ export class TableDO extends DurableObject<Env> {
           value: this.publicMetadata(access.value.table, access.value.member),
         }
       : access;
+  }
+
+  /**
+   * Connection-local diagnostic read: preserve the actual grant and membership
+   * boundary, but report policy mismatch or expiry instead of hiding it.
+   * This never advances lifecycle, creates subscriptions, or dispatches work.
+   */
+  async readEventDiagnostics(
+    actor: VerifiedConnectionActor,
+  ): Promise<TableResult<TableEventDiagnostics>> {
+    const policyAtRead = privatePilotConfiguration(this.env);
+    let storedOrigin: unknown;
+    let policyDigest: string | null = null;
+    try {
+      storedOrigin = await this.ctx.storage.get<unknown>(
+        CALLBACK_ORIGIN_DIAGNOSTIC_KEY,
+      );
+      if (policyAtRead)
+        policyDigest = await callbackOriginPolicyDigest(policyAtRead);
+    } catch {
+      // Missing or unreadable retained diagnostics mean unknown, not absence.
+    }
+    // Check current authority after all diagnostic storage/hash awaits.
+    const fresh = await this.freshEventActor(actor);
+    if (!fresh) return { ok: false, code: "TABLE_NOT_FOUND" };
+    const table = this.metadataRow();
+    const member = this.memberFor(fresh.guestId);
+    if (
+      !table ||
+      !member ||
+      member.table_id !== table.table_id ||
+      table.state === "deleted"
+    )
+      return { ok: false, code: "TABLE_NOT_FOUND" };
+    const now = Date.now();
+    return {
+      ok: true,
+      value: {
+        observedAt: new Date(now).toISOString(),
+        context: eventDiagnosticContext(this.env, fresh, table.table_id, now),
+        callbackOrigin:
+          JSON.stringify(privatePilotConfiguration(this.env)) ===
+          JSON.stringify(policyAtRead)
+            ? retainedCallbackOrigin(
+                storedOrigin,
+                policyAtRead,
+                policyDigest,
+                fresh,
+                table.table_id,
+                now,
+              )
+            : null,
+        lifecycle: {
+          state: table.state,
+          expiresAt: new Date(table.expires_at).toISOString(),
+          expired: table.state === "expired" || table.expires_at <= now,
+        },
+        notifications: this.ownEventStatus(member, fresh.connectionId),
+      },
+    };
   }
 
   /** Only the MCP get_table read exposes this sanitized subscription state. */
