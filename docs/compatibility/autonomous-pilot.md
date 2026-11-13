@@ -1,6 +1,6 @@
 # Two-owner ChatGPT event-response pilot
 
-**Status: BLOCKED / NOT RUN.** The evidence procedure and its deterministic
+**Status: PARTIAL REAL-HOST EVIDENCE / NOT ACCEPTED.** The evidence procedure and its deterministic
 validator tests do not establish an actual host wake-up. There is no passing
 real-host record for Issue [#24](https://github.com/kitamura-tetsuo/agent-table/issues/24).
 
@@ -26,9 +26,12 @@ A-only scenario stays blocked.
 
 The product choice and revised condition are recorded in
 [`autonomous-evidence.chatgpt-claude-selected.json`](../../test/e2e/host/autonomous-evidence.chatgpt-claude-selected.json).
-It remains `evidenceKind: "not-run"`: actual owners/accounts, separate consents,
-eligible surfaces, deployed configuration, A's subscription and live traces
-are unverified. Product selection alone supplies none of those observations.
+It now contains a redacted `evidenceKind: "real-host"` partial record and
+retained receipts for actual native event/tool, SQL, cancellation and outsider
+observations. Null fields and missing turns remain explicit: this is not a
+complete validated acceptance record. See [the observed results and exact
+remaining gaps](pr63-real-host-20261114.md). Product selection alone supplies
+none of the missing observations.
 
 Official documentation checked on 2026-11-12 establishes this narrower matrix:
 

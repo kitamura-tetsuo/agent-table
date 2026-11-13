@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "exportedAt": "2026-11-13T23:37:17.018Z",
+  "buildSha": "081f9bab4301370c1269c317c7538a694bddf68d",
+  "configSha256": "3f6c8ca916ccce7957a4b91a9d80109768dec36445d9c32434f4b255f7dfca5a",
+  "profile": "private-pilot-a-only",
+  "mode": "a-only",
+  "scope": {
+    "guestId": "guest-chatgpt-a",
+    "connectionId": "connection-a-subscription",
+    "tableIds": ["table-primary-retest", "table-cancellation-control"],
+    "notBefore": "2026-11-13T22:29:50.184Z",
+    "expiresAt": "2026-11-14T00:29:50.184Z"
+  },
+  "providerReadbackVerified": true,
+  "source": "Owner-authorized direct staging deploy and provider readback; no Environment approval click claimed."
+}

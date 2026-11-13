@@ -374,3 +374,35 @@ test("same-owner initialization is explicit A-only and evaluation cannot overrid
     0,
   );
 });
+
+test("published real-host partial receipts have exact digests and cannot imply full acceptance", () => {
+  const record = JSON.parse(
+    readFileSync(
+      new URL(
+        "../test/e2e/host/autonomous-evidence.chatgpt-claude-selected.json",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
+  );
+  const directory = fileURLToPath(
+    new URL("../test/e2e/host/receipts/pr63-20261114", import.meta.url),
+  );
+  const report = buildPilotReport(record, directory);
+  assert.equal(report.structurallyValid, true);
+  assert.equal(report.completeRecord, false);
+  assert.equal(report.receiptIntegrity.status, "checked");
+  assert.equal(report.receiptIntegrity.checked, record.observations.length);
+  assert.equal(report.scenarios.cancellation, "passed");
+  assert.equal(report.scenarios.isolation, "blocked");
+  for (const observation of record.observations) {
+    const body = readFileSync(
+      join(directory, `${observation.id}.json`),
+      "utf8",
+    );
+    assert.doesNotMatch(
+      body,
+      /whsec_|"access_token"|"refresh_token"|\/webhook\/mcp-events|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i,
+    );
+  }
+});

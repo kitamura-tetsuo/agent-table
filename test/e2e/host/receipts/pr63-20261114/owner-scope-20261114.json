@@ -1,0 +1,6 @@
+{
+  "schemaVersion": 1,
+  "exportedAt": "2026-11-13T23:37:17.018Z",
+  "observation": "Owner directly confirmed same ownership and different Google accounts, authorized same-owner A-only scope, accepted approximately 30-second latency and confirmed A/C expected behavior.",
+  "limits": "No exact original consent timestamp or independent Work UI idle recording is supplied. Work UI visibility was reported absent; table reply visibility and Work UI visibility are not conflated."
+}

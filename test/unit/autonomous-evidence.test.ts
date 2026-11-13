@@ -349,15 +349,22 @@ describe("autonomous pilot metadata gate", () => {
   it.each([
     ["generic template", template],
     ["owner-selected ChatGPT and Claude Chat", selectedChatPair],
-  ])("keeps the unrun %s explicit and incomplete", (_name, record) => {
+  ])("keeps the incomplete %s explicit and incomplete", (_name, record) => {
     const result = evaluateAutonomousEvidence(record);
     expect(result.structurallyValid).toBe(true);
     expect(result.completeRecord).toBe(false);
-    expect(Object.values(result.layers)).toEqual([
-      "not-run",
-      "not-run",
-      "not-run",
-    ]);
+    if (record.evidenceKind === "not-run") {
+      expect(Object.values(result.layers)).toEqual([
+        "not-run",
+        "not-run",
+        "not-run",
+      ]);
+    } else {
+      expect(record.evidenceKind).toBe("real-host");
+      expect(record.observations.length).toBeGreaterThan(0);
+      expect(result.layers.tools).toBe("blocked");
+      expect(result.layers.autonomousReply).not.toBe("passed");
+    }
     expect(result.missing.length).toBeGreaterThan(0);
   });
 

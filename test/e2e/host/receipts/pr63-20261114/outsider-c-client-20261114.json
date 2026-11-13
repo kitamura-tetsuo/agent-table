@@ -1,0 +1,66 @@
+{
+  "schemaVersion": 1,
+  "exportedAt": "2026-11-13T23:37:17.018Z",
+  "observedAt": "2026-11-13T23:04:13.800Z",
+  "identity": {
+    "guestId": "guest-outsider-c",
+    "connectionId": "connection-outsider-c",
+    "scopes": ["tables:read", "events:subscribe"],
+    "expiresAt": "2026-11-13T23:19:11.000Z",
+    "grantExpiresAt": "2026-12-13T23:04:08.719Z",
+    "tokenExpiresAt": "2026-11-13T23:19:11.000Z"
+  },
+  "results": [
+    {
+      "name": "metadata:table-primary-retest",
+      "code": "TABLE_NOT_FOUND",
+      "message": null
+    },
+    {
+      "name": "transcript:table-primary-retest",
+      "code": "TABLE_NOT_FOUND",
+      "message": null
+    },
+    {
+      "name": "inbox:membership-a-primary",
+      "code": -32603,
+      "message": "Resource not found"
+    },
+    {
+      "name": "inbox:membership-b-primary",
+      "code": -32603,
+      "message": "Resource not found"
+    },
+    {
+      "name": "unsubscribe:table-primary-retest",
+      "code": -32001,
+      "message": "Subscription unavailable"
+    },
+    {
+      "name": "metadata:table-cancellation-control",
+      "code": "TABLE_NOT_FOUND",
+      "message": null
+    },
+    {
+      "name": "transcript:table-cancellation-control",
+      "code": "TABLE_NOT_FOUND",
+      "message": null
+    },
+    {
+      "name": "inbox:membership-a-control",
+      "code": -32603,
+      "message": "Resource not found"
+    },
+    {
+      "name": "inbox:membership-b-control",
+      "code": -32603,
+      "message": "Resource not found"
+    },
+    {
+      "name": "unsubscribe:table-cancellation-control",
+      "code": -32001,
+      "message": "Subscription unavailable"
+    }
+  ],
+  "limits": "Actual C OAuth; raw entrypoint denials only. Error categories and before/after target state still require review. Unsubscribe used a real service URL, not the undisclosed original A callback compound key."
+}
