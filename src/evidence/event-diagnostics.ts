@@ -86,6 +86,17 @@ export type EventDiagnosticScope = {
   policyDigest: string;
 };
 
+/** Diagnostics require their own opt-in and never activate a paused delivery. */
+export function activeEventDiagnosticPolicy(
+  env: PrivatePilotBindings,
+  now = Date.now(),
+): PrivatePilotPolicy | null {
+  const policy =
+    activePrivatePilotDiscoveryPolicy(env, now) ??
+    activePrivatePilotPolicy(env, now);
+  return policy?.observationMode === "private-redacted" ? policy : null;
+}
+
 /** Hash the normalized policy returned by the private-pilot parser. */
 export async function eventDiagnosticPolicyDigest(
   policy: PrivatePilotPolicy,

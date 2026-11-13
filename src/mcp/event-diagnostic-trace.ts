@@ -1,8 +1,8 @@
 import {
+  activeEventDiagnosticPolicy,
   type EventDiagnosticRecord,
   eventDiagnosticPolicyDigest,
 } from "../evidence/event-diagnostics";
-import { activePrivatePilotDiscoveryPolicy } from "../shared/private-pilot";
 
 export interface EventDiagnosticTrace {
   readonly methodHint: EventDiagnosticRecord["method"];
@@ -36,7 +36,7 @@ export function beginEventDiagnosticTrace(
   request: Request,
   env: Env,
 ): EventDiagnosticTrace | undefined {
-  const policy = activePrivatePilotDiscoveryPolicy(env);
+  const policy = activeEventDiagnosticPolicy(env);
   if (!policy || new URL(request.url).pathname !== "/mcp") return undefined;
   // Routine tool calls, including this diagnostic read, must not evict traces.
   const declaredMethod = request.headers.get("Mcp-Method");

@@ -24,12 +24,14 @@ function parameters(tableId: string) {
   };
 }
 
-async function fixture() {
+async function fixture(
+  mode: "a-only-discovery" | "a-only" = "a-only-discovery",
+) {
   const f = await inboxStreamFixture(env);
   const now = Date.now();
   const policy = {
     schemaVersion: 1,
-    mode: "a-only-discovery",
+    mode,
     observationMode: "private-redacted",
     buildSha: "b".repeat(40),
     approvedAt: new Date(now - 2_000).toISOString(),
@@ -39,7 +41,10 @@ async function fixture() {
     recipientGuestId: f.owner.id,
     recipientConnectionId: f.owner.grant.connectionId,
     tableIds: [f.tableId],
-    callbackTargets: [],
+    callbackTargets:
+      mode === "a-only"
+        ? [{ origin: "https://events.example.org", pathPrefix: "/" }]
+        : [],
   };
   const overlay: Env = {
     ...env,
@@ -49,7 +54,7 @@ async function fixture() {
     RESTORE_QUARANTINE: "false",
     ENABLE_MCP_SUBSCRIPTIONS: "false",
     ENABLE_OPENAI_EVENTS: "false",
-    ALLOW_OUTBOUND_NOTIFICATIONS: "false",
+    ALLOW_OUTBOUND_NOTIFICATIONS: mode === "a-only" ? "true" : "false",
     PRIVATE_PILOT_POLICY: JSON.stringify(policy),
   };
   await runInDurableObject(f.table, (instance) => {
@@ -168,6 +173,149 @@ function assertPrivateValuesAbsent(value: unknown, f: Fixture) {
 afterEach(() => vi.restoreAllMocks());
 
 describe("durable Events protocol diagnostics through the real MCP handler", () => {
+  it.each([
+    "callback_destination_rejected",
+    "callback_challenge_failed",
+    "callback_transport_failed",
+  ] as const)(
+    "retains the actual delivery-mode %s outcome without private callback values",
+    async (outcome) => {
+      const f = await fixture("a-only");
+      const input = parameters(f.tableId);
+      if (outcome === "callback_destination_rejected")
+        input.delivery.url = "https://unreviewed.example.org/PRIVATE_PATH";
+      const network = vi.spyOn(globalThis, "fetch");
+      if (outcome === "callback_challenge_failed") {
+        network.mockResolvedValue(
+          Response.json({ challenge: "CALLBACK_RESPONSE_SENTINEL" }),
+        );
+      } else {
+        network.mockRejectedValue(new Error("PRIVATE_TRANSPORT_SENTINEL"));
+      }
+      const { body, trace } = await wire(f, "events/subscribe", input);
+      expect(trace).toBeDefined();
+      expect(body.error).toMatchObject({ code: -32015 });
+      const snapshot = await f.read();
+      expect(snapshot).toMatchObject({
+        scopeMatches: true,
+        context: { mode: "a-only", policyActive: true },
+      });
+      expect(snapshot?.records).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            method: "events/subscribe",
+            stage: "handler",
+            outcome,
+          }),
+        ]),
+      );
+      assertPrivateValuesAbsent(snapshot, f);
+      const encoded = JSON.stringify({ body, snapshot });
+      for (const sentinel of [
+        "unreviewed.example.org",
+        "PRIVATE_PATH",
+        "CALLBACK_RESPONSE_SENTINEL",
+        "PRIVATE_TRANSPORT_SENTINEL",
+      ])
+        expect(encoded).not.toContain(sentinel);
+      expect(network).toHaveBeenCalledTimes(
+        outcome === "callback_destination_rejected" ? 0 : 1,
+      );
+      const rows = await f.rows();
+      expect(rows.candidates).toEqual([]);
+      expect(rows.subscriptions.some((row) => row.status === "active")).toBe(
+        false,
+      );
+      expect(rows.outbox).toEqual([]);
+    },
+  );
+
+  it.each([false, true])(
+    "preserves a verified delivery-mode subscription when diagnostic storage fails: %s",
+    async (failStorage) => {
+      const f = await fixture("a-only");
+      const failedWrite = vi
+        .fn()
+        .mockRejectedValue(new Error("PRIVATE_STORAGE_ERROR_SENTINEL"));
+      const traceEnv = failStorage
+        ? ({
+            ...f.overlay,
+            GUESTS: {
+              idFromName: (name: string) => f.overlay.GUESTS.idFromName(name),
+              get: () => ({ recordEventDiagnostics: failedWrite }),
+            },
+          } as unknown as Env)
+        : f.overlay;
+      vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+        const challenge = JSON.parse(
+          new TextDecoder().decode(init?.body as ArrayBuffer),
+        ).challenge;
+        return Response.json({ challenge });
+      });
+      const { body } = await wire(
+        f,
+        "events/subscribe",
+        parameters(f.tableId),
+        { traceEnv },
+      );
+      expect(body.error).toBeUndefined();
+      expect(body.result).toMatchObject({
+        id: expect.stringMatching(/^sub_/),
+        cursor: null,
+        truncated: false,
+      });
+      const rows = await f.rows();
+      expect(rows.candidates).toEqual([]);
+      expect(
+        rows.subscriptions.filter((row) => row.status === "active"),
+      ).toHaveLength(1);
+      const snapshot = await f.read();
+      if (failStorage) {
+        expect(failedWrite).toHaveBeenCalledOnce();
+        expect(snapshot?.records).toEqual([]);
+      } else {
+        expect(snapshot?.records).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              method: "events/subscribe",
+              stage: "handler",
+              outcome: "success",
+            }),
+          ]),
+        );
+      }
+      assertPrivateValuesAbsent(snapshot, f);
+      expect(JSON.stringify({ body, snapshot })).not.toContain(
+        "PRIVATE_STORAGE_ERROR_SENTINEL",
+      );
+    },
+  );
+
+  it("does not start delivery traces without opt-in or while paused or expired", async () => {
+    const f = await fixture("a-only");
+    const request = new Request(`${env.PUBLIC_ORIGIN}/mcp`, {
+      method: "POST",
+      headers: { "Mcp-Method": "events/subscribe" },
+    });
+    expect(beginEventDiagnosticTrace(request, f.overlay)).toBeDefined();
+    const withoutOptIn = { ...f.policy };
+    Reflect.deleteProperty(withoutOptIn, "observationMode");
+    for (const patch of [
+      { ALLOW_OUTBOUND_NOTIFICATIONS: "false" },
+      { PRIVATE_PILOT_POLICY: JSON.stringify(withoutOptIn) },
+      {
+        PRIVATE_PILOT_POLICY: JSON.stringify({
+          ...f.policy,
+          expiresAt: new Date(Date.now() - 1).toISOString(),
+        }),
+      },
+    ])
+      expect(
+        beginEventDiagnosticTrace(request, { ...f.overlay, ...patch }),
+      ).toBeUndefined();
+    expect((await f.read())?.records).toEqual([]);
+  });
+
   it("records the actual discovery refusal without authorizing delivery or storing input", async () => {
     const f = await fixture();
     vi.spyOn(console, "info").mockImplementation(() => undefined);
