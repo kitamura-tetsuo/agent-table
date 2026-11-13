@@ -720,6 +720,8 @@ export async function collectLive({
   )
     throw new Error("Invalid bounded collection options.");
   const collector = new TailCapture({ startedAt, onReady });
+  // Wrangler 4.158.0 rejects --sampling-rate 1. Omitting filter flags sends
+  // { filters: [] }; provider sampling warnings still invalidate capture.
   const args = [
     "--no-warnings",
     wranglerPath,
@@ -727,8 +729,6 @@ export async function collectLive({
     worker,
     "--format",
     "json",
-    "--sampling-rate",
-    "1",
   ];
   if (config !== undefined) args.push("--config", resolve(config));
   let child;

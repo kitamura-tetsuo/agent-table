@@ -186,12 +186,14 @@ node scripts/private-pilot-observations.mjs collect \
   --output "$PILOT_CAPTURE_PATH"
 ```
 
-It launches the installed pinned Wrangler directly with sampling rate 1 and
-disk logs disabled. Raw tail output, request metadata, exception text and
-stderr never reach the output file or terminal. Any stderr warning, including
-a reconnect, invalidates continuity. Bounds are 1 MiB per buffered object,
-32 MiB total input, 2,000 retained observations and two hours plus one minute
-of collection. Output is exclusively created with mode 0600 and no symlink
+It launches the installed pinned Wrangler directly with no filter flags
+(`filters: []`) and disk logs disabled. Wrangler 4.158.0 rejects
+`--sampling-rate 1`; omitting it requests no sampling filter. Provider-side
+sampling may still drop events. Raw tail output, request metadata, exception
+text and stderr never reach the output file or terminal. Any stderr warning,
+including sampling or a reconnect, invalidates continuity. Bounds are 1 MiB
+per buffered object, 32 MiB total input, 2,000 retained observations and two
+hours plus one minute of collection. Output is exclusively created with mode 0600 and no symlink
 following. The first actual tail frame emits a safe `capture: ready` marker;
 an ordinary authorized read can produce that initial frame. Wait for readiness
 before the source event. Process startup alone is insufficient.

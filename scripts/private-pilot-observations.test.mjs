@@ -753,7 +753,7 @@ test("live wrapper controls both pipes, disables Wrangler disk logs, and records
   assert.equal(settings.shell, false);
   assert.equal(settings.env.WRANGLER_WRITE_LOGS, "false");
   assert.equal(settings.env.WRANGLER_LOG_SANITIZE, "true");
-  assert.equal(args.includes("--sampling-rate"), true);
+  assert.equal(args.includes("--sampling-rate"), false);
   assert.equal(result.finishReason, "requested-stop");
   assert.equal(signalSource.listenerCount("SIGINT"), 0);
 });
