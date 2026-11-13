@@ -1,14 +1,15 @@
-# PR63 acceptance decision required
+# PR63 bounded acceptance decision
 
-Status: proposed only. This document does not change the evaluator, resolve P1,
-or authorize a merge. CI for evidence commit `4cd44e0` passed (run 43529488605).
+Status: the owner approved the bounded host-trace alternative in the Work
+conversation after the explicit approval question. This approval does not resolve
+other acceptance gaps, change the strict evaluator, or authorize an early merge. CI for evidence commit `4cd44e0` passed (run 43529488605).
 
 The actual host traces establish two native webhook runs with authenticated
 reads and linked replies. They do not expose an internal run identifier or an
 independent observation of the host's active-run count before the peer post.
 Those observations cannot be reconstructed retrospectively.
 
-## Proposed bounded alternative
+## Owner-approved bounded alternative
 
 For this selected same-owner A-only pilot only, review the native event envelope,
 first tool clock, authenticated bounded read and linked post receipt together as
