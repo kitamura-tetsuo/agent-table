@@ -369,3 +369,25 @@ Run the repository's typecheck, lint, Worker integration and browser gates for
 the candidate as well. Passing these tests is implementation evidence. No
 account consent, callback-control success, hosted deployment or autonomous
 ChatGPT response is supplied by a synthetic fixture or a passing release test.
+
+### Stopped captures around a version transition
+
+For two disjoint captures of the same table/policy/subscription, retain the
+first capture and its own fresh post-shutdown SQL snapshot. The later full
+snapshot retains historical rows; do not remove them manually or concatenate
+tails into a claimed continuous stream. Verify with:
+
+```sh
+node scripts/private-pilot-observations.mjs verify \
+  --capture "$LATER_CAPTURE" --snapshot "$LATER_SNAPSHOT" \
+  --prior-capture "$PRIOR_CAPTURE" --prior-snapshot "$PRIOR_SNAPSHOT" \
+  --output "$REPORT"
+```
+
+The prior capture must pass the original verifier. Only identical previously
+accepted events may be carried forward; pending work, changed retry counts,
+changed messages/subscription identity, missing stages and new events in the
+gap fail closed. The report lists both intervals and an explicitly unobserved
+gap, with continuousCoverage false and hostExecution not-established. It is
+conditional per-event sender evidence, not lossless coverage, a host wake-up
+receipt, or a complete autonomous acceptance result.

@@ -19,6 +19,7 @@ import {
   SNAPSHOT_SCHEMA,
   TailCapture,
   validateDiagnostic,
+  verifyAfterPriorCapture,
   verifyAgainstSnapshot,
 } from "./private-pilot-observations.mjs";
 
@@ -853,5 +854,164 @@ test("CLI verification writes exclusive private output and refuses unsafe/unboun
     console.log = originalLog;
     console.error = originalError;
     rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+function capturePair() {
+  const first = { capture: capture(), snapshot: snapshot() };
+  const second = structuredClone(first);
+  const shift = (value) => value + 10000;
+  for (const key of ["startedAt", "readyAt", "endedAt"])
+    second.capture[key] = shift(second.capture[key]);
+  const event = "66666666-6666-4666-8666-666666666666",
+    message = "77777777-7777-4777-8777-777777777777";
+  second.capture.records = second.capture.records.map((row) => ({
+    ...row,
+    eventId: event,
+    messageId: message,
+    seq: 2,
+    observedAt: shift(row.observedAt),
+  }));
+  second.snapshot.capturedAt = shift(second.snapshot.capturedAt);
+  second.snapshot.table.lastSeq = 2;
+  second.snapshot.messages.push({
+    ...first.snapshot.messages[0],
+    messageId: message,
+    seq: 2,
+    createdAt: START + 12000,
+  });
+  second.snapshot.outbox.push({
+    ...first.snapshot.outbox[0],
+    eventId: event,
+    messageId: message,
+    seq: 2,
+    createdAt: START + 12000,
+    firstAttemptAt: START + 12050,
+  });
+  return { first, second };
+}
+test("disjoint captures carry only verified immutable events and expose the gap", () => {
+  const { first, second } = capturePair();
+  assert.equal(
+    verifyAgainstSnapshot(second.capture, second.snapshot).status,
+    "incomplete",
+  );
+  const report = verifyAfterPriorCapture(
+    second.capture,
+    second.snapshot,
+    first.capture,
+    first.snapshot,
+  );
+  assert.equal(report.status, "conditionally-complete");
+  assert.equal(report.checkedEvents.length, 2);
+  assert.equal(report.continuousCoverage, false);
+  assert.equal(report.gap.observation, "not-observed");
+  assert.equal(report.hostExecution, "not-established");
+});
+for (const [name, mutate, reason] of [
+  [
+    "missing prior stage",
+    (p) => p.first.capture.records.pop(),
+    "prior-capture-unverified",
+  ],
+  [
+    "changed retry",
+    (p) => p.second.snapshot.outbox[0].attemptCount++,
+    "prior-event-not-immutable",
+  ],
+  [
+    "removed prior event",
+    (p) => p.second.snapshot.outbox.shift(),
+    "prior-event-not-immutable",
+  ],
+  [
+    "changed message",
+    (p) => (p.second.snapshot.messages[0].seq = 9),
+    "prior-message-changed",
+  ],
+  [
+    "changed generation",
+    (p) => p.second.snapshot.subscription.generation++,
+    "capture-context-changed",
+  ],
+  [
+    "prior replay",
+    (p) => p.second.capture.records.push(p.first.capture.records[0]),
+    "prior-event-reappeared",
+  ],
+  [
+    "reordered capture",
+    (p) => (p.second.capture.startedAt = p.first.snapshot.capturedAt),
+    "capture-order-invalid",
+  ],
+  [
+    "new gap event",
+    (p) => {
+      p.second.snapshot.outbox[1].createdAt = START + 8000;
+      p.second.snapshot.messages[1].createdAt = START + 8000;
+    },
+    "event-outside-observed-window",
+  ],
+  [
+    "missing later stage",
+    (p) => p.second.capture.records.pop(),
+    "missing-attempt-stage",
+  ],
+])
+  test(`disjoint capture rejects ${name}`, () => {
+    const p = capturePair();
+    mutate(p);
+    incomplete(
+      verifyAfterPriorCapture(
+        p.second.capture,
+        p.second.snapshot,
+        p.first.capture,
+        p.first.snapshot,
+      ),
+      reason,
+    );
+  });
+
+test("prior CLI inputs are paired and real collection stays separate", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pilot-prior-cli-"));
+  try {
+    const { first, second } = capturePair();
+    const inputs = [
+      ["first-capture", first.capture],
+      ["first-snapshot", first.snapshot],
+      ["second-capture", second.capture],
+      ["second-snapshot", second.snapshot],
+    ];
+    for (const [name, value] of inputs)
+      writeFileSync(join(dir, name), JSON.stringify(value));
+    const args = [
+      "verify",
+      "--capture",
+      join(dir, "second-capture"),
+      "--snapshot",
+      join(dir, "second-snapshot"),
+      "--output",
+      join(dir, "report"),
+    ];
+    assert.equal(
+      await main([...args, "--prior-capture", join(dir, "first-capture")]),
+      1,
+    );
+    assert.equal(
+      await main([
+        ...args,
+        "--prior-capture",
+        join(dir, "first-capture"),
+        "--prior-snapshot",
+        join(dir, "first-snapshot"),
+      ]),
+      0,
+    );
+    const report = JSON.parse(readFileSync(join(dir, "report"), "utf8"));
+    assert.equal(report.checkedEvents.length, 2);
+    assert.equal(report.continuousCoverage, false);
+    assert.equal(report.hostExecution, "not-established");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });
