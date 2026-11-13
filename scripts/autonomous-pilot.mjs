@@ -188,6 +188,7 @@ export function buildPilotReport(input, receiptDirectory) {
           pilotId: parsed.data.pilotId,
           evidenceKind: parsed.data.evidenceKind,
           acceptanceMode: parsed.data.acceptanceMode,
+          ownershipMode: parsed.data.ownershipMode ?? "independent-owners",
           requiredAutonomousResponders:
             parsed.data.acceptanceMode === "a-only" ? ["A"] : ["A", "B"],
           observedAt: parsed.data.observedAt,
@@ -228,9 +229,14 @@ function argumentsFor(argv) {
       continue;
     }
     if (
-      !["--input", "--output", "--report", "--receipt-dir", "--mode"].includes(
-        option,
-      )
+      ![
+        "--input",
+        "--output",
+        "--report",
+        "--receipt-dir",
+        "--mode",
+        "--ownership-mode",
+      ].includes(option)
     )
       invalid("Unknown option.");
     if (options[option] !== undefined)
@@ -244,6 +250,18 @@ function argumentsFor(argv) {
       !["a-only", "bidirectional"].includes(options["--mode"]))
   )
     invalid("Only init accepts a supported acceptance mode.");
+  if (
+    options["--ownership-mode"] &&
+    (command !== "init" ||
+      !["independent-owners", "same-owner"].includes(
+        options["--ownership-mode"],
+      ) ||
+      (options["--ownership-mode"] === "same-owner" &&
+        options["--mode"] !== "a-only"))
+  )
+    invalid(
+      "Only A-only init accepts same-owner mode; ownership cannot be overridden during evaluation.",
+    );
   if (
     command === "init" &&
     (options.fragments.length ||
@@ -277,6 +295,9 @@ export function main(argv) {
       const template = autonomousEvidenceSchema.parse({
         ...readJson(TEMPLATE),
         ...(options["--mode"] ? { acceptanceMode: options["--mode"] } : {}),
+        ...(options["--ownership-mode"]
+          ? { ownershipMode: options["--ownership-mode"] }
+          : {}),
       });
       writeJson(options["--output"], template);
       process.stdout.write(

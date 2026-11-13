@@ -1230,3 +1230,51 @@ describe("explicit A-only autonomous acceptance", () => {
     expect(result.missing.length).toBeGreaterThan(0);
   });
 });
+
+describe("explicit same-owner A-only acceptance", () => {
+  it("accepts one owner with distinct host accounts without claiming cross-owner proof", () => {
+    const r = realHostShapedFixture("a-only");
+    r.ownershipMode = "same-owner";
+    r.participants[1].ownerRef = r.participants[0].ownerRef;
+    const result = evaluateAutonomousEvidence(r);
+    expect(result.completeRecord).toBe(true);
+    expect(result.ownershipMode).toBe("same-owner");
+  });
+  it("keeps omitted ownership mode strict", () => {
+    const r = realHostShapedFixture("a-only");
+    r.participants[1].ownerRef = r.participants[0].ownerRef;
+    expect(evaluateAutonomousEvidence(r).completeRecord).toBe(false);
+  });
+  it("rejects different owners labeled same-owner", () => {
+    const r = realHostShapedFixture("a-only");
+    r.ownershipMode = "same-owner";
+    expect(evaluateAutonomousEvidence(r).completeRecord).toBe(false);
+  });
+  it("does not extend the ownership exception to bidirectional mode", () => {
+    const r = realHostShapedFixture();
+    r.ownershipMode = "same-owner";
+    r.participants[1].ownerRef = r.participants[0].ownerRef;
+    expect(evaluateAutonomousEvidence(r).completeRecord).toBe(false);
+  });
+  for (const key of [
+    "accountRef",
+    "guestId",
+    "connectionId",
+    "membershipId",
+  ] as const)
+    it(`still requires distinct ${key}`, () => {
+      const r = realHostShapedFixture("a-only");
+      r.ownershipMode = "same-owner";
+      r.participants[1].ownerRef = r.participants[0].ownerRef;
+      r.participants[1][key] = r.participants[0][key];
+      expect(evaluateAutonomousEvidence(r).completeRecord).toBe(false);
+    });
+  it("still requires separately captured host consent", () => {
+    const r = realHostShapedFixture("a-only");
+    r.ownershipMode = "same-owner";
+    r.participants[1].ownerRef = r.participants[0].ownerRef;
+    r.participants[1].consent.observationRef =
+      r.participants[0].consent.observationRef;
+    expect(evaluateAutonomousEvidence(r).completeRecord).toBe(false);
+  });
+});

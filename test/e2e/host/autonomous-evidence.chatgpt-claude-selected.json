@@ -97,5 +97,6 @@
   "restart": null,
   "isolation": [],
   "disclosure": null,
-  "observations": []
+  "observations": [],
+  "ownershipMode": "same-owner"
 }

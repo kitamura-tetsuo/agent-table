@@ -167,6 +167,7 @@ const cancellationAttempt = z.strictObject({
 export const autonomousEvidenceSchema = z.strictObject({
   schemaVersion: z.literal(1),
   acceptanceMode: z.enum(["a-only", "bidirectional"]),
+  ownershipMode: z.enum(["independent-owners", "same-owner"]).optional(),
   pilotId: ref,
   evidenceKind: z.enum(["not-run", "real-host", "synthetic-validator"]),
   observedAt: time.nullable(),
@@ -314,6 +315,7 @@ export const AUTONOMOUS_SCENARIOS = [
 type Scenario = (typeof AUTONOMOUS_SCENARIOS)[number];
 export interface AutonomousEvidenceResult {
   acceptanceMode: AutonomousEvidence["acceptanceMode"] | null;
+  ownershipMode: "independent-owners" | "same-owner" | null;
   structurallyValid: boolean;
   completeRecord: boolean;
   missing: string[];
@@ -358,6 +360,7 @@ export function evaluateAutonomousEvidence(
     // Even unknown field names can contain secrets; never echo schema input.
     return {
       acceptanceMode: null,
+      ownershipMode: null,
       structurallyValid: false,
       completeRecord: false,
       missing: [
@@ -483,6 +486,18 @@ export function evaluateAutonomousEvidence(
     "deployed build/configuration receipt",
   );
   const [a, b] = record.participants;
+  const ownershipMode = record.ownershipMode ?? "independent-owners";
+  const ownersValid =
+    !!a.ownerRef &&
+    !!b.ownerRef &&
+    (ownershipMode === "same-owner"
+      ? record.acceptanceMode === "a-only" && a.ownerRef === b.ownerRef
+      : a.ownerRef !== b.ownerRef);
+  check(
+    "setup",
+    ownersValid,
+    "owner identities match the explicit ownership mode",
+  );
   const requiredReceivers = record.acceptanceMode === "a-only" ? [a] : [a, b];
   const expectedResponseTurns = record.acceptanceMode === "a-only" ? 1 : 2;
   check(
@@ -491,7 +506,6 @@ export function evaluateAutonomousEvidence(
     "ordered A and B participant records",
   );
   for (const key of [
-    "ownerRef",
     "accountRef",
     "guestId",
     "connectionId",
@@ -1428,7 +1442,8 @@ export function evaluateAutonomousEvidence(
     hasReceipt(deployment.configurationRef, "operator") &&
     a.role === "A" &&
     b.role === "B" &&
-    (["ownerRef", "accountRef", "guestId", "connectionId"] as const).every(
+    ownersValid &&
+    (["accountRef", "guestId", "connectionId"] as const).every(
       (key) => a[key] && b[key] && a[key] !== b[key],
     ) &&
     record.participants.every(
@@ -1481,6 +1496,7 @@ export function evaluateAutonomousEvidence(
           : "not-run";
   return {
     acceptanceMode: record.acceptanceMode,
+    ownershipMode,
     structurallyValid: true,
     completeRecord: actual && missing.length === 0,
     missing: [...new Set(missing)],

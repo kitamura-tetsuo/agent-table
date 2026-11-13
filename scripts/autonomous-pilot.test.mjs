@@ -327,3 +327,50 @@ test("CLI does not overwrite an existing report or accept ambiguous options", ()
     2,
   );
 });
+
+test("same-owner initialization is explicit A-only and evaluation cannot override ownership", () => {
+  const dir = workspace(),
+    input = join(dir, "same-owner.json");
+  const result = run(
+    "init",
+    "--mode",
+    "a-only",
+    "--ownership-mode",
+    "same-owner",
+    "--output",
+    input,
+  );
+  assert.equal(result.status, 0);
+  const record = JSON.parse(readFileSync(input, "utf8"));
+  assert.equal(record.ownershipMode, "same-owner");
+  assert.equal(record.evidenceKind, "not-run");
+  assert.equal(buildPilotReport(record).target.ownershipMode, "same-owner");
+  assert.equal(
+    buildPilotReport(freshTemplate()).target.ownershipMode,
+    "independent-owners",
+  );
+  assert.notEqual(
+    run(
+      "init",
+      "--mode",
+      "bidirectional",
+      "--ownership-mode",
+      "same-owner",
+      "--output",
+      join(dir, "wrong.json"),
+    ).status,
+    0,
+  );
+  assert.notEqual(
+    run(
+      "evaluate",
+      "--input",
+      input,
+      "--ownership-mode",
+      "same-owner",
+      "--output",
+      join(dir, "report.json"),
+    ).status,
+    0,
+  );
+});

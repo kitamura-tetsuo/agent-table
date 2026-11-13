@@ -422,3 +422,29 @@ Existing `events-subscriptions`, `outbox-dispatch`, `outbox-ledger`,
 boundaries with controlled clients/receivers. Passing them is server regression
 evidence, not actual ChatGPT execution, Claude tools compatibility, independent
 owner consent or proof of the deployed candidate.
+
+## Owner-approved ownership scope (2026-11-14)
+
+The owner confirmed that the selected ChatGPT and Claude accounts are both
+controlled by the same person but use different Google accounts, and explicitly
+approved the same-owner exception in Issue #24/REQ-001. This supersedes the
+selected pilot's earlier two-human-owner prerequisite; all event/run/read/reply,
+retry, cancellation, restart, outsider-isolation and disclosure gates remain.
+
+The selected record declares `ownershipMode: "same-owner"`. Use one honest
+owner reference and distinct host-account, guest, connection and membership
+references, plus separate bounded authorization receipts from each host context.
+Do not publish email addresses or fabricate independent owners. The record still
+needs actual complete evidence; changing its mode is not a passing pilot.
+
+Omitted ownershipMode defaults to `independent-owners`, retaining the prior
+strict different-owner behavior. The exception applies only to A-only mode.
+A same-owner result never establishes cross-owner compatibility.
+
+```sh
+npm run probe:autonomous -- init --mode a-only --ownership-mode same-owner \
+  --output /tmp/same-owner-pilot.json
+```
+
+Collect/evaluate derive ownership from the recorded sections and cannot override
+it with a command-line option. Reports label the ownership mode explicitly.
