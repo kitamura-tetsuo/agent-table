@@ -1,8 +1,10 @@
+import type { EventDiagnosticTrace } from "../mcp/event-diagnostic-trace";
 import {
   reviewedCallbackTargets,
   validateReviewedCallbackDestination,
 } from "../notifications/egress";
 import {
+  inspectEventSubscriptionParams,
   parseEventSubscriptionParams,
   verifyCallbackControl,
 } from "../notifications/openai-events";
@@ -30,8 +32,11 @@ export type EventServiceResult<T> =
   | { ok: true; value: T }
   | { ok: false; reason: EventServiceFailure };
 
-function failed(code: string): EventServiceResult<never> {
-  const reason: EventServiceFailure =
+function failed(code: string): {
+  ok: false;
+  reason: "invalid" | "conflict" | "stale" | "unavailable" | "denied";
+} {
+  const reason =
     code === "INVALID_REQUEST"
       ? "invalid"
       : code === "CONFLICT"
@@ -53,6 +58,7 @@ export async function subscribeEvent(
   env: Env,
   actor: VerifiedConnectionActor,
   input: unknown,
+  diagnostics?: EventDiagnosticTrace,
 ): Promise<
   EventServiceResult<{
     id: string;
@@ -61,24 +67,43 @@ export async function subscribeEvent(
     truncated: false;
   }>
 > {
-  const parsed = parseEventSubscriptionParams(input, "subscribe");
-  if (!parsed) return { ok: false, reason: "invalid" };
+  const inspected = inspectEventSubscriptionParams(input, "subscribe");
+  if (!inspected.ok) {
+    diagnostics?.record(
+      "events/subscribe",
+      "parameters",
+      "invalid",
+      inspected.detail,
+    );
+    return { ok: false, reason: "invalid" };
+  }
+  const parsed = inspected.value;
+  diagnostics?.record("events/subscribe", "parameters", "valid");
   const discovery = activePrivatePilotDiscoveryPolicy(env);
   if (discovery) {
     if (
       !privatePilotRecipientMatches(discovery, actor, parsed.arguments.table_id)
-    )
+    ) {
+      diagnostics?.record("events/subscribe", "recipient", "denied");
       return { ok: false, reason: "denied" };
+    }
     try {
       const result = await env.TABLES.get(
         env.TABLES.idFromName(parsed.arguments.table_id),
       ).observeEventCallback(actor, input);
+      diagnostics?.record("events/subscribe", "table", "received");
+      diagnostics?.record(
+        "events/subscribe",
+        "table",
+        result.ok ? "success" : failed(result.code).reason,
+      );
       // Observation never acknowledges an active subscription or sends a
       // challenge. A separate reviewed delivery configuration is required.
       return result.ok
         ? { ok: false, reason: "callback_operator_review_required" }
         : failed(result.code);
     } catch {
+      diagnostics?.record("events/subscribe", "table", "unavailable");
       return { ok: false, reason: "unavailable" };
     }
   }

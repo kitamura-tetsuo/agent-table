@@ -1,5 +1,16 @@
 import { DurableObject } from "cloudflare:workers";
 import {
+  EVENT_DIAGNOSTIC_BATCH_LIMIT,
+  EVENT_DIAGNOSTIC_RECORD_LIMIT,
+  EVENT_DIAGNOSTIC_RETENTION_MS,
+  type EventDiagnosticRecord,
+  type EventDiagnosticScope,
+  type EventDiagnosticSnapshot,
+  eventDiagnosticContext,
+  eventDiagnosticPolicyDigest,
+  validEventDiagnosticRecord,
+} from "../evidence/event-diagnostics";
+import {
   requestFingerprint,
   stagingEvidenceEnabled,
 } from "../evidence/staging";
@@ -18,6 +29,12 @@ import {
 } from "../shared/creation";
 import { DurableDeadlineScheduler } from "../shared/deadlines";
 import { CREATION_LIMITS } from "../shared/limits";
+import {
+  activePrivatePilotDiscoveryPolicy,
+  type PrivatePilotPolicy,
+  privatePilotConfiguration,
+  privatePilotRecipientMatches,
+} from "../shared/private-pilot";
 import { digestSessionSecret, randomBase64Url } from "../shared/random";
 import { deferQuarantinedAlarm } from "../shared/release-quarantine";
 import {
@@ -32,6 +49,72 @@ const MAX_CONNECTION_LIFETIME_MS = 30 * 24 * 60 * 60 * 1_000;
 const UUID_V4 =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SESSION_SECRET = /^[A-Za-z0-9_-]{43}$/;
+const EVENT_DIAGNOSTIC_KEY = "event-diagnostics:v1";
+
+type EventDiagnosticRing = EventDiagnosticScope & {
+  schemaVersion: 1;
+  recipientConnectionId: string;
+  retentionUntil: number;
+  records: EventDiagnosticRecord[];
+  droppedCount: number;
+};
+
+function validDiagnosticRing(value: unknown): value is EventDiagnosticRing {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const row = value as Record<string, unknown>;
+  const keys = [
+    "schemaVersion",
+    "buildSha",
+    "approvalRef",
+    "recipientConnectionId",
+    "policyDigest",
+    "retentionUntil",
+    "records",
+    "droppedCount",
+  ];
+  return (
+    Object.keys(row).length === keys.length &&
+    keys.every((key) => Object.hasOwn(row, key)) &&
+    row.schemaVersion === 1 &&
+    typeof row.buildSha === "string" &&
+    /^[a-f0-9]{40}$/.test(row.buildSha) &&
+    typeof row.approvalRef === "string" &&
+    /^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$/.test(row.approvalRef) &&
+    typeof row.recipientConnectionId === "string" &&
+    UUID_V4.test(row.recipientConnectionId) &&
+    typeof row.policyDigest === "string" &&
+    /^[a-f0-9]{64}$/.test(row.policyDigest) &&
+    typeof row.retentionUntil === "number" &&
+    Number.isSafeInteger(row.retentionUntil) &&
+    row.retentionUntil > 0 &&
+    typeof row.droppedCount === "number" &&
+    Number.isSafeInteger(row.droppedCount) &&
+    row.droppedCount >= 0 &&
+    Array.isArray(row.records) &&
+    row.records.length <= EVENT_DIAGNOSTIC_RECORD_LIMIT &&
+    row.records.every(validEventDiagnosticRecord)
+  );
+}
+
+function diagnosticRingMatches(
+  ring: EventDiagnosticRing,
+  policy: PrivatePilotPolicy,
+  policyDigest: string,
+): boolean {
+  return (
+    ring.buildSha === policy.buildSha &&
+    ring.approvalRef === policy.approvalRef &&
+    ring.recipientConnectionId === policy.recipientConnectionId &&
+    ring.policyDigest === policyDigest &&
+    ring.retentionUntil ===
+      Date.parse(policy.expiresAt) + EVENT_DIAGNOSTIC_RETENTION_MS &&
+    ring.records.every(
+      (record) =>
+        record.observedAt >= Date.parse(policy.notBefore) &&
+        record.observedAt < Date.parse(policy.expiresAt),
+    )
+  );
+}
 
 type SessionRow = {
   session_id: string;
@@ -158,6 +241,155 @@ export class GuestDO extends DurableObject<Env> {
 
   schemaVersion(): number {
     return readApplicationSchemaVersion(this.ctx.storage);
+  }
+
+  /** Internal Worker diagnostics only; recording never changes an operation result. */
+  async recordEventDiagnostics(
+    records: EventDiagnosticRecord[],
+    scope: EventDiagnosticScope,
+  ): Promise<boolean> {
+    try {
+      if (
+        !Array.isArray(records) ||
+        records.length === 0 ||
+        records.length > EVENT_DIAGNOSTIC_BATCH_LIMIT ||
+        !records.every(validEventDiagnosticRecord) ||
+        !scope ||
+        typeof scope !== "object" ||
+        Array.isArray(scope) ||
+        Object.keys(scope).length !== 3 ||
+        !Object.hasOwn(scope, "buildSha") ||
+        !Object.hasOwn(scope, "approvalRef") ||
+        !Object.hasOwn(scope, "policyDigest") ||
+        typeof scope.policyDigest !== "string" ||
+        !/^[a-f0-9]{64}$/.test(scope.policyDigest)
+      )
+        return false;
+      const policy = activePrivatePilotDiscoveryPolicy(this.env);
+      if (
+        policy?.observationMode !== "private-redacted" ||
+        scope.buildSha !== policy.buildSha ||
+        scope.approvalRef !== policy.approvalRef ||
+        this.guestId() !== policy.recipientGuestId ||
+        !this.ctx.id.equals(
+          this.env.GUESTS.idFromName(policy.recipientGuestId),
+        ) ||
+        !records.every(
+          (record) =>
+            record.observedAt >= Date.parse(policy.notBefore) &&
+            record.observedAt < Date.parse(policy.expiresAt),
+        )
+      )
+        return false;
+      const policyDigest = await eventDiagnosticPolicyDigest(policy);
+      if (scope.policyDigest !== policyDigest) return false;
+      const encodedPolicy = JSON.stringify(policy);
+      const scopeStillMatches = (current: PrivatePilotPolicy | null) =>
+        !!current &&
+        scope.policyDigest === policyDigest &&
+        // Exact normalized bytes preserve the captured digest across awaits.
+        JSON.stringify(current) === encodedPolicy;
+      return await this.ctx.storage.transaction(async (transaction) => {
+        const current = activePrivatePilotDiscoveryPolicy(this.env);
+        if (!scopeStillMatches(current)) return false;
+        const stored = await transaction.get<unknown>(EVENT_DIAGNOSTIC_KEY);
+        const latest = activePrivatePilotDiscoveryPolicy(this.env);
+        if (!scopeStillMatches(latest)) return false;
+        const prior =
+          validDiagnosticRing(stored) &&
+          diagnosticRingMatches(stored, policy, policyDigest) &&
+          stored.retentionUntil > Date.now()
+            ? stored
+            : null;
+        const combined = [...(prior?.records ?? []), ...records].sort(
+          (left, right) => left.observedAt - right.observedAt,
+        );
+        const removed = Math.max(
+          0,
+          combined.length - EVENT_DIAGNOSTIC_RECORD_LIMIT,
+        );
+        const ring: EventDiagnosticRing = {
+          schemaVersion: 1,
+          buildSha: policy.buildSha,
+          approvalRef: policy.approvalRef,
+          recipientConnectionId: policy.recipientConnectionId,
+          policyDigest,
+          retentionUntil:
+            Date.parse(policy.expiresAt) + EVENT_DIAGNOSTIC_RETENTION_MS,
+          records: combined.slice(-EVENT_DIAGNOSTIC_RECORD_LIMIT),
+          droppedCount: Math.min(
+            Number.MAX_SAFE_INTEGER,
+            (prior?.droppedCount ?? 0) + removed,
+          ),
+        };
+        // The asynchronous transaction serializes concurrent request flushes.
+        await transaction.put(EVENT_DIAGNOSTIC_KEY, ring);
+        return true;
+      });
+    } catch {
+      // Never leak storage errors or make diagnostics authoritative.
+      return false;
+    }
+  }
+
+  /** Fresh own-grant read; expired policies permit only bounded retained diagnostics. */
+  async readEventDiagnostics(
+    guestId: string,
+    connectionId: string,
+  ): Promise<EventDiagnosticSnapshot | null> {
+    try {
+      const authorized = () =>
+        UUID_V4.test(guestId) &&
+        this.ctx.id.equals(this.env.GUESTS.idFromName(guestId)) &&
+        this.authorizeConnection(guestId, connectionId, "events:subscribe")
+          .allowed;
+      if (!authorized()) return null;
+      const actor = { guestId, connectionId };
+      const context = eventDiagnosticContext(this.env, actor);
+      const policy = privatePilotConfiguration(this.env);
+      const empty = (
+        scopeMatches: boolean,
+        retentionUntil: number | null = null,
+      ): EventDiagnosticSnapshot => ({
+        records: [],
+        droppedCount: 0,
+        retentionUntil,
+        scopeMatches,
+        context,
+      });
+      if (
+        policy?.mode !== "a-only-discovery" ||
+        policy.observationMode !== "private-redacted" ||
+        !privatePilotRecipientMatches(policy, actor)
+      )
+        return empty(false);
+      const policyDigest = await eventDiagnosticPolicyDigest(policy);
+      const stored = await this.ctx.storage.get<unknown>(EVENT_DIAGNOSTIC_KEY);
+      if (!authorized()) return null;
+      const current = privatePilotConfiguration(this.env);
+      if (!current || JSON.stringify(current) !== JSON.stringify(policy))
+        return {
+          ...empty(false),
+          context: eventDiagnosticContext(this.env, actor),
+        };
+      const retentionUntil =
+        Date.parse(policy.expiresAt) + EVENT_DIAGNOSTIC_RETENTION_MS;
+      if (stored === undefined) return empty(true, retentionUntil);
+      if (!validDiagnosticRing(stored)) return null;
+      if (!diagnosticRingMatches(stored, policy, policyDigest))
+        return empty(false);
+      if (Date.now() >= stored.retentionUntil)
+        return empty(true, retentionUntil);
+      return {
+        records: stored.records,
+        droppedCount: stored.droppedCount,
+        retentionUntil: stored.retentionUntil,
+        scopeMatches: true,
+        context: eventDiagnosticContext(this.env, actor),
+      };
+    } catch {
+      return null;
+    }
   }
 
   /**
