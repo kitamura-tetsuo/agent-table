@@ -382,6 +382,52 @@ describe("autonomous pilot metadata gate", () => {
     });
   });
 
+  it.each(["a-only", "bidirectional"] as const)(
+    "rejects %s initial responses completed after the pre-restart snapshot",
+    (mode) => {
+      const record = realHostShapedFixture(mode);
+      const restart = record.restart as NonNullable<typeof record.restart>;
+      restart.before.observedAt = "2026-11-12T00:00:15Z";
+
+      const result = evaluateAutonomousEvidence(record);
+      expect(result.completeRecord).toBe(false);
+      expect(result.scenarios.restart).toBe("failed");
+      expect(result.missing).toContain(
+        "restart: initial event-response messages precede the pre-restart snapshot",
+      );
+    },
+  );
+
+  it.each(["a-only", "bidirectional"] as const)(
+    "rejects %s initial responses observed only after restart",
+    (mode) => {
+      const record = realHostShapedFixture(mode);
+      const cancellation = record.cancellation as NonNullable<
+        typeof record.cancellation
+      >;
+      const restart = record.restart as NonNullable<typeof record.restart>;
+      Object.assign(cancellation, {
+        pendingAt: "2026-11-12T00:00:02Z",
+        decisionAt: "2026-11-12T00:00:04Z",
+        attempts: [],
+        coverageFrom: "2026-11-12T00:00:01Z",
+        coverageThrough: "2026-11-12T00:00:06Z",
+        postDecisionProbeAt: "2026-11-12T00:00:05Z",
+      });
+      restart.before.observedAt = "2026-11-12T00:00:06Z";
+      restart.startedAt = "2026-11-12T00:00:07Z";
+      restart.readyAt = "2026-11-12T00:00:08Z";
+      restart.after.observedAt = "2026-11-12T00:00:09Z";
+
+      const result = evaluateAutonomousEvidence(record);
+      expect(result.completeRecord).toBe(false);
+      expect(result.scenarios.restart).toBe("failed");
+      expect(result.missing).toContain(
+        "restart: initial event-response messages precede the pre-restart snapshot",
+      );
+    },
+  );
+
   it("reports tools and receipt separately when receiver 2xx has no observed host run", () => {
     const record = realHostShapedFixture();
     for (const item of record.turns) {

@@ -1248,6 +1248,15 @@ export function evaluateAutonomousEvidence(
     ]);
     check(
       "restart",
+      previousMessages.every(
+        (message) =>
+          milliseconds(message.committedAt) <= milliseconds(before.observedAt),
+      ),
+      "initial event-response messages precede the pre-restart snapshot",
+      true,
+    );
+    check(
+      "restart",
       record.turns.filter((item) => item.scenario === "restart").length === 1 &&
         resumed &&
         previousMessages.every(

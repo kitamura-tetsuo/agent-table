@@ -271,6 +271,9 @@ Keep the primary table live with A's active subscription. For an independently
 reviewed storage-preserving restart, capture original table/subscription
 identities and generations, retry counts and retry-horizon state. Preserve the
 same backing storage across the actual runtime transition and read it back.
+The initial event-response posts and replies must be committed before the
+pre-restart state snapshot; two responses observed only after restart do not
+establish before-and-after continuity.
 A new table, erased state, new subscription or reset retry budget is not a
 retained-state restart. B's absent subscription remains absent in this mode.
 
