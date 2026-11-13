@@ -168,7 +168,9 @@ async function retainDiagnostic(f: Fixture) {
 
 function diagnosticRpcOverlay(
   f: Fixture,
-  readEventDiagnostics: typeof f.table.readEventDiagnostics,
+  readEventDiagnostics: (
+    actor: VerifiedConnectionActor,
+  ) => Promise<Awaited<ReturnType<Fixture["table"]["readEventDiagnostics"]>>>,
 ): Env {
   return {
     ...f.overlay,
