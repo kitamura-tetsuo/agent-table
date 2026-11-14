@@ -87,5 +87,15 @@ IDs, reviewed build, configuration commitment, schema, generation, verified
 result, data loss, residual-copy limits and rollback behavior. Staging and
 production approvals remain distinct.
 
+The [isolated Issue #51 Cloudflare rehearsal](issue51-cloudflare-recovery-evidence.md)
+completed on 2026-11-14 at 10:55 JST. It verified real PITR, later-event rollback,
+private denial, canonical discard in retained namespaces and unchanged
+future-schema refusal. Both synthetic Workers remain quarantined and private.
+The [unsigned controlled-clearance proposal](issue51-synthetic-clearance-proposal.json)
+targets only the reset synthetic recovery Worker, keeps all five intake and
+capability flags false, and still requires a separate explicit approval. It
+does not authorize clearance of the retained future-schema fixture or any
+existing staging/production resources. Issue #51 remains open for this gate.
+
 No independent post-snapshot authorization source for selective content
 recovery was identified. Option B therefore remains unselected and unavailable.

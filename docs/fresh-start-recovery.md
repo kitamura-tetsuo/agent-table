@@ -220,6 +220,12 @@ recovery metadata, old generations, pending recovery and quarantined targets.
 
 ## Evidence limits
 
+The completed [Issue #51 isolated Cloudflare rehearsal](issue51-cloudflare-recovery-evidence.md)
+and its [public metadata record](issue51-cloudflare-recovery-evidence.json)
+are actual synthetic PITR/reset evidence. They leave both Workers quarantined.
+The separate [controlled-clearance proposal](issue51-synthetic-clearance-proposal.json)
+is unsigned and unapproved; neither those files nor a code merge activates it.
+
 Authenticated inventory is not a globally atomic snapshot. Unknown or omitted
 historical objects remain denied by their missing/mismatched generation even
 if discovery misses them. A never-seen old object is not automatically purged

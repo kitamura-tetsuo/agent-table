@@ -1,0 +1,180 @@
+{
+  "format": "agent-table.synthetic-controlled-clearance-proposal.v1",
+  "status": "DRAFT_NOT_APPROVED",
+  "createdAt": "2026-11-14T01:56:05.347Z",
+  "scope": "manual-isolated-synthetic-only",
+  "protectedWorkflowAttestation": null,
+  "productionRecoveryJournalClaim": null,
+  "authorizationIssued": false,
+  "deploymentPerformed": false,
+  "approvalRequested": "Approve one controlled-clearance rehearsal for the exact subject and unsigned configuration below, with all public exposure, new guest/table intake, subscriptions, events, and outbound notifications disabled; authorize quarantine-only rollback in the same namespaces and generation.",
+  "subject": {
+    "environment": "staging",
+    "schemaVersion": 12,
+    "sourceSha": "3d65b9ace98720afd2ef48275a3bb76a8638f76e",
+    "operationId": "4603a356-06f8-408c-bc13-f94f26484328",
+    "generation": "bbdca17200eeca1428bedb579c3461730ded3bb5155d763f8feaf9a514078ce4",
+    "namespaceIdentity": {
+      "accountId": "0fbaae27d3ff021bc17109f1493d0b2d",
+      "workerName": "agent-table-pr51-recovery-staging",
+      "namespaces": {
+        "OAUTH_KV": "63247a13ec9f4e54912318f73c20dfa3",
+        "TABLES": "3516bed8ba584fb0b3f6743c24b9b4cd",
+        "GUESTS": "87ff46558f6747358c1edbbaa3fe750a",
+        "OAUTH_SERIALIZER": "6641d6933e6642e99fcb8b9f802a3330",
+        "ADMISSION": "f2752cc66c0646f48f571949cbf99a71"
+      },
+      "commitments": {
+        "TABLES": "d8a9469d24ce0c6f49499155ee3f43cda0a0242aec1b221d0a5dc1d6a85dc816",
+        "GUESTS": "6e962c1ebe92e02324492c8588711318049c17736eba8d614a4557f6ac98a0e0",
+        "OAUTH_SERIALIZER": "77943ab8bd24a4d9ed167c7c16311bd82824314857d11aaaaa79ca7e8e163d5f",
+        "ADMISSION": "9243e5b762c70e3f4428503dc8f18c0dfa7d00bfb9c84251582966297f0ab55e"
+      }
+    }
+  },
+  "executionCode": {
+    "operatorSha": "5f41a40f22fa1fe6dcc28c0238100ed944d18107",
+    "sourceSha": "3d65b9ace98720afd2ef48275a3bb76a8638f76e",
+    "runtimeInputTreeSha256": "bbf189d3f67d3b14f9105104ab9dbf2f005f196e65dcb62dc1e50d82b79b5b29",
+    "comparedPaths": [
+      "src",
+      "schema",
+      "test/recovery-hosted",
+      "package.json",
+      "package-lock.json",
+      "wrangler.jsonc",
+      "tsconfig.json"
+    ]
+  },
+  "observedCurrentDeployment": {
+    "versionId": "2b545b59-521b-48f9-b84c-4bb7d51bae2b",
+    "observedAt": "2026-11-14T01:54:41.269Z",
+    "configSha256": "56be00421e272f3415e9ee8a694998cfb95243c25462c4ac0b123f0bfdfceb07",
+    "completeResetConfigurationSha256": "c281811405fbb82305d5c8940a82eb4a0586c7bdecc7d24c14063fcad5d9d480",
+    "resetAuthorizationExpiresAt": "2026-11-14T02:39:35.794Z",
+    "restoreQuarantine": true
+  },
+  "evidence": {
+    "finalizedAt": "2026-11-14T01:55:03.459Z",
+    "canonicalSha256": "3cd59ec2fa2f69d44f9c471332e1e0eb5343a4df6c6ce5601cba185bef2ec0f7",
+    "fileSha256": "374c36ef9ba6a7f8cefb042dfd1eb4c82f6db962697337e3f7219f09080215a2",
+    "localRecordHeadSha256": "2567285e3fca23fdb7371cbd0644c3cfe57fffc6230d3050448a9f2faffa5d6b"
+  },
+  "intendedServingConfiguration": {
+    "configSha256": "18d29f9b18e0fe67802427c2e18cf5a98ec8d1b4b9b7e7358a99adf851f82e0e",
+    "authorizationAbsent": true,
+    "deployable": false,
+    "configuration": {
+      "name": "agent-table-pr51-recovery-staging",
+      "main": "/home/ubuntu/src/agent-table-issue51-recovery-20261114/src/index.ts",
+      "observability": {
+        "enabled": false
+      },
+      "compatibility_date": "2026-11-07",
+      "compatibility_flags": [
+        "nodejs_compat",
+        "global_fetch_strictly_public"
+      ],
+      "durable_objects": {
+        "bindings": [
+          {
+            "name": "TABLES",
+            "class_name": "TableDO"
+          },
+          {
+            "name": "GUESTS",
+            "class_name": "GuestDO"
+          },
+          {
+            "name": "OAUTH_SERIALIZER",
+            "class_name": "OAuthTokenDO"
+          },
+          {
+            "name": "ADMISSION",
+            "class_name": "AdmissionDO"
+          }
+        ],
+        "code_update_strategy": {
+          "mode": "immediate"
+        }
+      },
+      "migrations": [
+        {
+          "tag": "v1",
+          "new_sqlite_classes": [
+            "TableDO",
+            "GuestDO"
+          ]
+        },
+        {
+          "tag": "v2",
+          "new_sqlite_classes": [
+            "OAuthTokenDO"
+          ]
+        },
+        {
+          "tag": "v3",
+          "new_sqlite_classes": [
+            "AdmissionDO"
+          ]
+        }
+      ],
+      "vars": {
+        "PUBLIC_ORIGIN": "https://agent-table-pr51-recovery-staging.kitamura-tetsuo.workers.dev",
+        "RELEASE_ENVIRONMENT": "staging",
+        "RELEASE_BUILD_SHA": "3d65b9ace98720afd2ef48275a3bb76a8638f76e",
+        "RESTORE_QUARANTINE": "false",
+        "HOSTED_RECOVERY_FIXTURE": "issue51-synthetic-only",
+        "HOSTED_RECOVERY_FIXTURE_WORKER": "agent-table-pr51-recovery-staging",
+        "HOSTED_RECOVERY_FIXTURE_RUN_ID": "b1a4ba80-b283-468f-85b3-ca9865c0f7bd",
+        "ALLOW_NEW_GUESTS": "false",
+        "ALLOW_NEW_TABLES": "false",
+        "ENABLE_MCP_SUBSCRIPTIONS": "false",
+        "ENABLE_OPENAI_EVENTS": "false",
+        "ALLOW_OUTBOUND_NOTIFICATIONS": "false",
+        "RECOVERY_VERIFICATION_KEY": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEA1un4I/3HnycL7XJX3e5WaQdMwU7l1kJyb81ZSEiXqgk=\n-----END PUBLIC KEY-----\n",
+        "RECOVERY_NAMESPACE_IDENTITY": "{\"accountId\":\"0fbaae27d3ff021bc17109f1493d0b2d\",\"commitments\":{\"ADMISSION\":\"9243e5b762c70e3f4428503dc8f18c0dfa7d00bfb9c84251582966297f0ab55e\",\"GUESTS\":\"6e962c1ebe92e02324492c8588711318049c17736eba8d614a4557f6ac98a0e0\",\"OAUTH_SERIALIZER\":\"77943ab8bd24a4d9ed167c7c16311bd82824314857d11aaaaa79ca7e8e163d5f\",\"TABLES\":\"d8a9469d24ce0c6f49499155ee3f43cda0a0242aec1b221d0a5dc1d6a85dc816\"},\"namespaces\":{\"ADMISSION\":\"f2752cc66c0646f48f571949cbf99a71\",\"GUESTS\":\"87ff46558f6747358c1edbbaa3fe750a\",\"OAUTH_KV\":\"63247a13ec9f4e54912318f73c20dfa3\",\"OAUTH_SERIALIZER\":\"6641d6933e6642e99fcb8b9f802a3330\",\"TABLES\":\"3516bed8ba584fb0b3f6743c24b9b4cd\"},\"workerName\":\"agent-table-pr51-recovery-staging\"}",
+        "RECOVERY_CONFIG_SHA256": "18d29f9b18e0fe67802427c2e18cf5a98ec8d1b4b9b7e7358a99adf851f82e0e"
+      },
+      "kv_namespaces": [
+        {
+          "binding": "OAUTH_KV",
+          "id": "63247a13ec9f4e54912318f73c20dfa3"
+        }
+      ],
+      "account_id": "0fbaae27d3ff021bc17109f1493d0b2d",
+      "workers_dev": false,
+      "preview_urls": false,
+      "routes": []
+    }
+  },
+  "rollback": {
+    "mode": "quarantine-only",
+    "operationId": "4603a356-06f8-408c-bc13-f94f26484328",
+    "generation": "bbdca17200eeca1428bedb579c3461730ded3bb5155d763f8feaf9a514078ce4",
+    "configSha256": "56be00421e272f3415e9ee8a694998cfb95243c25462c4ac0b123f0bfdfceb07",
+    "restoreQuarantine": true,
+    "flags": {
+      "ALLOW_NEW_GUESTS": false,
+      "ALLOW_NEW_TABLES": false,
+      "ENABLE_MCP_SUBSCRIPTIONS": false,
+      "ENABLE_OPENAI_EVENTS": false,
+      "ALLOW_OUTBOUND_NOTIFICATIONS": false
+    },
+    "workersDev": false,
+    "previewUrls": false,
+    "routes": [],
+    "namespaceChanges": false,
+    "destructiveRpcCalls": false,
+    "authorizationRule": "Any refreshed rollback authorization must bind this same-generation quarantine configuration; no storage reset or discard is authorized by rollback."
+  },
+  "activationPreconditions": [
+    "Obtain separate explicit approval of this exact proposal and configuration digest.",
+    "Re-read authenticated provider version, configuration, namespace ownership/commitments, and private ingress immediately before activation; refuse any mismatch with the observed tuple.",
+    "Reverify actual production recovery inspection receipts and observed KV inventory against this operation/generation; inventory emptiness is not proof of globally empty KV caches.",
+    "Retain the independently approved synthetic execution record outside restored DO/KV before issuing any serve authorization; this is not a protected-workflow or production-journal attestation.",
+    "Issue any approved serve authorization separately, bound to this exact source, resources, schema, generation, configuration and evidence; this proposal contains no authorization signature.",
+    "Keep all public routes/previews and all five safety flags disabled. Validate old-credential denial and fresh-generation behavior through authenticated private Service bindings only.",
+    "Rollback may restore quarantine only in the same namespaces and generation. No new PITR, namespace rename/deletion, or destructive reset is authorized."
+  ]
+}
