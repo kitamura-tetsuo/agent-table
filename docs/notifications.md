@@ -974,8 +974,13 @@ requirement. Full A↔B autonomy remains unproven and outside this condition.
 
 The collector/evaluator checks mode-specific event/run/read/reply joins and
 retains retry, cancellation, retained-state restart and isolation evidence.
-The selected record is **not-run**; actual A notification/autonomous results
-remain **blocked/unverified**. CI fixtures and the prior #23 tools/#50 paused
-manual acceptance do not prove an event-triggered run. Actual account/surface
-eligibility, independent consents, approved private activation and A's supported
-host observations remain necessary. Production stays manual.
+The selected record now retains actual native event/tool and server receipts.
+The [2026-11-14 observed results](compatibility/pr63-real-host-20261114.md)
+show two ChatGPT event-triggered authenticated replies in 30.086s and 35.016s,
+exact-key retry without another message, pending cancellation, retained-state
+redeploy progress, outsider refusals and synthetic-only shared content.
+The owner approved the same-owner A-only native-trace scope; pre-event idle and
+internal run identifiers remain unverified. The separate bounded correlation
+checker passes, but the general strict evaluator stays incomplete and source
+review is pending. Claude B was manually seeded. No public or bidirectional
+compatibility is claimed, and production stays manual.

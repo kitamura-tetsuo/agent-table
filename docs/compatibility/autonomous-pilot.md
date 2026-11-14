@@ -64,7 +64,7 @@ bidirectional pass or generalized to another host/account/profile.
 | Operations, #22 / #51 | Independent restore reconciliation remains open | Approved isolation, current authoritative state and applicable operational gates; no unapproved quarantine clearance |
 | Protected release, #50 | [Paused manual production release accepted](https://github.com/kitamura-tetsuo/agent-table/issues/50#issuecomment-6825493911) on 2026-11-12 | Separate private pilot activation; the manual release does not authorize Events or autonomy |
 | Host OAuth, #23 | One scoped actual-host tools record accepted | Two independently controlled tools-eligible accounts, each owner's approval and current host tools evidence |
-| Host execution | No observed ChatGPT idle-event response | A's supported idle/run/event observation surface for the selected product, surface and account |
+| Host execution | Two native event/read/reply traces retained under the approved bounded scope; pre-event idle unverified | Independent source/association review; see the observed-results document |
 
 At this implementation baseline, public `callbackTransportReadiness()` remains
 disabled. The merged default-off
