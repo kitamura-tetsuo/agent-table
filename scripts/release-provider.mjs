@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { PRIVATE_PILOT_PROFILE } from "../src/shared/private-pilot.ts";
+import { RECOVERY_BINDINGS } from "./recovery-configuration.mjs";
 
 // All provider calls are GETs to the fixed Cloudflare API origin. The raw
 // responses, which may include secrets, never enter logs or persisted receipts.
@@ -241,6 +242,18 @@ export async function inspectWorker(
       .map((binding) => [binding.name, binding.text]),
   );
   const missingIdentity = [];
+  for (const name of RECOVERY_BINDINGS) {
+    const present =
+      settings.bindings.some((item) => item?.name === name) ||
+      versionBindings.some((item) => item?.name === name);
+    if (!present) continue;
+    const current = readBinding(settings.bindings, name, "plain_text");
+    const deployed = readBinding(versionBindings, name, "plain_text");
+    ensure(
+      typeof current.text === "string" && current.text === deployed.text,
+      "provider-recovery-binding-unverified",
+    );
+  }
   for (const name of RELEASE_VARS) {
     if (
       bootstrapStaging &&
@@ -330,6 +343,12 @@ export function verifyProviderIsolation(
 }
 
 export function verifyDeployedConfiguration(observed, config) {
+  for (const name of RECOVERY_BINDINGS) {
+    ensure(
+      observed.textBindings[name] === config.vars[name],
+      "provider-deployed-recovery-binding-mismatch",
+    );
+  }
   for (const name of RELEASE_VARS) {
     ensure(
       observed.textBindings[name] === config.vars[name],

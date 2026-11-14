@@ -33,6 +33,7 @@ export class InboxHintStreams {
       reason: InboxStreamStopReason,
       durationMs: number,
     ) => void,
+    private readonly canEmit: () => boolean = () => true,
   ) {}
 
   attach(
@@ -43,7 +44,11 @@ export class InboxHintStreams {
     const old = this.entries.get(snapshot.membershipId);
     if (old) this.stop(old, "replaced");
     // A private table has exactly two seats. Do not silently expand that bound.
-    if (this.entries.size >= 2 || snapshot.expiresAt <= Date.now()) {
+    if (
+      !this.canEmit() ||
+      this.entries.size >= 2 ||
+      snapshot.expiresAt <= Date.now()
+    ) {
       throw new Error("Inbox stream unavailable");
     }
     let entry: Entry;
@@ -88,6 +93,10 @@ export class InboxHintStreams {
     const entry = this.entries.get(membershipId);
     if (!entry) return;
     if (!(await this.revalidate(entry)) || !this.current(entry)) return;
+    if (!this.canEmit()) {
+      this.stop(entry, "authorization");
+      return;
+    }
     if ((entry.controller.desiredSize ?? 0) <= 0) {
       this.stop(entry, "slow_consumer");
       return;
@@ -144,6 +153,7 @@ export class InboxHintStreams {
       const checked = await entry.check();
       if (!this.current(entry)) return false;
       if (
+        !this.canEmit() ||
         !checked ||
         checked.uri !== entry.snapshot.uri ||
         checked.membershipId !== entry.snapshot.membershipId ||

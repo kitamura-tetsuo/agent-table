@@ -1,4 +1,21 @@
 import { DurableObject } from "cloudflare:workers";
+import {
+  ADMISSION_RECOVERY_STORAGE,
+  initializeRecoveryFence,
+  inspectRecoveryObject,
+  RECOVERY_MARKER_SQL,
+  type RecoveryObjectRequest,
+  recoveryObjectDenied,
+  recoveryStorageWasVirgin,
+  resetRecoveryObject,
+} from "../shared/recovery-storage";
+import {
+  deferQuarantinedAlarm,
+  isRestoreQuarantined,
+  RESTORE_QUARANTINE_RECHECK_MS,
+} from "../shared/release-quarantine";
+
+export { ADMISSION_RECOVERY_STORAGE } from "../shared/recovery-manifests";
 
 export type AdmissionBucket =
   | "guest"
@@ -29,6 +46,7 @@ const CATEGORIES: ReadonlySet<string> = new Set([
 export class AdmissionDO extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
+    const virgin = recoveryStorageWasVirgin(ctx.storage);
     ctx.storage.sql.exec(
       `CREATE TABLE IF NOT EXISTS admission_hits (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -39,6 +57,50 @@ export class AdmissionDO extends DurableObject<Env> {
     ctx.storage.sql.exec(
       "CREATE INDEX IF NOT EXISTS admission_hits_by_window ON admission_hits(category, created_at)",
     );
+    ctx.storage.sql.exec(RECOVERY_MARKER_SQL);
+    ctx.blockConcurrencyWhile(() =>
+      initializeRecoveryFence(ctx, env, ADMISSION_RECOVERY_STORAGE, virgin),
+    );
+  }
+
+  private denied(): boolean {
+    return (
+      isRestoreQuarantined(this.env) ||
+      recoveryObjectDenied(
+        this.ctx.storage,
+        this.env,
+        ADMISSION_RECOVERY_STORAGE,
+      )
+    );
+  }
+
+  inspectRecovery(input: RecoveryObjectRequest) {
+    return inspectRecoveryObject(
+      this.ctx,
+      this.env,
+      ADMISSION_RECOVERY_STORAGE,
+      input,
+    );
+  }
+
+  resetRecovery(input: RecoveryObjectRequest) {
+    return resetRecoveryObject(
+      this.ctx,
+      this.env,
+      ADMISSION_RECOVERY_STORAGE,
+      input,
+    );
+  }
+
+  async alarm(): Promise<void> {
+    if (await deferQuarantinedAlarm(this.env, this.ctx.storage)) return;
+    if (this.denied()) {
+      await this.ctx.storage.setAlarm(
+        Date.now() + RESTORE_QUARANTINE_RECHECK_MS,
+      );
+      return;
+    }
+    await this.ctx.storage.deleteAlarm();
   }
 
   /**
@@ -47,6 +109,7 @@ export class AdmissionDO extends DurableObject<Env> {
    * There is no per-isolate cache or eventual-consistency escape path.
    */
   consume(category: AdmissionBucket, maximum: number): AdmissionDecision {
+    if (this.denied()) return { allowed: false, retryAfterMs: WINDOW_MS };
     if (
       !CATEGORIES.has(category) ||
       !Number.isSafeInteger(maximum) ||
@@ -57,6 +120,7 @@ export class AdmissionDO extends DurableObject<Env> {
     }
     const now = Date.now();
     return this.ctx.storage.transactionSync(() => {
+      if (this.denied()) return { allowed: false, retryAfterMs: WINDOW_MS };
       this.ctx.storage.sql.exec(
         "DELETE FROM admission_hits WHERE created_at <= ?",
         now - WINDOW_MS,

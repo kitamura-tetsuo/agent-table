@@ -7,6 +7,11 @@ import {
   PRIVATE_PILOT_PROFILE,
   privatePilotConfiguration,
 } from "../src/shared/private-pilot.ts";
+import { verifyRecoveryContinuity } from "./recovery-configuration.mjs";
+import {
+  githubRecoveryClient,
+  readRecoveryJournal,
+} from "./recovery-record.mjs";
 import { validateRelease } from "./release-preflight.mjs";
 import {
   cloudflareReader,
@@ -135,7 +140,8 @@ export async function verifyProtectedEnvironmentApproval(workflow, githubRead) {
       run?.head_sha === workflow.sha &&
       run?.head_branch === "main" &&
       run?.event === "workflow_dispatch" &&
-      run?.path === `.github/workflows/deploy-${workflow.environment}.yml` &&
+      run?.path ===
+        `.github/workflows/${workflow.kind === "recovery" ? "recover" : "deploy"}-${workflow.environment}.yml` &&
       run?.run_attempt === 1 &&
       run?.status === "in_progress",
     "deployment-run-not-verified",
@@ -193,7 +199,7 @@ export function verifyOperationalDecision(
     );
   }
   requireDecision(
-    record?.schema?.testedVersion === 11 &&
+    record?.schema?.testedVersion === 12 &&
       record.schema.nonDestructiveRollback === !bootstrapStaging &&
       (!bootstrapStaging ||
         (environment === "staging" &&
@@ -281,6 +287,7 @@ export async function authorizeRelease({
   requestedActiveVersionId = "",
   cloudflareRead,
   githubRead,
+  recoveryJournal,
   now = Date.now(),
 }) {
   const offline = validateRelease({
@@ -397,6 +404,12 @@ export async function authorizeRelease({
       observed.peerState.textBindings.RESTORE_QUARANTINE !== "true",
     "restore-reconciliation-required",
   );
+  verifyRecoveryContinuity({
+    config,
+    observed: observed.targetState,
+    journal: recoveryJournal,
+    now,
+  });
   requireDecision(
     inventory.bindings.every((name) =>
       observed.targetState.secretNames.includes(name),
@@ -541,6 +554,10 @@ async function main() {
       requestedActiveVersionId: expectedVersion,
       cloudflareRead: cloudflareReader(process.env.CLOUDFLARE_READ_TOKEN),
       githubRead: githubReader(process.env.GITHUB_TOKEN),
+      recoveryJournal: await readRecoveryJournal(
+        environment,
+        githubRecoveryClient(process.env.GITHUB_TOKEN),
+      ),
     });
     process.stdout.write(`RELEASE_APPROVAL_VALID ${JSON.stringify(result)}\n`);
   } catch (error) {

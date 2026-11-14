@@ -1,6 +1,26 @@
 import { DurableObject } from "cloudflare:workers";
-import { rejectRestoredAccess } from "../shared/release-quarantine";
+import {
+  initializeRecoveryFence,
+  inspectRecoveryObject,
+  OAUTH_RECOVERY_STORAGE,
+  RECOVERY_MARKER_SQL,
+  type RecoveryObjectRequest,
+  recoveryObjectDenied,
+  recoveryStorageWasVirgin,
+  resetRecoveryObject,
+} from "../shared/recovery-storage";
+import {
+  deferQuarantinedAlarm,
+  RESTORE_QUARANTINE_RECHECK_MS,
+  rejectRestoredAccess,
+} from "../shared/release-quarantine";
 import { authorizationServer } from "./provider";
+import {
+  oauthRecoveryEnvironment,
+  observeOAuthRecoveryReads,
+} from "./recovery-kv";
+
+export { OAUTH_RECOVERY_STORAGE } from "../shared/recovery-manifests";
 
 interface RedemptionReadProbe {
   grantReads: number;
@@ -21,6 +41,67 @@ export class OAuthTokenDO extends DurableObject<Env> {
   private tail: Promise<void> = Promise.resolve();
   private activeRequests = 0;
   private probe: RedemptionReadProbe | null = null;
+
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env);
+    const virgin = recoveryStorageWasVirgin(ctx.storage);
+    ctx.storage.sql.exec(RECOVERY_MARKER_SQL);
+    ctx.blockConcurrencyWhile(() =>
+      initializeRecoveryFence(ctx, env, OAUTH_RECOVERY_STORAGE, virgin),
+    );
+  }
+
+  private refusal(): Response | null {
+    const quarantine = rejectRestoredAccess(this.env);
+    if (quarantine) return quarantine;
+    if (
+      !recoveryObjectDenied(this.ctx.storage, this.env, OAUTH_RECOVERY_STORAGE)
+    )
+      return null;
+    return new Response("Service unavailable during recovery", {
+      status: 503,
+      headers: {
+        "Cache-Control": "no-store",
+        "Content-Type": "text/plain; charset=utf-8",
+        "Retry-After": "300",
+      },
+    });
+  }
+
+  inspectRecovery(input: RecoveryObjectRequest) {
+    if (this.activeRequests !== 0)
+      throw new Error("OAuth recovery requires an idle serializer");
+    return inspectRecoveryObject(
+      this.ctx,
+      this.env,
+      OAUTH_RECOVERY_STORAGE,
+      input,
+    );
+  }
+
+  resetRecovery(input: RecoveryObjectRequest) {
+    if (this.activeRequests !== 0)
+      throw new Error("OAuth recovery requires an idle serializer");
+    return resetRecoveryObject(
+      this.ctx,
+      this.env,
+      OAUTH_RECOVERY_STORAGE,
+      input,
+    );
+  }
+
+  async alarm(): Promise<void> {
+    if (await deferQuarantinedAlarm(this.env, this.ctx.storage)) return;
+    if (
+      recoveryObjectDenied(this.ctx.storage, this.env, OAUTH_RECOVERY_STORAGE)
+    ) {
+      await this.ctx.storage.setAlarm(
+        Date.now() + RESTORE_QUARANTINE_RECHECK_MS,
+      );
+      return;
+    }
+    await this.ctx.storage.deleteAlarm();
+  }
 
   private assertLocalProbe(): void {
     // The probe is an internal DO RPC, never a public Worker HTTP endpoint.
@@ -74,38 +155,23 @@ export class OAuthTokenDO extends DurableObject<Env> {
 
   private observedEnvironment(): Env {
     const probe = this.probe;
-    if (!probe) return this.env;
-    // Intercept the real library's grant read, AFTER the KV read has returned
-    // but BEFORE that grant can be mutated. This leaves PKCE and the provider's
-    // redemption and persistence logic intact; it is not a mocked verdict.
-    const kv = new Proxy(this.env.OAUTH_KV, {
-      get(target, property) {
-        const value = Reflect.get(target, property, target);
-        if (property === "get" && typeof value === "function") {
-          return async (...args: unknown[]): Promise<unknown> => {
-            const result = await (
-              value.bind(target) as (...params: unknown[]) => Promise<unknown>
-            )(...args);
-            if (
-              typeof args[0] === "string" &&
-              args[0].startsWith("grant:") &&
-              result !== null
-            ) {
-              probe.grantReads++;
-              if (probe.grantReads === 1) await probe.barrier;
-            }
-            return result;
-          };
-        }
-        return typeof value === "function" ? value.bind(target) : value;
-      },
+    if (!probe) return oauthRecoveryEnvironment(this.env);
+    // Observe logical grant keys after the generation prefix is enforced.
+    return observeOAuthRecoveryReads(this.env, async (keys, result) => {
+      if (
+        typeof keys === "string" &&
+        keys.startsWith("grant:") &&
+        result !== null
+      ) {
+        probe.grantReads++;
+        if (probe.grantReads === 1) await probe.barrier;
+      }
     });
-    return { ...this.env, OAUTH_KV: kv };
   }
 
   async fetch(request: Request): Promise<Response> {
-    const quarantine = rejectRestoredAccess(this.env);
-    if (quarantine) return quarantine;
+    const initialRefusal = this.refusal();
+    if (initialRefusal) return initialRefusal;
     const path = new URL(request.url).pathname;
     if (
       request.method !== "POST" ||
@@ -123,13 +189,16 @@ export class OAuthTokenDO extends DurableObject<Env> {
     this.tail = before.then(() => current);
     try {
       await before;
+      const queuedRefusal = this.refusal();
+      if (queuedRefusal) return queuedRefusal;
       if (this.probe) this.probe.providerEntries++;
       const environment = this.observedEnvironment();
-      return await authorizationServer(environment).fetch(
+      const response = await authorizationServer(environment).fetch(
         request,
         environment,
         this.ctx as unknown as ExecutionContext,
       );
+      return this.refusal() ?? response;
     } finally {
       this.activeRequests--;
       release();

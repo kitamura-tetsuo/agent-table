@@ -34,6 +34,7 @@ export { OAuthTokenDO } from "./auth/token-do";
 export { AdmissionDO } from "./objects/admission";
 export { GuestDO } from "./objects/guest";
 export { TableDO } from "./objects/table";
+export { RecoveryControl } from "./recovery/control";
 
 /** Bound admission separately from authenticated ownership and table quotas. */
 function edgeCategory(request: Request): EdgeAdmissionCategory | null {

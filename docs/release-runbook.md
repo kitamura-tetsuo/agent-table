@@ -42,11 +42,13 @@ implemented provider/host evidence verification. Restored snapshots with
 unknown post-snapshot revocations/deletions/expiries remain quarantined until
 the separate reconciliation work in Issue #51 is complete.
 
-The [recovery decision proposal](restore-recovery-decision.md) records the
-independent-authority gap, the unapproved recovery alternatives and the exact
-policy decision needed before implementing a quarantine-clearance path.
-Additional local snapshot regressions and direct RPC quarantine guards do not
-approve either alternative or authorize destruction of retained data.
+The [approved recovery policy](restore-recovery-decision.md) selects a verified
+fresh start in the retained namespaces. The [separate recovery workflow](fresh-start-recovery.md)
+owns destructive execution and clearance; those still require exact approval.
+Ordinary release authorization reads the independent recovery journal and
+refuses pending recovery, removal of its runtime bindings, or a stale generation.
+After clearance, a new build/config needs a signed endorsement for the same
+generation before this ordinary deployment flow can accept it.
 
 This flow assumes a **preexisting** target and peer Worker with known DO/KV
 ownership. It deliberately rejects first-time bootstrapping of an unknown
@@ -263,7 +265,7 @@ tee /secure/operator/operations.json <<'EOF'
     "backup": {"status": "operator-verified", "reviewedAt": "<actual-UTC-ISO-timestamp>", "policy": "<actual-observed-recovery-window-and-limits>", "source": "https://<actual-policy-source>"},
     "logs": {"status": "operator-verified", "reviewedAt": "<actual-UTC-ISO-timestamp>", "policy": "<actual-access-and-retention-policy>", "source": "https://<actual-policy-source>"}
   },
-  "schema": {"testedVersion": 11, "nonDestructiveRollback": true, "rollbackRunbook": "https://github.com/kitamura-tetsuo/agent-table/blob/<exact-40-character-main-sha>/docs/operations.md"},
+  "schema": {"testedVersion": 12, "nonDestructiveRollback": true, "rollbackRunbook": "https://github.com/kitamura-tetsuo/agent-table/blob/<exact-40-character-main-sha>/docs/operations.md"},
   "restore": {"type": "no-restore", "independentlyReviewed": true},
   "cost": {"usageObserved": true, "measurementSource": "https://<actual-cloudflare-metric-receipt>", "currentPricingSource": "https://developers.cloudflare.com/workers/platform/pricing/"}
 }
@@ -274,7 +276,7 @@ The JSON `reviewedAt` fields must be at most 24 hours old. Approval metadata
 does **not** independently prove backup configuration, actual cost, restore
 reconciliation or successful rollback. Do not claim `operator-verified` or
 `usageObserved:true` before you have reviewed those facts. The current
-schema version is `11`; update its explicit acceptance check when schema
+schema version is `12`; update its explicit acceptance check when schema
 changes, never silently reuse an old rollback proof.
 
 Do an offline preflight first, then commit those **private JSON bytes only to
@@ -398,7 +400,7 @@ action; it is not permission to delete or reset private namespaces.
   revocations, expiry and deletions from an independent authority.
 - **Compatible Worker rollback:** identify the prior actually deployed
   version ID and current schema version. Verify the old version understands
-  all persisted schema versions (currently `11`), secret formats, and
+  all persisted schema versions (currently `12`), secret formats, and
   migration history before an independently reviewed Wrangler rollback.
   Roll back Worker *code*, **not** KV/DO namespace ownership or historical
   private SQL. The app must refuse unsupported newer-schema constructors;

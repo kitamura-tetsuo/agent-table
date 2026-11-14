@@ -30,6 +30,8 @@ jobs:
         run: npx biome check scripts/release-pause-readback.mjs scripts/release-pause-readback.test.mjs
       - name: Lint historical snapshot rehearsal
         run: npx biome check scripts/restore-snapshot-workerd.test.mjs
+      - name: Lint fresh-start recovery tools
+        run: npx biome check scripts/recovery-*.mjs scripts/release-recovery.test.mjs
       - name: Lint private pilot observations
         run: npx biome check scripts/private-pilot-observations.mjs scripts/private-pilot-observations.test.mjs
       - name: Lint autonomous pilot evidence tools

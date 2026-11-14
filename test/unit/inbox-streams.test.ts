@@ -79,6 +79,31 @@ describe("bounded internal inbox hint registry", () => {
     await reader.cancel();
   });
 
+  it("rechecks the local recovery fence after asynchronous authorization before enqueue", async () => {
+    const value = snapshot();
+    let serving = true;
+    registry = new InboxHintStreams(observe, undefined, () => serving);
+    let release!: (value: InboxSubscriptionCheck) => void;
+    const reader = registry
+      .attach(
+        value,
+        () =>
+          new Promise((resolve) => {
+            release = resolve;
+          }),
+      )
+      .getReader();
+    const pending = registry.notify(value.membershipId);
+    serving = false;
+    release(value);
+    await pending;
+    await expect(reader.read()).rejects.toThrow("Inbox stream ended");
+    expect(vi.getTimerCount()).toBe(0);
+    expect(() => registry.attach(value, async () => value)).toThrow(
+      "Inbox stream unavailable",
+    );
+  });
+
   it("bounds in-flight work instead of queuing overlapping posts", async () => {
     const value = snapshot();
     let release!: (value: InboxSubscriptionCheck) => void;

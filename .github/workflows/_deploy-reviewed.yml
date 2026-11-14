@@ -28,6 +28,9 @@ permissions:
 
 jobs:
   candidate:
+    concurrency:
+      group: agent-table-deployment-${{ inputs.target_environment }}
+      cancel-in-progress: false
     if: >-
       github.repository == 'kitamura-tetsuo/agent-table' &&
       github.ref == 'refs/heads/main' &&

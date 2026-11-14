@@ -15,7 +15,7 @@ try {
     platform: "neutral",
     // Neutral platform does not consult CommonJS package main fields by default.
     mainFields: ["module", "main"],
-    external: ["cloudflare:workers", "node:assert/strict"],
+    external: ["cloudflare:workers", "node:*"],
   });
   await writeFile(
     join(directory, "config.capnp"),

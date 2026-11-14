@@ -17,6 +17,10 @@ declare global {
       RELEASE_BUILD_SHA?: string;
       RELEASE_PROFILE?: string;
       RESTORE_QUARANTINE?: string;
+      RECOVERY_AUTHORIZATION?: string;
+      RECOVERY_VERIFICATION_KEY?: string;
+      RECOVERY_CONFIG_SHA256?: string;
+      RECOVERY_NAMESPACE_IDENTITY?: string;
       ENABLE_MCP_SUBSCRIPTIONS: string;
       ENABLE_OPENAI_EVENTS: string;
       ALLOW_NEW_GUESTS: string;
