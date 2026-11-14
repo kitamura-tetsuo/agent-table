@@ -365,6 +365,7 @@ export class TableDO extends DurableObject<Env> {
     initializeApplicationSchema(ctx.storage, "table");
     this.deadlines = new DurableDeadlineScheduler(ctx.storage);
     ctx.blockConcurrencyWhile(async () => {
+      if (await deferQuarantinedAlarm(env, ctx.storage)) return;
       await this.deadlines.ensureExistingWakeup(() =>
         this.earliestLifecycleDeadline(),
       );
@@ -382,6 +383,7 @@ export class TableDO extends DurableObject<Env> {
    */
   async readStagingEvidence(tableId: string, guestId: string) {
     if (
+      isRestoreQuarantined(this.env) ||
       !stagingEvidenceEnabled(this.env) ||
       this.ctx.id.toString() !== this.env.TABLES.idFromName(tableId).toString()
     ) {
@@ -732,6 +734,9 @@ export class TableDO extends DurableObject<Env> {
     state: TableState | "missing";
     canDispatch: boolean;
   } {
+    if (isRestoreQuarantined(this.env)) {
+      return { state: "missing", canDispatch: false };
+    }
     const table = this.metadataRow();
     if (table) {
       const expired = table.expires_at <= Date.now();
@@ -1444,6 +1449,7 @@ export class TableDO extends DurableObject<Env> {
     actor: VerifiedConnectionActor,
     candidateId: string,
   ): Promise<void> {
+    if (isRestoreQuarantined(this.env)) return;
     if (
       actor?.kind !== "verified-connection" ||
       typeof candidateId !== "string" ||
@@ -1729,6 +1735,9 @@ export class TableDO extends DurableObject<Env> {
     input: unknown,
     reservation: CreationReservation,
   ): Promise<TableResult<SafeTableMetadata>> {
+    if (isRestoreQuarantined(this.env)) {
+      return { ok: false, code: "INVALID_RESERVATION" };
+    }
     let parsed: ReturnType<typeof parseCreationRequest>;
     try {
       parsed = parseCreationRequest(input);
@@ -2225,6 +2234,9 @@ export class TableDO extends DurableObject<Env> {
   async readEventDiagnostics(
     actor: VerifiedConnectionActor,
   ): Promise<TableResult<TableEventDiagnostics>> {
+    if (isRestoreQuarantined(this.env)) {
+      return { ok: false, code: "TABLE_NOT_FOUND" };
+    }
     const policyAtRead = privatePilotConfiguration(this.env);
     let storedOrigin: unknown;
     let policyDigest: string | null = null;
@@ -2963,6 +2975,9 @@ export class TableDO extends DurableObject<Env> {
 
   /** Read-only preview: URL possession conveys no deletion authority. */
   deletionView(guestId: string, requestId: string): TableResult<DeletionView> {
+    if (isRestoreQuarantined(this.env)) {
+      return { ok: false, code: "NOT_FOUND" };
+    }
     if (!validInvitationOperationId(requestId)) {
       return { ok: false, code: "INVALID_REQUEST" };
     }

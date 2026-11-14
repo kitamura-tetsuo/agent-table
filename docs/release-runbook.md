@@ -42,6 +42,12 @@ implemented provider/host evidence verification. Restored snapshots with
 unknown post-snapshot revocations/deletions/expiries remain quarantined until
 the separate reconciliation work in Issue #51 is complete.
 
+The [recovery decision proposal](restore-recovery-decision.md) records the
+independent-authority gap, the unapproved recovery alternatives and the exact
+policy decision needed before implementing a quarantine-clearance path.
+Additional local snapshot regressions and direct RPC quarantine guards do not
+approve either alternative or authorize destruction of retained data.
+
 This flow assumes a **preexisting** target and peer Worker with known DO/KV
 ownership. It deliberately rejects first-time bootstrapping of an unknown
 Worker. Initial provisioning of an unknown Worker still needs a separate

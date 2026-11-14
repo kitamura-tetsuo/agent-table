@@ -237,32 +237,44 @@ describe.each(PILOT_MODES)("private GuestDO diagnostics (%s)", (mode) => {
     });
   });
 
-  it("requires a valid staging policy and returns safe context on configuration mismatch", async () => {
+  it("denies quarantined diagnostics and retains safe context only for a valid manual configuration", async () => {
     const f = await fixture(mode);
     expect(await f.stub.recordEventDiagnostics([f.record()], f.scope)).toBe(
       true,
     );
-    const patches: Partial<Env>[] = [
-      { RELEASE_ENVIRONMENT: "production" },
-      { RELEASE_PROFILE: "manual" },
-      { RELEASE_BUILD_SHA: "b".repeat(40) },
-      { RESTORE_QUARANTINE: "true" },
-      { ENABLE_OPENAI_EVENTS: "true" },
+    const patches: { patch: Partial<Env>; deniesAccess: boolean }[] = [
+      { patch: { RELEASE_ENVIRONMENT: "production" }, deniesAccess: true },
+      {
+        patch: { RELEASE_PROFILE: "manual" },
+        deniesAccess: mode === "a-only",
+      },
+      { patch: { RELEASE_BUILD_SHA: "b".repeat(40) }, deniesAccess: true },
+      { patch: { RESTORE_QUARANTINE: "true" }, deniesAccess: true },
+      { patch: { ENABLE_OPENAI_EVENTS: "true" }, deniesAccess: true },
       ...(mode === "a-only-discovery"
-        ? [{ ALLOW_OUTBOUND_NOTIFICATIONS: "true" }]
+        ? [
+            {
+              patch: { ALLOW_OUTBOUND_NOTIFICATIONS: "true" },
+              deniesAccess: true,
+            },
+          ]
         : []),
-      { PRIVATE_PILOT_POLICY: "" },
+      { patch: { PRIVATE_PILOT_POLICY: "" }, deniesAccess: true },
     ];
-    for (const patch of patches) {
+    for (const { patch, deniesAccess } of patches) {
       await f.configure(patch);
       expect(await f.stub.recordEventDiagnostics([f.record(1)], f.scope)).toBe(
         false,
       );
-      expect(await f.read()).toMatchObject({
-        records: [],
-        scopeMatches: false,
-        context: { policyConfigured: false, policyActive: false },
-      });
+      if (deniesAccess) {
+        expect(await f.read()).toBeNull();
+      } else {
+        expect(await f.read()).toMatchObject({
+          records: [],
+          scopeMatches: false,
+          context: { policyConfigured: false, policyActive: false },
+        });
+      }
     }
     await f.configure();
     expect(await f.read()).toMatchObject({
@@ -318,10 +330,15 @@ describe.each(PILOT_MODES)("private GuestDO diagnostics (%s)", (mode) => {
         policyDigest: await eventDiagnosticPolicyDigest(withoutOptIn),
       }),
     ).toBe(false);
-    expect(await f.read()).toMatchObject({
-      records: [],
-      scopeMatches: false,
-    });
+    if (mode === "a-only-discovery") {
+      // Discovery without its required observation mode is quarantined.
+      expect(await f.read()).toBeNull();
+    } else {
+      expect(await f.read()).toMatchObject({
+        records: [],
+        scopeMatches: false,
+      });
+    }
     expect(await f.stored()).toEqual(stored);
   });
 

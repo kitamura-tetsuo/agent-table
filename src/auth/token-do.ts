@@ -1,4 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
+import { rejectRestoredAccess } from "../shared/release-quarantine";
 import { authorizationServer } from "./provider";
 
 interface RedemptionReadProbe {
@@ -103,6 +104,8 @@ export class OAuthTokenDO extends DurableObject<Env> {
   }
 
   async fetch(request: Request): Promise<Response> {
+    const quarantine = rejectRestoredAccess(this.env);
+    if (quarantine) return quarantine;
     const path = new URL(request.url).pathname;
     if (
       request.method !== "POST" ||

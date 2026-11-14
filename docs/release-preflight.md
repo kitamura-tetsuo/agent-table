@@ -35,6 +35,38 @@ The generated-config runtime also establishes a synthetic old session, connectio
 
 `scripts/restore-transition-workerd.test.mjs` additionally rehearses an **actual local Workerd lifetime/configuration transition** using persistent SQLite storage. Its first runtime creates and successfully reads a private table and subscribes with a real synthetic old guest session/connection under explicitly non-quarantined bindings. After that runtime is disposed, a second runtime uses the exact checked-in restore-generated configuration against the **same persistence directory**; HTTP entry points and direct TableDO read/write/subscription calls all refuse old authority, while SQL confirms the old message and session rows are preserved. A due historical Events outbox row also remains pending with zero attempts and no lease across the second and third Workerd lifetimes; the separate isolated generated-runtime test invokes the actual quarantined TableDO alarm and verifies the same invariant. A third quarantined runtime restart verifies the deny state remains in effect. CI runs this test alongside the other Node checks. This is stronger evidence than eviction in one runtime, but it is **still a local synthetic configuration change**: the first runtime is not a backed-up Cloudflare version, the data was not restored from a historical provider snapshot, and no external post-snapshot deletion/revocation ledger was reconciled. It grants no permission to clear quarantine or publish.
 
+## Historical local snapshot rehearsal and remaining recovery decision
+
+`scripts/restore-snapshot-workerd.test.mjs` takes a byte-checked copy of the
+stopped local Workerd SQLite/KV persistence directory while synthetic authority
+is still valid. A separate subsequent runtime revokes the connection,
+invalidates the old browser session, confirms table deletion through the real
+browser/CSRF flow, and observes a grant expire. It preserves these later
+observations outside the snapshot before restoring the original files to the
+same persistence path and namespace identities. The restored rows really do
+contain the obsolete grant and deleted transcript again; reconstructed
+quarantined Worker/DO instances must still deny them. Canonical SQL, unchanged
+outbox attempts and captured outbound requests are the negative oracles.
+Repeated reconstruction and a newer-schema refusal exercise preserve retained
+private rows rather than resetting storage to make a test pass.
+
+The direct boundary regressions in
+`test/integration/recovery-boundaries.test.ts` cover GuestDO session/grant and
+creation operations, direct cleanup, TableDO initialization/status/deletion
+preview and event-candidate changes, and OAuthTokenDO provider entry. The
+generated restore-runtime fixture seeds historical SQL directly: even fixture
+setup must not imply that a quarantined GuestDO can create new sessions.
+Constructors park their alarms under the same independent binding; the
+generated-runtime tests invoke actual reconstructed alarm handlers and verify
+that private state remains unchanged.
+
+These checks establish **local historical-snapshot denial**, not a provider
+PITR operation or a positive reconciliation/clearance decision. The
+[Issue #51 decision proposal](restore-recovery-decision.md) records the missing
+independent source, the unapproved privacy-preserving alternative and the
+separate hosted/production acceptance still required. No new recovery-clear
+command or deployment authorization is introduced by these regressions.
+
 ## Operator-only steps (not run in PR CI)
 
 1. Create and independently review **two** environment-specific Wrangler configuration files outside this repository. Set root-level `workers_dev: false` and `preview_urls: false` on both; establish and verify intended HTTPS routing separately, because the preflight does not provision or attest the custom domain. Supply stable HTTPS origins, distinct Worker names ending `-staging` and `-production`, distinct actual OAuth KV IDs, four SQLite DO class bindings (TABLES, GUESTS, OAUTH_SERIALIZER, ADMISSION) and the existing chronological migrations. Set `vars.RELEASE_ENVIRONMENT` to the correct environment and `RESTORE_QUARANTINE` explicitly; leave quarantine `true` for any unverified restore. Keep notification feature flags false without separately verified capability evidence. Do not share secrets or callbacks across environments. Validate class migration history against the actual deployed namespace before editing old tags.

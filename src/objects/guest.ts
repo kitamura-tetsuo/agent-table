@@ -36,7 +36,10 @@ import {
   privatePilotRecipientMatches,
 } from "../shared/private-pilot";
 import { digestSessionSecret, randomBase64Url } from "../shared/random";
-import { deferQuarantinedAlarm } from "../shared/release-quarantine";
+import {
+  deferQuarantinedAlarm,
+  isRestoreQuarantined,
+} from "../shared/release-quarantine";
 import {
   initializeApplicationSchema,
   readApplicationSchemaVersion,
@@ -235,6 +238,7 @@ export class GuestDO extends DurableObject<Env> {
     initializeApplicationSchema(ctx.storage, "guest");
     this.deadlines = new DurableDeadlineScheduler(ctx.storage);
     ctx.blockConcurrencyWhile(async () => {
+      if (await deferQuarantinedAlarm(env, ctx.storage)) return;
       await this.deadlines.ensureExistingWakeup(() => this.earliestDeadline());
     });
   }
@@ -248,6 +252,7 @@ export class GuestDO extends DurableObject<Env> {
     records: EventDiagnosticRecord[],
     scope: EventDiagnosticScope,
   ): Promise<boolean> {
+    if (isRestoreQuarantined(this.env)) return false;
     try {
       if (
         !Array.isArray(records) ||
@@ -337,6 +342,7 @@ export class GuestDO extends DurableObject<Env> {
     guestId: string,
     connectionId: string,
   ): Promise<EventDiagnosticSnapshot | null> {
+    if (isRestoreQuarantined(this.env)) return null;
     try {
       const authorized = () =>
         UUID_V4.test(guestId) &&
@@ -401,6 +407,7 @@ export class GuestDO extends DurableObject<Env> {
     connectionId?: string,
   ) {
     if (
+      isRestoreQuarantined(this.env) ||
       !stagingEvidenceEnabled(this.env) ||
       this.ctx.id.toString() !== this.env.GUESTS.idFromName(guestId).toString()
     ) {
@@ -521,6 +528,7 @@ export class GuestDO extends DurableObject<Env> {
     digest: string,
     now: number,
   ): SessionRow | null {
+    if (isRestoreQuarantined(this.env)) return null;
     const row = this.sessionRow(sessionId);
     if (
       !row ||
@@ -536,6 +544,9 @@ export class GuestDO extends DurableObject<Env> {
 
   /** Initialize a fresh DO exactly once; never recover from a public guest ID. */
   async createSession(guestId: string): Promise<NewGuestSession> {
+    if (isRestoreQuarantined(this.env)) {
+      throw new Error("Guest access unavailable during recovery");
+    }
     if (!UUID_V4.test(guestId)) throw new Error("Invalid guest identifier");
     const secret = randomBase64Url(32);
     const digest = await digestSessionSecret(secret);
@@ -572,6 +583,7 @@ export class GuestDO extends DurableObject<Env> {
     sessionId: string,
     secret: string,
   ): Promise<GuestSessionPrincipal | null> {
+    if (isRestoreQuarantined(this.env)) return null;
     if (!validCredential(sessionId, secret)) return null;
     const digest = await digestSessionSecret(secret);
     const row = this.activeSession(sessionId, digest, Date.now());
@@ -586,6 +598,7 @@ export class GuestDO extends DurableObject<Env> {
     sessionId: string,
     secret: string,
   ): Promise<NewGuestSession | null> {
+    if (isRestoreQuarantined(this.env)) return null;
     if (!validCredential(sessionId, secret)) return null;
     const digest = await digestSessionSecret(secret);
     const nextSecret = randomBase64Url(32);
@@ -627,6 +640,7 @@ export class GuestDO extends DurableObject<Env> {
   }
 
   async invalidateSession(sessionId: string, secret: string): Promise<boolean> {
+    if (isRestoreQuarantined(this.env)) return false;
     if (!validCredential(sessionId, secret)) return false;
     const digest = await digestSessionSecret(secret);
     const now = Date.now();
@@ -643,6 +657,7 @@ export class GuestDO extends DurableObject<Env> {
 
   /** Bounded physical cleanup; logical authorization has already expired. */
   pruneExpiredSessions(limit = MAX_CLEANUP_BATCH): number {
+    if (isRestoreQuarantined(this.env)) return 0;
     if (!Number.isInteger(limit) || limit < 1 || limit > MAX_CLEANUP_BATCH) {
       throw new Error("Invalid cleanup batch size");
     }
@@ -682,6 +697,7 @@ export class GuestDO extends DurableObject<Env> {
     approvedScopes: ConnectionScope[],
     expiresAt: number,
   ): Promise<NewConnectionGrant | null> {
+    if (isRestoreQuarantined(this.env)) return null;
     if (
       !Array.isArray(approvedScopes) ||
       approvedScopes.length === 0 ||
@@ -744,6 +760,9 @@ export class GuestDO extends DurableObject<Env> {
     connectionId: string,
     requiredScope: ConnectionScope,
   ): ConnectionDecision {
+    if (isRestoreQuarantined(this.env)) {
+      return { allowed: false, reason: "unavailable" };
+    }
     if (
       !UUID_V4.test(expectedGuestId) ||
       !UUID_V4.test(connectionId) ||
@@ -796,6 +815,7 @@ export class GuestDO extends DurableObject<Env> {
     sessionId: string,
     secret: string,
   ): Promise<ConnectionSummary[] | null> {
+    if (isRestoreQuarantined(this.env)) return null;
     if (!validCredential(sessionId, secret)) return null;
     const digest = await digestSessionSecret(secret);
     const owner = this.guestId();
@@ -828,6 +848,7 @@ export class GuestDO extends DurableObject<Env> {
     secret: string,
     connectionId: string,
   ): Promise<ConnectionRevocation> {
+    if (isRestoreQuarantined(this.env)) return { status: "unauthorized" };
     if (!validCredential(sessionId, secret)) {
       return { status: "unauthorized" };
     }
@@ -905,6 +926,7 @@ export class GuestDO extends DurableObject<Env> {
   private async creationPermission(
     actor: CreationActor,
   ): Promise<() => boolean> {
+    if (isRestoreQuarantined(this.env)) return () => false;
     if (!actor || typeof actor !== "object") return () => false;
     if ("kind" in actor) return () => this.creationAuthorized(actor);
     if (
@@ -954,6 +976,9 @@ export class GuestDO extends DurableObject<Env> {
     actor: CreationActor,
     input: unknown,
   ): Promise<CreationResult> {
+    if (isRestoreQuarantined(this.env)) {
+      return { ok: false, code: "UNAUTHORIZED" };
+    }
     const permitted = await this.creationPermission(actor);
     let parsed: ReturnType<typeof parseCreationRequest>;
     try {
@@ -1064,6 +1089,9 @@ export class GuestDO extends DurableObject<Env> {
     actor: CreationActor,
     requestId: string,
   ): Promise<CreationLookupResult> {
+    if (isRestoreQuarantined(this.env)) {
+      return { ok: false, code: "UNAUTHORIZED" };
+    }
     if (!validCreationRequestId(requestId)) {
       return { ok: false, code: "INVALID_REQUEST" };
     }
@@ -1090,6 +1118,9 @@ export class GuestDO extends DurableObject<Env> {
     tableId: string,
     outcome: CreationOutcome,
   ): Promise<CreationResult> {
+    if (isRestoreQuarantined(this.env)) {
+      return { ok: false, code: "UNAUTHORIZED" };
+    }
     if (
       !validCreationRequestId(requestId) ||
       !UUID_V4.test(tableId) ||
@@ -1135,6 +1166,7 @@ export class GuestDO extends DurableObject<Env> {
   pruneExpiredReservations(
     limit: number = CREATION_LIMITS.maxCleanupBatch,
   ): number {
+    if (isRestoreQuarantined(this.env)) return 0;
     if (
       !Number.isInteger(limit) ||
       limit < 1 ||
