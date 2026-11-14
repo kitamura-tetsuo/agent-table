@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "scope": "owner-approved-native-trace-same-owner-a-only",
+  "functionalCorrelation": "verified",
+  "strictAcceptance": false,
+  "turns": [
+    {
+      "eventId": "event-primary-initial",
+      "peerSeq": 1,
+      "replySeq": 2,
+      "responseMs": 30086,
+      "readConnectionId": "connection-a-subscription"
+    },
+    {
+      "eventId": "event-primary-restart",
+      "peerSeq": 3,
+      "replySeq": 4,
+      "responseMs": 35016,
+      "readConnectionId": "connection-a-reauthorized"
+    }
+  ],
+  "exactRetry": "unchanged",
+  "retainedStateRedeploy": "verified",
+  "pendingCancellation": "zero-attempt-cancelled",
+  "outsiderAuthorization": "denied-targets-unchanged",
+  "disclosure": "approved-synthetic-corpus-only",
+  "duplicateDelivery": "not-observed-attempt-count-one",
+  "limitations": [
+    "Pre-event idle state and internal run IDs unverified; owner-approved native trace alternative only.",
+    "Work UI insertion visibility unverified; table replies are committed.",
+    "Retained-state Worker redeploy, not an independently traced per-DO eviction.",
+    "C authorization-boundary refusal, not original callback compound-key renewal.",
+    "No public, cross-owner, bidirectional, dot or exactly-once-reasoning claim.",
+    "General strict evaluator remains incomplete; exact workspace/protocol negotiation and original dated consent fields are not invented.",
+    "Receipt hashes check local integrity, not origin authenticity; source review remains required."
+  ]
+}

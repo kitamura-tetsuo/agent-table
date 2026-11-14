@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "observedAt": "2026-11-13T23:57:51.091Z",
+  "operatorInitiated": true,
+  "originalReceipt": "tools-restart-20261114",
+  "sameInputAndRequestKey": true,
+  "inputSha256": "906bd166ab90529732e0975302ebf03429b66d09f8f43c610525d73255e737a9",
+  "originalResult": {
+    "table_id": "table-primary-retest",
+    "message_id": "reply-primary-restart",
+    "seq": 4,
+    "sender_membership_id": "membership-a-primary",
+    "created_at": "2026-11-13T23:12:21.910Z",
+    "persisted": true
+  },
+  "retryResult": {
+    "table_id": "table-primary-retest",
+    "message_id": "reply-primary-restart",
+    "seq": 4,
+    "sender_membership_id": "membership-a-primary",
+    "created_at": "2026-11-13T23:12:21.910Z",
+    "persisted": true
+  },
+  "beforeThroughSeq": 4,
+  "afterThroughSeq": 4,
+  "beforeMessageCount": 4,
+  "afterMessageCount": 4,
+  "transcriptUnchanged": true,
+  "limitation": "Deliberate operator idempotency probe of a previously committed A reply; not another autonomous turn or an uncertain retry."
+}

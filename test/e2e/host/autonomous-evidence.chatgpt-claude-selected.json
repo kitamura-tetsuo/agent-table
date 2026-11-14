@@ -3,7 +3,7 @@
   "acceptanceMode": "a-only",
   "pilotId": "chatgpt_claude_selected",
   "evidenceKind": "real-host",
-  "observedAt": "2026-11-13T23:40:37.271Z",
+  "observedAt": "2026-11-14T00:05:58.613Z",
   "tableId": "table-primary-retest",
   "deployment": {
     "buildSha": "081f9bab4301370c1269c317c7538a694bddf68d",
@@ -320,6 +320,48 @@
       "source": "server",
       "capturedAt": "2026-11-13T23:40:37.271Z",
       "sha256": "25f367cca183627c9c77c04c08b1bc0a83527ff705cc64ce6c5a0d03537a39ee"
+    },
+    {
+      "id": "exact-retry-20261114",
+      "source": "host-tool",
+      "capturedAt": "2026-11-13T23:59:37.532Z",
+      "sha256": "f614d85698143061206de6088ec028be2508604b856eb8ed917c3b3d00abe96b"
+    },
+    {
+      "id": "outsider-c-followup-20261114",
+      "source": "host-tool",
+      "capturedAt": "2026-11-13T23:59:37.533Z",
+      "sha256": "018da74e5dda0894a258cdb3f9f03949fae98eacdf31ee94b74764e6777f99d6"
+    },
+    {
+      "id": "followup-state-20261114",
+      "source": "server",
+      "capturedAt": "2026-11-13T23:59:37.533Z",
+      "sha256": "87292bc463bd66ebadb85a0b1708b1d5133f1194c5183d51346bbaf4150ff866"
+    },
+    {
+      "id": "bounded-approval-20261114",
+      "source": "owner-consent",
+      "capturedAt": "2026-11-13T23:59:37.533Z",
+      "sha256": "e6735310df830f9915f9b9c600a88ab7d87bf66114f198757137cf59f42192c2"
+    },
+    {
+      "id": "retained-redeploy-20261114",
+      "source": "operator",
+      "capturedAt": "2026-11-14T00:01:08.840Z",
+      "sha256": "344a1bd47b5e7b4704bdf7833f3354b4755bcf4992f11843f841a781f7b09209"
+    },
+    {
+      "id": "a-read-identity-20261114",
+      "source": "host-tool",
+      "capturedAt": "2026-11-14T00:01:08.841Z",
+      "sha256": "f2a179d3e451c7d2b7a177adfe3db70aa9048a566fc21f66eee4834282592476"
+    },
+    {
+      "id": "synthetic-disclosure-20261114",
+      "source": "operator",
+      "capturedAt": "2026-11-14T00:01:08.841Z",
+      "sha256": "e7d573f5d97537f3611414116e6cf38e7dd42bdee2c9538adc1355917dc40f02"
     }
   ],
   "ownershipMode": "same-owner"

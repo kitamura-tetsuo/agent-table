@@ -1,0 +1,150 @@
+{
+  "schemaVersion": 1,
+  "observedAt": "2026-11-13T23:56:00.353Z",
+  "guestId": "guest-outsider-c",
+  "connectionId": "connection-outsider-c-followup",
+  "scopes": ["tables:read", "events:subscribe"],
+  "review": {
+    "schemaVersion": 1,
+    "reviewedAt": "2026-11-13T23:56:54.281Z",
+    "actualCAuthenticated": true,
+    "checks": [
+      {
+        "kind": "metadata",
+        "passed": true,
+        "at": "2026-11-13T23:55:58.662Z"
+      },
+      {
+        "kind": "transcript",
+        "passed": true,
+        "at": "2026-11-13T23:55:58.880Z"
+      },
+      {
+        "kind": "inbox",
+        "passed": true,
+        "at": "2026-11-13T23:55:59.033Z"
+      },
+      {
+        "kind": "inbox",
+        "passed": true,
+        "at": "2026-11-13T23:55:59.189Z"
+      },
+      {
+        "kind": "unsubscribe",
+        "passed": true,
+        "at": "2026-11-13T23:55:59.352Z"
+      },
+      {
+        "kind": "subscribe-authorization",
+        "passed": true,
+        "at": "2026-11-13T23:55:59.448Z"
+      },
+      {
+        "kind": "metadata",
+        "passed": true,
+        "at": "2026-11-13T23:55:59.530Z"
+      },
+      {
+        "kind": "transcript",
+        "passed": true,
+        "at": "2026-11-13T23:55:59.749Z"
+      },
+      {
+        "kind": "inbox",
+        "passed": true,
+        "at": "2026-11-13T23:55:59.912Z"
+      },
+      {
+        "kind": "inbox",
+        "passed": true,
+        "at": "2026-11-13T23:56:00.056Z"
+      },
+      {
+        "kind": "unsubscribe",
+        "passed": true,
+        "at": "2026-11-13T23:56:00.197Z"
+      },
+      {
+        "kind": "subscribe-authorization",
+        "passed": true,
+        "at": "2026-11-13T23:56:00.281Z"
+      }
+    ],
+    "targetsUnchanged": true,
+    "limitation": "Subscribe and unsubscribe authorization-boundary denials, not a request using A original callback compound key. Test service URL and disposable signing key are not host credentials. No successful C subscription or callback validation is claimed."
+  },
+  "results": [
+    {
+      "name": "metadata:table-primary-retest",
+      "at": "2026-11-13T23:55:58.662Z",
+      "code": "TABLE_NOT_FOUND",
+      "message": null
+    },
+    {
+      "name": "transcript:table-primary-retest",
+      "at": "2026-11-13T23:55:58.880Z",
+      "code": "TABLE_NOT_FOUND",
+      "message": null
+    },
+    {
+      "name": "inbox:membership-a-primary",
+      "at": "2026-11-13T23:55:59.033Z",
+      "code": -32603,
+      "message": "Resource not found"
+    },
+    {
+      "name": "inbox:membership-b-primary",
+      "at": "2026-11-13T23:55:59.189Z",
+      "code": -32603,
+      "message": "Resource not found"
+    },
+    {
+      "name": "unsubscribe:table-primary-retest",
+      "at": "2026-11-13T23:55:59.352Z",
+      "code": -32001,
+      "message": "Subscription unavailable"
+    },
+    {
+      "name": "subscribe-authorization:table-primary-retest",
+      "at": "2026-11-13T23:55:59.448Z",
+      "code": -32001,
+      "message": "Subscription unavailable"
+    },
+    {
+      "name": "metadata:table-cancellation-control",
+      "at": "2026-11-13T23:55:59.530Z",
+      "code": "TABLE_NOT_FOUND",
+      "message": null
+    },
+    {
+      "name": "transcript:table-cancellation-control",
+      "at": "2026-11-13T23:55:59.749Z",
+      "code": "TABLE_NOT_FOUND",
+      "message": null
+    },
+    {
+      "name": "inbox:membership-a-control",
+      "at": "2026-11-13T23:55:59.912Z",
+      "code": -32603,
+      "message": "Resource not found"
+    },
+    {
+      "name": "inbox:membership-b-control",
+      "at": "2026-11-13T23:56:00.056Z",
+      "code": -32603,
+      "message": "Resource not found"
+    },
+    {
+      "name": "unsubscribe:table-cancellation-control",
+      "at": "2026-11-13T23:56:00.197Z",
+      "code": -32001,
+      "message": "Subscription unavailable"
+    },
+    {
+      "name": "subscribe-authorization:table-cancellation-control",
+      "at": "2026-11-13T23:56:00.281Z",
+      "code": -32001,
+      "message": "Subscription unavailable"
+    }
+  ]
+}

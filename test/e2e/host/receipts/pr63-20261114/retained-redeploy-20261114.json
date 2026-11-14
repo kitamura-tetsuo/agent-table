@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "beforeAt": "2026-11-13T22:33:41.265Z",
+  "afterAt": "2026-11-13T22:33:48.526Z",
+  "verifiedProviderReadback": true,
+  "retainedStateExact": true,
+  "versionChanged": true,
+  "mechanism": "storage-preserving same-config Worker redeployment; no snapshot restore or subscription replacement",
+  "limitation": "Provider version transition and exact retained state; no independent per-DO process-eviction trace"
+}

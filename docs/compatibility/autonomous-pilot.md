@@ -1,14 +1,17 @@
 # Two-owner ChatGPT event-response pilot
 
-**Status: PARTIAL REAL-HOST EVIDENCE / NOT ACCEPTED.** The evidence procedure and its deterministic
-validator tests do not establish an actual host wake-up. There is no passing
-real-host record for Issue [#24](https://github.com/kitamura-tetsuo/agent-table/issues/24).
+**Status: REAL-HOST FUNCTIONAL CORRELATION VERIFIED / SOURCE REVIEW PENDING.**
+Two native B→A event/read/reply traces and the scoped retry/cancellation/redeploy/
+isolation evidence are now retained. The owner approved the bounded native-trace
+alternative described in [the acceptance decision](pr63-acceptance-decision.md).
+The general strict evaluator still reports incomplete; this is not a strict idle-state pass.
+See [the final observed results](pr63-real-host-20261114.md) for commands and limitations.
 
 On **2026-11-12**, the owner revised the acceptance condition: **A is OpenAI
 ChatGPT and must receive a peer event, wake from idle, authenticate, read and
 reply automatically. B is Claude Chat and may be manually instructed to post.**
-The selected record uses `acceptanceMode: "a-only"`. It requires two independent
-owners' authorization, an approved isolated deployment and an observed B→A
+The selected record uses `acceptanceMode: "a-only"`. It requires separately recorded authorization in both host contexts
+(with the explicit same-owner exception below), an approved isolated deployment and an observed B→A
 causal trace, repeated after a retained-state restart. B's subscription or
 automatic wake-up is not required. Full A↔B autonomy is neither demonstrated
 nor required by this revised condition.
