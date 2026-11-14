@@ -1,0 +1,57 @@
+{
+  "schemaVersion": 1,
+  "exportedAt": "2026-11-13T23:37:17.018Z",
+  "reviewedAt": "2026-11-13T23:08:09.247Z",
+  "rawSha256": "b0ef679a99014fe925195fbe357a739d42f0aebd7d692c73e90b0c2528d0ed56",
+  "actualCAuthenticated": true,
+  "necessaryScopesPresent": true,
+  "checks": [
+    {
+      "kind": "metadata",
+      "passed": true
+    },
+    {
+      "kind": "transcript",
+      "passed": true
+    },
+    {
+      "kind": "inbox",
+      "passed": true
+    },
+    {
+      "kind": "inbox",
+      "passed": true
+    },
+    {
+      "kind": "unsubscribe-scope-refusal",
+      "passed": true
+    },
+    {
+      "kind": "metadata",
+      "passed": true
+    },
+    {
+      "kind": "transcript",
+      "passed": true
+    },
+    {
+      "kind": "inbox",
+      "passed": true
+    },
+    {
+      "kind": "inbox",
+      "passed": true
+    },
+    {
+      "kind": "unsubscribe-scope-refusal",
+      "passed": true
+    }
+  ],
+  "targetsUnchanged": true,
+  "limitations": [
+    "Browser checks were owner-observed.",
+    "Unsubscribe used a syntactically valid real service URL, not the undisclosed original A callback compound key; observed refusal is at private-recipient scope.",
+    "No events/subscribe renewal attempt was made.",
+    "This is not a full autonomous acceptance report."
+  ]
+}

@@ -1,0 +1,98 @@
+{
+  "schemaVersion": 1,
+  "target": {
+    "pilotId": "chatgpt_claude_selected",
+    "evidenceKind": "real-host",
+    "acceptanceMode": "a-only",
+    "ownershipMode": "same-owner",
+    "requiredAutonomousResponders": ["A"],
+    "observedAt": "2026-11-14T00:05:58.613Z",
+    "tableId": "table-primary-retest",
+    "deployment": {
+      "buildSha": "081f9bab4301370c1269c317c7538a694bddf68d",
+      "configSha256": "3f6c8ca916ccce7957a4b91a9d80109768dec36445d9c32434f4b255f7dfca5a",
+      "endpointRef": "staging-agent-table-retest",
+      "approvalRef": "deployment-scope-20261114",
+      "configurationRef": "deployment-scope-20261114",
+      "isolated": true,
+      "publicAdvertisement": false,
+      "protocol": null,
+      "profile": "private-pilot-a-only"
+    },
+    "participants": [
+      {
+        "role": "A",
+        "ownerRef": "owner-shared-20261114",
+        "accountRef": "account-chatgpt-google-a",
+        "workspaceRef": null,
+        "host": {
+          "product": "OpenAI ChatGPT",
+          "surface": "Work conversation (owner-specified)",
+          "exposedBuild": "not-exposed-in-tested-host",
+          "eligibility": "unknown",
+          "origin": "actual-host",
+          "runObservation": "unsupported"
+        }
+      },
+      {
+        "role": "B",
+        "ownerRef": "owner-shared-20261114",
+        "accountRef": "account-claude-google-b",
+        "workspaceRef": null,
+        "host": {
+          "product": "Claude Chat",
+          "surface": "Claude Chat (owner-reported tools)",
+          "exposedBuild": "not-exposed-in-tested-host",
+          "eligibility": "unknown",
+          "origin": "actual-host",
+          "runObservation": "unsupported"
+        }
+      }
+    ],
+    "recordSha256": "d2b258e1bdce0d41c826047d6f296a89f2be726122445b437f4c92676263985e"
+  },
+  "acceptanceMode": "a-only",
+  "ownershipMode": "same-owner",
+  "structurallyValid": true,
+  "completeRecord": false,
+  "missing": [
+    "setup: exact tested protocol and notification profile",
+    "setup: separate owner consent receipts",
+    "setup: eligible actual-host account/workspace for each owner",
+    "setup: supported independent idle/run observation surface for each required receiver",
+    "setup: actual-host guest OAuth/tool receipt for each participant",
+    "setup: separate dated bounded standing instructions",
+    "setup: independent owner approval of standing instructions",
+    "setup: synthetic disclosure, read/retry/stop/authority and acknowledgment bounds",
+    "setup: owner consent precedes active subscription",
+    "setup: each owner's approval precedes their recorded posts and replies",
+    "setup: all observed replies including duplicates stay within each owner's approved bound",
+    "eventResponse: exact event-response turn count for the explicit acceptance mode",
+    "eventResponse: A-only acceptance requires an actual B post followed by an event-driven A reply",
+    "exactRetry: observed exact mutation-key retry",
+    "duplicateDelivery: actual duplicate-delivery behavior or explicit not-observed record",
+    "restart: retained-state restart and fresh real-host progress",
+    "isolation: third-guest private-read coverage for both memberships and subscription maintenance for required receivers",
+    "disclosure: synthetic-only shared transcript review"
+  ],
+  "layers": {
+    "tools": "blocked",
+    "notificationReceipt": "not-run",
+    "autonomousReply": "not-run"
+  },
+  "scenarios": {
+    "setup": "blocked",
+    "eventResponse": "not-run",
+    "exactRetry": "not-run",
+    "duplicateDelivery": "not-run",
+    "cancellation": "passed",
+    "restart": "not-run",
+    "isolation": "blocked",
+    "disclosure": "not-run"
+  },
+  "receiptIntegrity": {
+    "status": "checked",
+    "checked": 25
+  },
+  "interpretation": "Metadata correlation and local receipt integrity only. An independent reviewer must inspect the real host/server observations; hashes do not authenticate their origin."
+}

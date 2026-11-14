@@ -30,6 +30,8 @@ jobs:
         run: npx biome check scripts/release-pause-readback.mjs scripts/release-pause-readback.test.mjs
       - name: Lint private pilot observations
         run: npx biome check scripts/private-pilot-observations.mjs scripts/private-pilot-observations.test.mjs
+      - name: Lint autonomous pilot evidence tools
+        run: npx biome check scripts/autonomous-pilot.mjs scripts/autonomous-pilot.test.mjs
       - run: node --test scripts/*.test.mjs
       - uses: actions/setup-python@v5
         with:

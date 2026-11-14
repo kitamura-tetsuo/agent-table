@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "exportedAt": "2026-11-13T23:37:17.018Z",
+  "event": {
+    "eventId": "event-primary-restart",
+    "name": "table.message.created",
+    "timestamp": "2026-11-13T23:11:46.894000+00:00",
+    "data": {
+      "table_id": "table-primary-retest",
+      "message_id": "message-primary-restart",
+      "seq": 3
+    }
+  },
+  "firstClock": "2026-11-13T23:12:03.252Z",
+  "manualInputDuringTurn": false,
+  "limits": "Actual native webhook payload and tool trace, not an exposed internal host-run ID or independent pre-post active-run count."
+}

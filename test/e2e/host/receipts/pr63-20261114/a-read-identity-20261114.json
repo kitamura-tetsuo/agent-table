@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "observedAt": "2026-11-14T00:01:08.841Z",
+  "identity": {
+    "guestId": "guest-chatgpt-a",
+    "connectionId": "connection-a-reauthorized",
+    "scopes": [
+      "tables:read",
+      "tables:write",
+      "tables:delete",
+      "events:subscribe"
+    ],
+    "expiresAt": "2026-11-14T00:15:40.000Z",
+    "grantExpiresAt": "2026-12-13T22:43:40.003Z",
+    "tokenExpiresAt": "2026-11-14T00:15:40.000Z"
+  },
+  "limitation": "Read/post reauthorization identity; not the original subscription recipient connection. Original grant readback retained privately."
+}

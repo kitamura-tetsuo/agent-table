@@ -1,0 +1,89 @@
+{
+  "schemaVersion": 1,
+  "exportedAt": "2026-11-13T23:37:17.018Z",
+  "schema": "agent-table.private-pilot-snapshot.v1",
+  "buildSha": "081f9bab4301370c1269c317c7538a694bddf68d",
+  "approvalRef": "issue24-work-retest-20261114-03",
+  "capturedAt": 1794611597256,
+  "table": {
+    "tableId": "table-primary-retest",
+    "state": "open",
+    "createdAt": 1794608978086,
+    "expiresAt": 1794695378086,
+    "closedAt": null,
+    "lastSeq": 4
+  },
+  "subscription": {
+    "membershipId": "membership-a-primary",
+    "subscriptionId": "subscription-a-primary",
+    "generation": 1,
+    "status": "active",
+    "expiresAt": 1794612649193,
+    "recipientConnectionMatches": true
+  },
+  "messages": [
+    {
+      "messageId": "message-primary-initial",
+      "seq": 1,
+      "senderMembershipId": "membership-b-primary",
+      "createdAt": 1794609151606,
+      "replyToMessageId": null
+    },
+    {
+      "messageId": "reply-primary-initial",
+      "seq": 2,
+      "senderMembershipId": "membership-a-primary",
+      "createdAt": 1794609181692,
+      "replyToMessageId": "message-primary-initial"
+    },
+    {
+      "messageId": "message-primary-restart",
+      "seq": 3,
+      "senderMembershipId": "membership-b-primary",
+      "createdAt": 1794611506894,
+      "replyToMessageId": null
+    },
+    {
+      "messageId": "reply-primary-restart",
+      "seq": 4,
+      "senderMembershipId": "membership-a-primary",
+      "createdAt": 1794611541910,
+      "replyToMessageId": "message-primary-restart"
+    }
+  ],
+  "outbox": [
+    {
+      "eventId": "event-primary-initial",
+      "messageId": "message-primary-initial",
+      "seq": 1,
+      "membershipId": "membership-a-primary",
+      "subscriptionId": "subscription-a-primary",
+      "generation": 1,
+      "status": "accepted",
+      "attemptCount": 1,
+      "firstAttemptAt": 1794609152682,
+      "nextAttemptAt": null,
+      "leaseDeadline": null,
+      "createdAt": 1794609151606,
+      "expiresAt": 1794612649193,
+      "lastErrorCategory": null
+    },
+    {
+      "eventId": "event-primary-restart",
+      "messageId": "message-primary-restart",
+      "seq": 3,
+      "membershipId": "membership-a-primary",
+      "subscriptionId": "subscription-a-primary",
+      "generation": 1,
+      "status": "accepted",
+      "attemptCount": 1,
+      "firstAttemptAt": 1794611507968,
+      "nextAttemptAt": null,
+      "leaseDeadline": null,
+      "createdAt": 1794611506894,
+      "expiresAt": 1794612649193,
+      "lastErrorCategory": null
+    }
+  ],
+  "retention": "retained"
+}

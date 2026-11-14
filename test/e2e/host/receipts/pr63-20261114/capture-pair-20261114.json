@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "exportedAt": "2026-11-13T23:37:17.018Z",
+  "schema": "agent-table.private-pilot-verification.v1",
+  "status": "conditionally-complete",
+  "reasons": [],
+  "checkedEvents": [
+    {
+      "eventId": "event-primary-initial",
+      "attemptCount": 1,
+      "status": "accepted"
+    },
+    {
+      "eventId": "event-primary-restart",
+      "attemptCount": 1,
+      "status": "accepted"
+    }
+  ],
+  "checkedThrough": 1794611581044,
+  "snapshotCapturedAt": 1794611597256,
+  "hostExecution": "not-established",
+  "disclaimer": "Conditional metadata completeness only. Tail logs may be sampled or unavailable; local files do not authenticate their origin. Inspect independent server and host receipts. No delivery record proves a host run, authenticated read, or reply.",
+  "continuousCoverage": false,
+  "intervals": [
+    {
+      "readyAt": 1794609048653,
+      "endedAt": 1794609197372
+    },
+    {
+      "readyAt": 1794611309549,
+      "endedAt": 1794611581044
+    }
+  ],
+  "gap": {
+    "after": 1794609197372,
+    "before": 1794611309549,
+    "observation": "not-observed"
+  }
+}

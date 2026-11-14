@@ -697,6 +697,98 @@ function writeJson(path, value) {
  * Raw output never reaches disk or the operator terminal. The installed pinned
  * Wrangler supports WRANGLER_WRITE_LOGS=false; console JSON itself is not logged.
  */
+/** Verify a later capture without inventing continuity across a stopped tail.
+ * Only previously verified, immutable accepted rows may be carried forward.
+ * A changed retry count, pending work, or a new event in the gap fails closed.
+ */
+export function verifyAfterPriorCapture(
+  capture,
+  snapshot,
+  priorCapture,
+  priorSnapshot,
+) {
+  const prior = verifyAgainstSnapshot(priorCapture, priorSnapshot);
+  const blocked = (reason) => ({
+    schema: "agent-table.private-pilot-verification.v1",
+    status: "incomplete",
+    reasons: [reason],
+    checkedEvents: [],
+    checkedThrough: null,
+    snapshotCapturedAt: null,
+    hostExecution: "not-established",
+    disclaimer: DISCLAIMER,
+    continuousCoverage: false,
+  });
+  if (prior.status !== "conditionally-complete")
+    return blocked("prior-capture-unverified");
+  if (!captureValid(capture) || !snapshotValid(snapshot))
+    return blocked("later-input-invalid");
+  if (priorSnapshot.capturedAt >= capture.startedAt)
+    return blocked("capture-order-invalid");
+  if (
+    snapshot.buildSha !== priorSnapshot.buildSha ||
+    snapshot.approvalRef !== priorSnapshot.approvalRef ||
+    JSON.stringify(snapshot.subscription) !==
+      JSON.stringify(priorSnapshot.subscription) ||
+    ["tableId", "state", "createdAt", "expiresAt", "closedAt"].some(
+      (key) => snapshot.table[key] !== priorSnapshot.table[key],
+    ) ||
+    snapshot.table.lastSeq < priorSnapshot.table.lastSeq
+  )
+    return blocked("capture-context-changed");
+  const rows = new Map(snapshot.outbox.map((row) => [row.eventId, row]));
+  const messages = new Map(
+    snapshot.messages.map((row) => [row.messageId, row]),
+  );
+  if (
+    rows.size !== snapshot.outbox.length ||
+    messages.size !== snapshot.messages.length
+  )
+    return blocked("duplicate-snapshot-identity");
+  const carried = new Set();
+  for (const row of priorSnapshot.outbox) {
+    if (
+      row.status !== "accepted" ||
+      JSON.stringify(rows.get(row.eventId)) !== JSON.stringify(row)
+    )
+      return blocked("prior-event-not-immutable");
+    carried.add(row.eventId);
+  }
+  for (const message of priorSnapshot.messages) {
+    if (
+      JSON.stringify(messages.get(message.messageId)) !==
+      JSON.stringify(message)
+    )
+      return blocked("prior-message-changed");
+  }
+  if (
+    capture.records.some(
+      (record) =>
+        record.kind !== "callback-origin" && carried.has(record.eventId),
+    )
+  )
+    return blocked("prior-event-reappeared");
+  const scoped = {
+    ...snapshot,
+    outbox: snapshot.outbox.filter((row) => !carried.has(row.eventId)),
+  };
+  const later = verifyAgainstSnapshot(capture, scoped);
+  return {
+    ...later,
+    checkedEvents: [...prior.checkedEvents, ...later.checkedEvents],
+    continuousCoverage: false,
+    intervals: [priorCapture, capture].map((item) => ({
+      readyAt: item.readyAt,
+      endedAt: item.endedAt,
+    })),
+    gap: {
+      after: priorCapture.endedAt,
+      before: capture.readyAt,
+      observation: "not-observed",
+    },
+  };
+}
+
 export async function collectLive({
   worker,
   until,
@@ -720,6 +812,8 @@ export async function collectLive({
   )
     throw new Error("Invalid bounded collection options.");
   const collector = new TailCapture({ startedAt, onReady });
+  // Wrangler 4.158.0 rejects --sampling-rate 1. Omitting filter flags sends
+  // { filters: [] }; provider sampling warnings still invalidate capture.
   const args = [
     "--no-warnings",
     wranglerPath,
@@ -727,8 +821,6 @@ export async function collectLive({
     worker,
     "--format",
     "json",
-    "--sampling-rate",
-    "1",
   ];
   if (config !== undefined) args.push("--config", resolve(config));
   let child;
@@ -831,7 +923,13 @@ function parseArguments(argv) {
   const allowed =
     mode === "collect"
       ? ["--worker", "--until", "--config", "--output"]
-      : ["--capture", "--snapshot", "--output"];
+      : [
+          "--capture",
+          "--snapshot",
+          "--output",
+          "--prior-capture",
+          "--prior-snapshot",
+        ];
   const result = { mode };
   for (let index = 1; index < argv.length; index += 2) {
     const flag = argv[index];
@@ -852,6 +950,11 @@ function parseArguments(argv) {
       : ["capture", "snapshot", "output"];
   if (!required.every((key) => Object.hasOwn(result, key)))
     throw new Error("Missing arguments.");
+  if (
+    Object.hasOwn(result, "prior-capture") !==
+    Object.hasOwn(result, "prior-snapshot")
+  )
+    throw new Error("Prior capture and snapshot are required together.");
   return result;
 }
 
@@ -882,10 +985,17 @@ export async function main(argv = process.argv.slice(2)) {
       );
       return capture.completeStream ? 0 : 2;
     }
-    const report = verifyAgainstSnapshot(
-      readJson(options.capture),
-      readJson(options.snapshot),
-    );
+    const report = options["prior-capture"]
+      ? verifyAfterPriorCapture(
+          readJson(options.capture),
+          readJson(options.snapshot),
+          readJson(options["prior-capture"]),
+          readJson(options["prior-snapshot"]),
+        )
+      : verifyAgainstSnapshot(
+          readJson(options.capture),
+          readJson(options.snapshot),
+        );
     writeJson(options.output, report);
     console.log(
       JSON.stringify({

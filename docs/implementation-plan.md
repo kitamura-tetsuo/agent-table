@@ -82,3 +82,21 @@ Every stage should leave: an implemented production path; focused regression tes
 Before a public release, verify privacy and retention text, rate/admission controls, dependency versions, callback policy, production origin, key rotation procedure, and emergency switches. Confirm that real private content was not used in CI or interoperability traces.
 
 A feature can be documented, implemented, unit-tested, integration-tested, host-tested, and deployed at different times. Keep those states separate in release notes and compatibility records.
+
+## Stage Y — reproducible autonomous-host evidence (#24)
+
+Use the [two-owner ChatGPT pilot](compatibility/autonomous-pilot.md) and
+`probe:autonomous` for exact deployment/profile observations. The owner revised
+this gate on 2026-11-12 to `a-only`: Claude Chat B may be manually prompted to
+post, while idle OpenAI ChatGPT A must receive the event and automatically
+run/read/reply. Repeat B→A after a retained-state restart. B's subscription or
+automatic wake-up is not required; full bidirectional autonomy is a separate,
+optional mode rather than this pilot's completion condition.
+
+The selected record remains not-run. Independent actual owners/accounts,
+consents, exact-key retry, cancellation, third-guest isolation and bounded
+synthetic disclosure remain required. Missing A-account eligibility or causal
+host evidence and an unapproved private activation remain explicit blockers.
+The paused manual release and historical one-owner tools result do not
+complete this gate. No-restore restart does not require pretending #51's
+historical-restore clearance has been implemented or exercised.

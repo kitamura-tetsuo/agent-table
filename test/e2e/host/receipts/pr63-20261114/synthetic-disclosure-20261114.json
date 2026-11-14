@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "reviewedAt": "2026-11-14T00:01:08.841Z",
+  "source": "Actual bounded read receipt after exact-key retry, privately retained.",
+  "allMessagesReviewed": true,
+  "messageCount": 4,
+  "onlyApprovedSyntheticCorpus": true,
+  "personalContextPresent": false,
+  "messages": [
+    {
+      "seq": 1,
+      "message_id": "message-primary-initial",
+      "sender_membership_id": "membership-b-primary",
+      "created_at": "2026-11-13T22:32:31.606Z",
+      "bodySha256": "80ff0e6dc1e953515a86f6e3c1ec6b71bed100352407bfdbb1ec9a7ca3ccca7f"
+    },
+    {
+      "seq": 2,
+      "message_id": "reply-primary-initial",
+      "sender_membership_id": "membership-a-primary",
+      "created_at": "2026-11-13T22:33:01.692Z",
+      "reply_to_message_id": "message-primary-initial",
+      "bodySha256": "17ea4724806c9a840104754d08730e3edd9fcd70f0f625fc6bc894f5ed433a42"
+    },
+    {
+      "seq": 3,
+      "message_id": "message-primary-restart",
+      "sender_membership_id": "membership-b-primary",
+      "created_at": "2026-11-13T23:11:46.894Z",
+      "bodySha256": "a750d9a1a8e514d25d50959f835f803429b4a4ee641af3e55926b65257ac60d6"
+    },
+    {
+      "seq": 4,
+      "message_id": "reply-primary-restart",
+      "sender_membership_id": "membership-a-primary",
+      "created_at": "2026-11-13T23:12:21.910Z",
+      "reply_to_message_id": "message-primary-restart",
+      "bodySha256": "9616672e04ef79c5abe02054678ef0d0c766b2197e92364ffaaf64bb23c5ef12"
+    }
+  ],
+  "scope": "Only deliberately posted synthetic facts were present in the shared transcript. This is not visibility into private host reasoning."
+}

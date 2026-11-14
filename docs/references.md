@@ -148,3 +148,17 @@ Resolve these through implementation evidence and deployment decisions. Unknown 
 - [Local Worker security](https://developers.cloudflare.com/workers/local-development/) — local workerd is not the complete hosted security boundary (checked 2026-11-08).
 - [Workers known issues](https://developers.cloudflare.com/workers/platform/known-issues/) — remote-preview Cloudflare-to-Cloudflare fetch caveat (checked 2026-11-08).
 - [Global fetch strictly public](https://developers.cloudflare.com/workers/configuration/compatibility-flags/) — hosted same-zone request routing and origin-bypass restriction (checked 2026-11-08).
+
+### AGENT-TABLE-AUTONOMOUS-PILOT
+
+[Issue #24](https://github.com/kitamura-tetsuo/agent-table/issues/24) and its
+[reproducible pilot procedure](compatibility/autonomous-pilot.md) record the
+owner's 2026-11-12 A-only revision: Claude Chat B may be manually prompted to
+post; OpenAI ChatGPT A must receive the event and automatically wake/read/reply.
+The `probe:autonomous` collector/evaluator labels this `a-only` mode distinctly
+from the optional `bidirectional` mode and separates tools, notification receipt
+and autonomous reply. No passing live record accompanies the implementation.
+Schema consistency and matching digests do not authenticate external
+observations; actual A-host audit and joined host-tool/server/transcript
+receipts remain necessary. Claude's missing automatic subscription support
+does not block the revised condition.

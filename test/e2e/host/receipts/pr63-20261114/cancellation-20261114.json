@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "exportedAt": "2026-11-13T23:37:17.018Z",
+  "schema": "agent-table.private-pilot-verification.v1",
+  "status": "conditionally-complete",
+  "reasons": [],
+  "checkedEvents": [
+    {
+      "eventId": "event-cancellation-control",
+      "attemptCount": 0,
+      "status": "cancelled"
+    }
+  ],
+  "checkedThrough": 1794610371428,
+  "snapshotCapturedAt": 1794610386007,
+  "hostExecution": "not-established",
+  "disclaimer": "Conditional metadata completeness only. Tail logs may be sampled or unavailable; local files do not authenticate their origin. Inspect independent server and host receipts. No delivery record proves a host run, authenticated read, or reply."
+}

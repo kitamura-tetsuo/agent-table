@@ -1,0 +1,368 @@
+{
+  "schemaVersion": 1,
+  "acceptanceMode": "a-only",
+  "pilotId": "chatgpt_claude_selected",
+  "evidenceKind": "real-host",
+  "observedAt": "2026-11-14T00:05:58.613Z",
+  "tableId": "table-primary-retest",
+  "deployment": {
+    "buildSha": "081f9bab4301370c1269c317c7538a694bddf68d",
+    "configSha256": "3f6c8ca916ccce7957a4b91a9d80109768dec36445d9c32434f4b255f7dfca5a",
+    "endpointRef": "staging-agent-table-retest",
+    "approvalRef": "deployment-scope-20261114",
+    "configurationRef": "deployment-scope-20261114",
+    "isolated": true,
+    "publicAdvertisement": false,
+    "protocol": null,
+    "profile": "private-pilot-a-only"
+  },
+  "participants": [
+    {
+      "role": "A",
+      "ownerRef": "owner-shared-20261114",
+      "accountRef": "account-chatgpt-google-a",
+      "workspaceRef": null,
+      "guestId": "guest-chatgpt-a",
+      "connectionId": "connection-a-subscription",
+      "membershipId": "membership-a-primary",
+      "subscriptionId": "subscription-a-primary",
+      "host": {
+        "product": "OpenAI ChatGPT",
+        "surface": "Work conversation (owner-specified)",
+        "exposedBuild": "not-exposed-in-tested-host",
+        "eligibility": "unknown",
+        "origin": "actual-host",
+        "runObservation": "unsupported"
+      },
+      "oauthEvidenceRef": null,
+      "subscription": {
+        "tableId": "table-primary-retest",
+        "activeAt": "2026-11-13T22:31:12.380Z",
+        "observationRef": "subscription-sql-20261114"
+      },
+      "consent": {
+        "approvedAt": null,
+        "observationRef": null,
+        "instructionsSha256": null,
+        "maxReplies": null,
+        "syntheticOnly": null,
+        "readBeforeReply": null,
+        "reuseMutationKey": null,
+        "stopOnTerminal": null,
+        "suppressAcknowledgmentLoops": null,
+        "askBeforeOutOfScope": null
+      }
+    },
+    {
+      "role": "B",
+      "ownerRef": "owner-shared-20261114",
+      "accountRef": "account-claude-google-b",
+      "workspaceRef": null,
+      "guestId": "guest-claude-b",
+      "connectionId": "connection-claude-b",
+      "membershipId": "membership-b-primary",
+      "subscriptionId": null,
+      "host": {
+        "product": "Claude Chat",
+        "surface": "Claude Chat (owner-reported tools)",
+        "exposedBuild": "not-exposed-in-tested-host",
+        "eligibility": "unknown",
+        "origin": "actual-host",
+        "runObservation": "unsupported"
+      },
+      "oauthEvidenceRef": null,
+      "subscription": {
+        "tableId": null,
+        "activeAt": null,
+        "observationRef": null
+      },
+      "consent": {
+        "approvedAt": null,
+        "observationRef": null,
+        "instructionsSha256": null,
+        "maxReplies": null,
+        "syntheticOnly": null,
+        "readBeforeReply": null,
+        "reuseMutationKey": null,
+        "stopOnTerminal": null,
+        "suppressAcknowledgmentLoops": null,
+        "askBeforeOutOfScope": null
+      }
+    }
+  ],
+  "turns": [],
+  "retry": null,
+  "duplicateDelivery": null,
+  "cancellation": {
+    "tableId": "table-cancellation-control",
+    "recipient": "A",
+    "recipientGuestId": "guest-chatgpt-a",
+    "action": "close",
+    "subscriptionId": "subscription-a-control",
+    "pendingEventId": "event-cancellation-control",
+    "pendingAt": "2026-11-13T22:50:47.192Z",
+    "decisionAt": "2026-11-13T22:50:59.842Z",
+    "observationRef": "cancelled-sql-20261114",
+    "attempts": [],
+    "coverageFrom": "2026-11-13T22:45:00.051Z",
+    "coverageThrough": "2026-11-13T22:52:51.428Z",
+    "coverageObservationRef": "cancelled-sql-20261114",
+    "postDecisionProbeAt": "2026-11-13T22:51:50.758Z",
+    "refusalObservationRef": "post-resume-control-20261114"
+  },
+  "restart": null,
+  "isolation": [
+    {
+      "outsiderGuestId": "guest-outsider-c",
+      "outsiderConnectionId": "connection-outsider-c",
+      "tableId": "table-primary-retest",
+      "outcome": "denied",
+      "privateDataReturned": false,
+      "subscriptionChanged": false,
+      "clientObservationRef": "outsider-c-client-20261114",
+      "serverObservationRef": "outsider-state-20261114",
+      "action": "metadata",
+      "targetMembershipId": "membership-a-primary",
+      "targetSubscriptionId": "subscription-a-primary",
+      "observedAt": "2026-11-13T23:04:12.293Z"
+    },
+    {
+      "outsiderGuestId": "guest-outsider-c",
+      "outsiderConnectionId": "connection-outsider-c",
+      "tableId": "table-primary-retest",
+      "outcome": "denied",
+      "privateDataReturned": false,
+      "subscriptionChanged": false,
+      "clientObservationRef": "outsider-c-client-20261114",
+      "serverObservationRef": "outsider-state-20261114",
+      "action": "metadata",
+      "targetMembershipId": "membership-b-primary",
+      "targetSubscriptionId": null,
+      "observedAt": "2026-11-13T23:04:12.293Z"
+    },
+    {
+      "outsiderGuestId": "guest-outsider-c",
+      "outsiderConnectionId": "connection-outsider-c",
+      "tableId": "table-primary-retest",
+      "outcome": "denied",
+      "privateDataReturned": false,
+      "subscriptionChanged": false,
+      "clientObservationRef": "outsider-c-client-20261114",
+      "serverObservationRef": "outsider-state-20261114",
+      "action": "transcript",
+      "targetMembershipId": "membership-a-primary",
+      "targetSubscriptionId": "subscription-a-primary",
+      "observedAt": "2026-11-13T23:04:12.498Z"
+    },
+    {
+      "outsiderGuestId": "guest-outsider-c",
+      "outsiderConnectionId": "connection-outsider-c",
+      "tableId": "table-primary-retest",
+      "outcome": "denied",
+      "privateDataReturned": false,
+      "subscriptionChanged": false,
+      "clientObservationRef": "outsider-c-client-20261114",
+      "serverObservationRef": "outsider-state-20261114",
+      "action": "transcript",
+      "targetMembershipId": "membership-b-primary",
+      "targetSubscriptionId": null,
+      "observedAt": "2026-11-13T23:04:12.498Z"
+    },
+    {
+      "outsiderGuestId": "guest-outsider-c",
+      "outsiderConnectionId": "connection-outsider-c",
+      "tableId": "table-primary-retest",
+      "outcome": "denied",
+      "privateDataReturned": false,
+      "subscriptionChanged": false,
+      "clientObservationRef": "outsider-c-client-20261114",
+      "serverObservationRef": "outsider-state-20261114",
+      "action": "inbox",
+      "targetMembershipId": "membership-a-primary",
+      "targetSubscriptionId": "subscription-a-primary",
+      "observedAt": "2026-11-13T23:04:12.665Z"
+    },
+    {
+      "outsiderGuestId": "guest-outsider-c",
+      "outsiderConnectionId": "connection-outsider-c",
+      "tableId": "table-primary-retest",
+      "outcome": "denied",
+      "privateDataReturned": false,
+      "subscriptionChanged": false,
+      "clientObservationRef": "outsider-c-client-20261114",
+      "serverObservationRef": "outsider-state-20261114",
+      "action": "inbox",
+      "targetMembershipId": "membership-b-primary",
+      "targetSubscriptionId": null,
+      "observedAt": "2026-11-13T23:04:12.832Z"
+    },
+    {
+      "outsiderGuestId": "guest-outsider-c",
+      "outsiderConnectionId": "connection-outsider-c",
+      "tableId": "table-primary-retest",
+      "outcome": "denied",
+      "privateDataReturned": false,
+      "subscriptionChanged": false,
+      "clientObservationRef": "outsider-c-client-20261114",
+      "serverObservationRef": "outsider-state-20261114",
+      "action": "unsubscribe",
+      "targetMembershipId": "membership-a-primary",
+      "targetSubscriptionId": "subscription-a-primary",
+      "observedAt": "2026-11-13T23:04:12.997Z"
+    }
+  ],
+  "disclosure": null,
+  "observations": [
+    {
+      "id": "owner-scope-20261114",
+      "source": "owner-consent",
+      "capturedAt": "2026-11-13T23:37:17.018Z",
+      "sha256": "0b1813938e5ce728062488d1009cc0e9dbb738848bd6011482aeb919f2d283e0"
+    },
+    {
+      "id": "deployment-scope-20261114",
+      "source": "operator",
+      "capturedAt": "2026-11-13T23:37:17.018Z",
+      "sha256": "a095114564970476078d5e71dfdf1161f348cbe78c9c3a6489d94aa19736c648"
+    },
+    {
+      "id": "native-initial-20261114",
+      "source": "host-audit",
+      "capturedAt": "2026-11-13T23:37:17.018Z",
+      "sha256": "0647aa4b6c13ec98ffc3aa452050a42f21a8f9f85174af3ba7c796003bfa41d8"
+    },
+    {
+      "id": "tools-initial-20261114",
+      "source": "host-tool",
+      "capturedAt": "2026-11-13T23:37:17.018Z",
+      "sha256": "d7ea2c1daddfec7e9d9b8a62eae7febfc1d778053c2c85c9a02fc1b9a78f2a9d"
+    },
+    {
+      "id": "native-restart-20261114",
+      "source": "host-audit",
+      "capturedAt": "2026-11-13T23:37:17.018Z",
+      "sha256": "09b3bc94896c34ef05c10c63efa1c9904889e07ccdf0fc0576a8dfcdda28ea0d"
+    },
+    {
+      "id": "tools-restart-20261114",
+      "source": "host-tool",
+      "capturedAt": "2026-11-13T23:37:17.018Z",
+      "sha256": "de13e6bcac127d7939bc77eca0f1ef90eb82a6c1503af955b5d4e70f441d72be"
+    },
+    {
+      "id": "initial-sql-20261114",
+      "source": "server",
+      "capturedAt": "2026-11-13T23:37:17.018Z",
+      "sha256": "3fa73a4d1f712d113df837587d5fb0585b9de708b1113c7c10f5add32b95cd5e"
+    },
+    {
+      "id": "restart-sql-20261114",
+      "source": "server",
+      "capturedAt": "2026-11-13T23:37:17.018Z",
+      "sha256": "ce53670f7989030873b2b49d441161a6f60bc4f24b266d3e293b725d20373a3e"
+    },
+    {
+      "id": "pending-sql-20261114",
+      "source": "server",
+      "capturedAt": "2026-11-13T23:37:17.018Z",
+      "sha256": "8c6084be6072fb68db2f0bedd42665de6d11d82d31f852302a274901e58a36c6"
+    },
+    {
+      "id": "cancelled-sql-20261114",
+      "source": "server",
+      "capturedAt": "2026-11-13T23:37:17.018Z",
+      "sha256": "7f73df69ec14462d2ef2528802392668acc8cd22e6cb100b2ddfc771ae677e4c"
+    },
+    {
+      "id": "capture-pair-20261114",
+      "source": "operator",
+      "capturedAt": "2026-11-13T23:37:17.018Z",
+      "sha256": "a524be8a59b6e191b7a0ecf7234fadd959e31f8b172bde4840afcac52396b411"
+    },
+    {
+      "id": "cancellation-20261114",
+      "source": "operator",
+      "capturedAt": "2026-11-13T23:37:17.018Z",
+      "sha256": "b72874455b5582924d48839540d42fe31c8b15e609d9e937332f4ebf1f965ef8"
+    },
+    {
+      "id": "post-close-refusal-20261114",
+      "source": "host-tool",
+      "capturedAt": "2026-11-13T23:37:17.018Z",
+      "sha256": "34be3f6a94fbe0d9f4c8937eb1c81d6b43dde52fb6511964b2b497d84bc85de9"
+    },
+    {
+      "id": "outsider-c-client-20261114",
+      "source": "host-tool",
+      "capturedAt": "2026-11-13T23:37:17.018Z",
+      "sha256": "9a77b3ae359f7e13600ede064a36459448bd84f0144feb143ef3b1bc7cf831b8"
+    },
+    {
+      "id": "outsider-c-review-20261114",
+      "source": "operator",
+      "capturedAt": "2026-11-13T23:37:17.018Z",
+      "sha256": "2123f90d854b197a306879b91e8c5f9c1e0c33a80ec4f7be8b67e22e7113d9f0"
+    },
+    {
+      "id": "subscription-sql-20261114",
+      "source": "server",
+      "capturedAt": "2026-11-13T23:38:48.869Z",
+      "sha256": "1ae9b43276214f5b043d60499e76fc9d424d801a5aeb0647c8186a860e4c2c7b"
+    },
+    {
+      "id": "post-resume-control-20261114",
+      "source": "server",
+      "capturedAt": "2026-11-13T23:40:37.271Z",
+      "sha256": "96a045aa38c2c0ed51f704d0ed2d5eab2b1535dc2b785f07936ad1fd36587f5a"
+    },
+    {
+      "id": "outsider-state-20261114",
+      "source": "server",
+      "capturedAt": "2026-11-13T23:40:37.271Z",
+      "sha256": "25f367cca183627c9c77c04c08b1bc0a83527ff705cc64ce6c5a0d03537a39ee"
+    },
+    {
+      "id": "exact-retry-20261114",
+      "source": "host-tool",
+      "capturedAt": "2026-11-13T23:59:37.532Z",
+      "sha256": "f614d85698143061206de6088ec028be2508604b856eb8ed917c3b3d00abe96b"
+    },
+    {
+      "id": "outsider-c-followup-20261114",
+      "source": "host-tool",
+      "capturedAt": "2026-11-13T23:59:37.533Z",
+      "sha256": "018da74e5dda0894a258cdb3f9f03949fae98eacdf31ee94b74764e6777f99d6"
+    },
+    {
+      "id": "followup-state-20261114",
+      "source": "server",
+      "capturedAt": "2026-11-13T23:59:37.533Z",
+      "sha256": "87292bc463bd66ebadb85a0b1708b1d5133f1194c5183d51346bbaf4150ff866"
+    },
+    {
+      "id": "bounded-approval-20261114",
+      "source": "owner-consent",
+      "capturedAt": "2026-11-13T23:59:37.533Z",
+      "sha256": "e6735310df830f9915f9b9c600a88ab7d87bf66114f198757137cf59f42192c2"
+    },
+    {
+      "id": "retained-redeploy-20261114",
+      "source": "operator",
+      "capturedAt": "2026-11-14T00:01:08.840Z",
+      "sha256": "344a1bd47b5e7b4704bdf7833f3354b4755bcf4992f11843f841a781f7b09209"
+    },
+    {
+      "id": "a-read-identity-20261114",
+      "source": "host-tool",
+      "capturedAt": "2026-11-14T00:01:08.841Z",
+      "sha256": "f2a179d3e451c7d2b7a177adfe3db70aa9048a566fc21f66eee4834282592476"
+    },
+    {
+      "id": "synthetic-disclosure-20261114",
+      "source": "operator",
+      "capturedAt": "2026-11-14T00:01:08.841Z",
+      "sha256": "e7d573f5d97537f3611414116e6cf38e7dd42bdee2c9538adc1355917dc40f02"
+    }
+  ],
+  "ownershipMode": "same-owner"
+}

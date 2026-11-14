@@ -19,7 +19,8 @@
     "test:restore-runtime": "vitest run --config vitest.restore.config.ts",
     "probe:subscriptions:sdk": "node scripts/mcp-subscriptions-sdk.test.mjs",
     "probe:subscriptions:table": "node scripts/inbox-streams-workerd.test.mjs",
-    "probe:subscriptions:two-worker": "node scripts/two-worker-subscriptions.mjs"
+    "probe:subscriptions:two-worker": "node scripts/two-worker-subscriptions.mjs",
+    "probe:autonomous": "node scripts/autonomous-pilot.mjs"
   },
   "dependencies": {
     "@cloudflare/workers-oauth-provider": "1.2.4",

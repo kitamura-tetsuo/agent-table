@@ -90,3 +90,25 @@ The command requires the operator-supplied counterpart configuration and checks 
   Workerd oracle are still synthetic and do not replace those operator gates.
 
 Local validation: `node --test scripts/release-preflight.test.mjs`. CI runs this automatically via `node --test scripts/*.test.mjs` and checks the new sources with Biome. No deploy command belongs in PR CI.
+
+## Issue #24 autonomous evidence gate
+
+The [two-owner ChatGPT pilot](compatibility/autonomous-pilot.md) supplies an
+offline `probe:autonomous` collector/evaluator and a not-run selected record.
+Under the owner's 2026-11-12 `a-only` condition, manually prompted Claude B posts
+and idle ChatGPT A must automatically receive the event, run, read and reply.
+The same B→A path must work after retained-state restart; exact-key retry,
+pending-work cancellation and third-guest isolation remain required. B's
+subscription or autonomous wake-up is not required, and an A-only pass cannot
+be reported as bidirectional autonomy.
+
+The report checks correspondence and receipt integrity; independent review
+must establish origin. It is not release authorization or permission to enable
+production Events. The [2026-11-12 #50 acceptance](https://github.com/kitamura-tetsuo/agent-table/issues/50#issuecomment-6825493911)
+records the protected **paused manual** production release, superseding earlier
+production-not-verified wording above only for that scoped release. A separate
+private staging activation and concrete approval are needed for this pilot.
+A no-restore restart is distinct from #51 historical restoration/quarantine
+clearance; the latter must not be invented as a mandatory prerequisite for the
+former. A manual approval, SDK result or different build's record supplies no
+missing A-host causal evidence.
