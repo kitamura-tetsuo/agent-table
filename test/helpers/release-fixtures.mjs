@@ -68,6 +68,7 @@ export function makeFixture(environment = "staging") {
   const ref = `https://github.com/kitamura-tetsuo/agent-table/actions/runs/${runId}`;
   return {
     environment,
+    recoveryJournal: { headSha: null, record: null, recordSha256: null },
     profile: "manual",
     buildSha,
     configText,
@@ -111,7 +112,7 @@ export function makeFixture(environment = "staging") {
         ]),
       ),
       schema: {
-        testedVersion: 11,
+        testedVersion: 12,
         nonDestructiveRollback: true,
         rollbackRunbook: `https://github.com/kitamura-tetsuo/agent-table/blob/${buildSha}/docs/operations.md`,
       },

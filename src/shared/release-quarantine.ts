@@ -1,4 +1,5 @@
 import { privatePilotConfiguration } from "./private-pilot";
+import { recoveryEnvironmentDenied } from "./recovery";
 
 /**
  * This independent Worker binding is outside restored Durable Object state.
@@ -17,9 +18,19 @@ export function isRestoreQuarantined(
       | "ENABLE_OPENAI_EVENTS"
       | "ALLOW_OUTBOUND_NOTIFICATIONS"
       | "PRIVATE_PILOT_POLICY"
+      | "RECOVERY_AUTHORIZATION"
+      | "RECOVERY_VERIFICATION_KEY"
+      | "RECOVERY_CONFIG_SHA256"
+      | "RECOVERY_NAMESPACE_IDENTITY"
+      | "TABLES"
+      | "GUESTS"
+      | "OAUTH_SERIALIZER"
+      | "ADMISSION"
+      | "PUBLIC_ORIGIN"
     >
   >,
 ): boolean {
+  if (recoveryEnvironmentDenied(env)) return true;
   const knownEnvironment =
     env.RELEASE_ENVIRONMENT === "local" ||
     env.RELEASE_ENVIRONMENT === "staging" ||

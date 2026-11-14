@@ -28,6 +28,10 @@ jobs:
         run: npx biome check scripts/manage-ingress-waf.mjs scripts/manage-ingress-waf.test.mjs scripts/wrangler-sqlite.test.mjs scripts/release-preflight.mjs scripts/release-preflight.test.mjs scripts/require-release-approval.mjs scripts/require-release-approval.test.mjs scripts/release-authorization.mjs scripts/release-authorization.test.mjs scripts/release-provider.mjs scripts/release-provider.test.mjs scripts/release-postverify.mjs scripts/release-postverify.test.mjs scripts/verify-release-credentials.mjs scripts/verify-release-credentials.test.mjs scripts/inbox-streams-workerd.test.mjs scripts/two-worker-subscriptions.mjs scripts/restore-transition-workerd.test.mjs
       - name: Lint normal-pause readback
         run: npx biome check scripts/release-pause-readback.mjs scripts/release-pause-readback.test.mjs
+      - name: Lint historical snapshot rehearsal
+        run: npx biome check scripts/restore-snapshot-workerd.test.mjs
+      - name: Lint fresh-start recovery tools
+        run: npx biome check scripts/recovery-*.mjs scripts/release-recovery.test.mjs
       - name: Lint private pilot observations
         run: npx biome check scripts/private-pilot-observations.mjs scripts/private-pilot-observations.test.mjs
       - name: Lint autonomous pilot evidence tools

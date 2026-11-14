@@ -1,0 +1,413 @@
+{
+  "format": "agent-table.synthetic-recovery-inspection.v1",
+  "scope": "manual-isolated-synthetic-only",
+  "evidenceSha256": "3cd59ec2fa2f69d44f9c471332e1e0eb5343a4df6c6ce5601cba185bef2ec0f7",
+  "startedAt": "2026-11-14T01:58:53.232Z",
+  "completedAt": "2026-11-14T01:58:59.393Z",
+  "provenance": {
+    "sourceSha": "3d65b9ace98720afd2ef48275a3bb76a8638f76e",
+    "operatorSha": "5f41a40f22fa1fe6dcc28c0238100ed944d18107",
+    "comparedInputsSha256": "c821070c3ff4cad126322ad7dc58daf817b7e1404474cb33d1ddd8672ace2f32"
+  },
+  "versionId": "2b545b59-521b-48f9-b84c-4bb7d51bae2b",
+  "inventory": {
+    "format": "agent-table.recovery-inventory.v1",
+    "namespaceIdentity": {
+      "accountId": "0fbaae27d3ff021bc17109f1493d0b2d",
+      "workerName": "agent-table-pr51-recovery-staging",
+      "namespaces": {
+        "OAUTH_KV": "63247a13ec9f4e54912318f73c20dfa3",
+        "TABLES": "3516bed8ba584fb0b3f6743c24b9b4cd",
+        "GUESTS": "87ff46558f6747358c1edbbaa3fe750a",
+        "OAUTH_SERIALIZER": "6641d6933e6642e99fcb8b9f802a3330",
+        "ADMISSION": "f2752cc66c0646f48f571949cbf99a71"
+      },
+      "commitments": {
+        "TABLES": "d8a9469d24ce0c6f49499155ee3f43cda0a0242aec1b221d0a5dc1d6a85dc816",
+        "GUESTS": "6e962c1ebe92e02324492c8588711318049c17736eba8d614a4557f6ac98a0e0",
+        "OAUTH_SERIALIZER": "77943ab8bd24a4d9ed167c7c16311bd82824314857d11aaaaa79ca7e8e163d5f",
+        "ADMISSION": "9243e5b762c70e3f4428503dc8f18c0dfa7d00bfb9c84251582966297f0ab55e"
+      }
+    },
+    "startedAt": "2026-11-14T01:58:53.505Z",
+    "completedAt": "2026-11-14T01:58:55.436Z",
+    "objects": {
+      "TABLES": [
+        {
+          "id": "7cc725e315964b18b9dd9511a30ac847717c615cb66ed7676734637148e9feea",
+          "hasStoredData": true
+        }
+      ],
+      "GUESTS": [
+        {
+          "id": "175c631c51a0ad77076998b9cd8f03a3928ebbc07a67d8162c829d1b1f3bc5b1",
+          "hasStoredData": true
+        }
+      ],
+      "OAUTH_SERIALIZER": [],
+      "ADMISSION": []
+    },
+    "oauthKeys": [],
+    "counts": {
+      "TABLES": 1,
+      "GUESTS": 1,
+      "OAUTH_SERIALIZER": 0,
+      "ADMISSION": 0,
+      "OAUTH_KV": 0
+    }
+  },
+  "expected": {
+    "format": "agent-table.fresh-start.v1",
+    "phase": "reset",
+    "operationId": "4603a356-06f8-408c-bc13-f94f26484328",
+    "generation": "bbdca17200eeca1428bedb579c3461730ded3bb5155d763f8feaf9a514078ce4",
+    "environment": "staging",
+    "buildSha": "3d65b9ace98720afd2ef48275a3bb76a8638f76e",
+    "configSha256": "56be00421e272f3415e9ee8a694998cfb95243c25462c4ac0b123f0bfdfceb07",
+    "schemaVersion": 12,
+    "namespaceIdentity": {
+      "accountId": "0fbaae27d3ff021bc17109f1493d0b2d",
+      "workerName": "agent-table-pr51-recovery-staging",
+      "namespaces": {
+        "OAUTH_KV": "63247a13ec9f4e54912318f73c20dfa3",
+        "TABLES": "3516bed8ba584fb0b3f6743c24b9b4cd",
+        "GUESTS": "87ff46558f6747358c1edbbaa3fe750a",
+        "OAUTH_SERIALIZER": "6641d6933e6642e99fcb8b9f802a3330",
+        "ADMISSION": "f2752cc66c0646f48f571949cbf99a71"
+      },
+      "commitments": {
+        "TABLES": "d8a9469d24ce0c6f49499155ee3f43cda0a0242aec1b221d0a5dc1d6a85dc816",
+        "GUESTS": "6e962c1ebe92e02324492c8588711318049c17736eba8d614a4557f6ac98a0e0",
+        "OAUTH_SERIALIZER": "77943ab8bd24a4d9ed167c7c16311bd82824314857d11aaaaa79ca7e8e163d5f",
+        "ADMISSION": "9243e5b762c70e3f4428503dc8f18c0dfa7d00bfb9c84251582966297f0ab55e"
+      }
+    },
+    "planSha256": "8a917fe2c076578a98d7f7b6ae5db27183b859148bcd890885be83e6e73db398",
+    "evidenceSha256": null,
+    "previousRecordSha256": "0aed389938f38df8a105a588c8470cbfcd2d5e0ef45915f9605125d9c8cd4140",
+    "issuedAt": "2026-11-14T01:54:35.794Z",
+    "expiresAt": "2026-11-14T02:39:35.794Z",
+    "approvalRef": "https://github.com/kitamura-tetsuo/agent-table/pull/69#issuecomment-6868721873",
+    "requestNonce": "62ddfb5e47e13ccb1e54791b65989c009e1a6493ff0b537fe8a42d9ce31cfda9"
+  },
+  "receipts": [
+    {
+      "format": "agent-table.recovery-inspection.v1",
+      "environment": "staging",
+      "buildSha": "3d65b9ace98720afd2ef48275a3bb76a8638f76e",
+      "configSha256": "56be00421e272f3415e9ee8a694998cfb95243c25462c4ac0b123f0bfdfceb07",
+      "operationId": "4603a356-06f8-408c-bc13-f94f26484328",
+      "generation": "bbdca17200eeca1428bedb579c3461730ded3bb5155d763f8feaf9a514078ce4",
+      "objectId": "7cc725e315964b18b9dd9511a30ac847717c615cb66ed7676734637148e9feea",
+      "binding": "TABLES",
+      "component": "table",
+      "schemaVersion": 12,
+      "manifest": [
+        {
+          "name": "__agent_table_schema",
+          "columns": [
+            "singleton",
+            "component",
+            "version"
+          ]
+        },
+        {
+          "name": "__agent_table_recovery",
+          "columns": [
+            "singleton",
+            "component",
+            "generation",
+            "operation_id",
+            "plan_sha256"
+          ]
+        },
+        {
+          "name": "table_event_outbox",
+          "columns": [
+            "event_id",
+            "message_id",
+            "message_seq",
+            "recipient_membership_id",
+            "subscription_id",
+            "subscription_generation",
+            "status",
+            "attempt_count",
+            "first_attempt_at",
+            "next_attempt_at",
+            "lease_token",
+            "lease_deadline",
+            "created_at",
+            "expires_at",
+            "last_error_category"
+          ]
+        },
+        {
+          "name": "table_event_candidates",
+          "columns": [
+            "membership_id",
+            "candidate_id",
+            "subscription_id",
+            "guest_id",
+            "connection_id",
+            "callback_url",
+            "secret_envelope",
+            "requested_ttl_ms",
+            "fence",
+            "expires_at"
+          ]
+        },
+        {
+          "name": "table_event_subscriptions",
+          "columns": [
+            "membership_id",
+            "generation",
+            "fence",
+            "status",
+            "guest_id",
+            "connection_id",
+            "subscription_id",
+            "callback_url",
+            "secret_envelope",
+            "previous_secret_envelope",
+            "rotation_until",
+            "expires_at"
+          ]
+        },
+        {
+          "name": "table_delete_confirmations",
+          "columns": [
+            "guest_id",
+            "request_id",
+            "expires_at",
+            "state"
+          ]
+        },
+        {
+          "name": "table_tombstone_delete_receipts",
+          "columns": [
+            "guest_id",
+            "request_id"
+          ]
+        },
+        {
+          "name": "table_post_receipts",
+          "columns": [
+            "guest_id",
+            "request_id",
+            "request_digest",
+            "message_seq"
+          ]
+        },
+        {
+          "name": "table_messages",
+          "columns": [
+            "seq",
+            "message_id",
+            "sender_membership_id",
+            "body",
+            "body_bytes",
+            "created_at",
+            "reply_to_message_id"
+          ]
+        },
+        {
+          "name": "table_transcript_usage",
+          "columns": [
+            "singleton",
+            "body_bytes"
+          ]
+        },
+        {
+          "name": "table_join_receipts",
+          "columns": [
+            "guest_id",
+            "request_id",
+            "invite_id",
+            "secret_digest",
+            "membership_id"
+          ]
+        },
+        {
+          "name": "table_invitations",
+          "columns": [
+            "invite_id",
+            "request_id",
+            "issuer_guest_id",
+            "secret_digest",
+            "response_envelope",
+            "issued_at",
+            "expires_at",
+            "state",
+            "consumed_by",
+            "consumed_at"
+          ]
+        },
+        {
+          "name": "table_memberships",
+          "columns": [
+            "membership_id",
+            "table_id",
+            "guest_id",
+            "seat",
+            "role",
+            "joined_at",
+            "latest_peer_seq"
+          ]
+        },
+        {
+          "name": "table_metadata",
+          "columns": [
+            "singleton",
+            "table_id",
+            "creation_request_id",
+            "request_digest",
+            "creator_guest_id",
+            "title",
+            "purpose",
+            "state",
+            "created_at",
+            "expires_at",
+            "closed_at",
+            "deleted_at",
+            "last_seq"
+          ]
+        },
+        {
+          "name": "table_tombstone_guests",
+          "columns": [
+            "guest_id"
+          ]
+        },
+        {
+          "name": "table_tombstones",
+          "columns": [
+            "table_id",
+            "terminal_state",
+            "expires_at",
+            "terminal_at",
+            "retain_until"
+          ]
+        }
+      ],
+      "counts": {
+        "table_event_outbox": 0,
+        "table_event_candidates": 0,
+        "table_event_subscriptions": 0,
+        "table_delete_confirmations": 0,
+        "table_tombstone_delete_receipts": 0,
+        "table_post_receipts": 0,
+        "table_messages": 0,
+        "table_transcript_usage": 1,
+        "table_join_receipts": 0,
+        "table_invitations": 0,
+        "table_memberships": 0,
+        "table_metadata": 0,
+        "table_tombstone_guests": 0,
+        "table_tombstones": 0
+      },
+      "kvEntries": 0,
+      "markerGeneration": "bbdca17200eeca1428bedb579c3461730ded3bb5155d763f8feaf9a514078ce4",
+      "empty": true,
+      "requestNonce": "62ddfb5e47e13ccb1e54791b65989c009e1a6493ff0b537fe8a42d9ce31cfda9"
+    },
+    {
+      "format": "agent-table.recovery-inspection.v1",
+      "environment": "staging",
+      "buildSha": "3d65b9ace98720afd2ef48275a3bb76a8638f76e",
+      "configSha256": "56be00421e272f3415e9ee8a694998cfb95243c25462c4ac0b123f0bfdfceb07",
+      "operationId": "4603a356-06f8-408c-bc13-f94f26484328",
+      "generation": "bbdca17200eeca1428bedb579c3461730ded3bb5155d763f8feaf9a514078ce4",
+      "objectId": "175c631c51a0ad77076998b9cd8f03a3928ebbc07a67d8162c829d1b1f3bc5b1",
+      "binding": "GUESTS",
+      "component": "guest",
+      "schemaVersion": 12,
+      "manifest": [
+        {
+          "name": "__agent_table_schema",
+          "columns": [
+            "singleton",
+            "component",
+            "version"
+          ]
+        },
+        {
+          "name": "__agent_table_recovery",
+          "columns": [
+            "singleton",
+            "component",
+            "generation",
+            "operation_id",
+            "plan_sha256"
+          ]
+        },
+        {
+          "name": "guest_creation_reservations",
+          "columns": [
+            "request_id",
+            "guest_id",
+            "request_digest",
+            "table_id",
+            "created_at",
+            "expires_at",
+            "retention_until",
+            "charged_at",
+            "outcome"
+          ]
+        },
+        {
+          "name": "guest_connections",
+          "columns": [
+            "connection_id",
+            "guest_id",
+            "scopes_json",
+            "created_at",
+            "expires_at",
+            "revoked_at"
+          ]
+        },
+        {
+          "name": "guest_sessions",
+          "columns": [
+            "session_id",
+            "secret_digest",
+            "created_at",
+            "expires_at",
+            "invalidated_at"
+          ]
+        },
+        {
+          "name": "guest_identity",
+          "columns": [
+            "singleton",
+            "guest_id",
+            "created_at"
+          ]
+        }
+      ],
+      "counts": {
+        "guest_creation_reservations": 0,
+        "guest_connections": 0,
+        "guest_sessions": 0,
+        "guest_identity": 0
+      },
+      "kvEntries": 0,
+      "markerGeneration": "bbdca17200eeca1428bedb579c3461730ded3bb5155d763f8feaf9a514078ce4",
+      "empty": true,
+      "requestNonce": "62ddfb5e47e13ccb1e54791b65989c009e1a6493ff0b537fe8a42d9ce31cfda9"
+    }
+  ],
+  "summary": {
+    "format": "agent-table.recovery-reset-summary.v1",
+    "inventorySha256": "84558c841a1dde8a1b15a62119ac2f27dea783ad4124c5c98471211b039696d0",
+    "receiptSha256": "0c84dd7c3cf4c51248f5bb46b761ed8813bbfada2fbc4d4ca27d60fa5936f12a",
+    "objectCounts": {
+      "TABLES": 1,
+      "GUESTS": 1,
+      "OAUTH_SERIALIZER": 0,
+      "ADMISSION": 0
+    },
+    "totalObjects": 2
+  },
+  "mutationsPerformed": false,
+  "clearancePerformed": false
+}

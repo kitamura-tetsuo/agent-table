@@ -6,10 +6,29 @@ import { fileURLToPath } from "node:url";
 
 const source = fileURLToPath(new URL("../src/auth/token-do.ts", import.meta.url));
 const original = readFileSync(source, "utf8");
-const safeBoundary = "      await before;\n      if (this.probe) this.probe.providerEntries++;";
-const unsafeBoundary = "      await Promise.resolve();\n      if (this.probe) this.probe.providerEntries++;";
+const safeBoundary = [
+  "      await before;",
+  "      const queuedRefusal = this.refusal();",
+  "      if (queuedRefusal) return queuedRefusal;",
+  "      if (this.probe) this.probe.providerEntries++;",
+  "      const environment = this.observedEnvironment();",
+  "      const response = await authorizationServer(environment).fetch(",
+  "        request,",
+  "        environment,",
+  "        this.ctx as unknown as ExecutionContext,",
+  "      );",
+  "      return this.refusal() ?? response;",
+].join("\n");
+// Change only the queue wait. Keep the checks after the wait and provider call.
+const unsafeBoundary = safeBoundary.replace(
+  "      await before;",
+  "      await Promise.resolve();",
+);
 
-if (!original.includes(safeBoundary) || original.includes(unsafeBoundary)) {
+if (
+  original.split(safeBoundary).length !== 2 ||
+  original.includes(unsafeBoundary)
+) {
   throw new Error("Refusing to mutate an unknown OAuth serializer revision");
 }
 

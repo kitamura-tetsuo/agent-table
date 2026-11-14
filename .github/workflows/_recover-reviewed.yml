@@ -1,0 +1,114 @@
+name: Reviewed fresh-start recovery (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      target_environment:
+        required: true
+        type: string
+      expected_sha:
+        required: true
+        type: string
+      expected_plan_sha256:
+        required: true
+        type: string
+      expected_active_version_id:
+        required: true
+        type: string
+      expected_record_sha256:
+        required: false
+        type: string
+        default: ""
+      phase:
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  recovery:
+    if: >-
+      github.repository == 'kitamura-tetsuo/agent-table' &&
+      github.ref == 'refs/heads/main' &&
+      github.event_name == 'workflow_dispatch' &&
+      (inputs.target_environment == 'staging' || inputs.target_environment == 'production')
+    environment:
+      name: ${{ inputs.target_environment }}
+    concurrency:
+      group: agent-table-deployment-${{ inputs.target_environment }}
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - name: Validate immutable requested source and phase
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          RECOVERY_PHASE: ${{ inputs.phase }}
+          EXPECTED_PLAN_SHA256: ${{ inputs.expected_plan_sha256 }}
+          EXPECTED_RECORD_SHA256: ${{ inputs.expected_record_sha256 }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_SHA" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$EXPECTED_SHA" == "$GITHUB_SHA" ]]
+          [[ "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]]
+          [[ "$EXPECTED_PLAN_SHA256" =~ ^[a-f0-9]{64}$ ]]
+          [[ -z "$EXPECTED_RECORD_SHA256" || "$EXPECTED_RECORD_SHA256" =~ ^[a-f0-9]{64}$ ]]
+          [[ "$RECOVERY_PHASE" == "discard" || "$RECOVERY_PHASE" == "clear" || "$RECOVERY_PHASE" == "endorse" ]]
+      - run: npm ci
+      - name: Check recovery implementation
+        run: |
+          set -euo pipefail
+          npm run typecheck
+          npm run lint
+          node --test scripts/recovery-*.test.mjs
+          npm run build
+      - name: Run exact independently approved recovery phase
+        env:
+          TARGET_ENVIRONMENT: ${{ inputs.target_environment }}
+          RECOVERY_PHASE: ${{ inputs.phase }}
+          EXPECTED_PLAN_SHA256: ${{ inputs.expected_plan_sha256 }}
+          EXPECTED_ACTIVE_VERSION_ID: ${{ inputs.expected_active_version_id }}
+          EXPECTED_RECORD_SHA256: ${{ inputs.expected_record_sha256 }}
+          RECOVERY_PLAN_JSON: ${{ secrets.RECOVERY_PLAN_JSON }}
+          RECOVERY_SIGNING_KEY: ${{ secrets.RECOVERY_SIGNING_KEY }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_READ_TOKEN: ${{ secrets.CLOUDFLARE_READ_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          umask 077
+          test -n "$RECOVERY_PLAN_JSON"
+          test -n "$RECOVERY_SIGNING_KEY"
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test -n "$CLOUDFLARE_READ_TOKEN"
+          test -n "$CLOUDFLARE_ACCOUNT_ID"
+          recovery_plan="$RUNNER_TEMP/recovery-plan-${GITHUB_RUN_ID}.json"
+          printf '%s' "$RECOVERY_PLAN_JSON" | tee "$recovery_plan" >/dev/null
+          node scripts/recovery-run.mjs \
+            --environment "$TARGET_ENVIRONMENT" --build-sha "$GITHUB_SHA" \
+            --phase "$RECOVERY_PHASE" --plan "$recovery_plan" \
+            --plan-sha256 "$EXPECTED_PLAN_SHA256" \
+            --expected-active-version-id "$EXPECTED_ACTIVE_VERSION_ID" \
+            --expected-record-sha256 "$EXPECTED_RECORD_SHA256" \
+            --result "$RUNNER_TEMP/recovery-result-${GITHUB_RUN_ID}.json"
+      - name: Retain nonsecret recovery evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: recovery-result-${{ inputs.target_environment }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/recovery-result-${{ github.run_id }}.json
+          if-no-files-found: error
+          retention-days: 90
+      - name: Remove temporary plan
+        if: always()
+        run: |
+          rm -f "$RUNNER_TEMP/recovery-plan-${GITHUB_RUN_ID}.json"

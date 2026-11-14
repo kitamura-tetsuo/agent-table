@@ -1,0 +1,643 @@
+{
+  "format": "agent-table.synthetic-recovery-rehearsal.v1",
+  "sourceSha": "3d65b9ace98720afd2ef48275a3bb76a8638f76e",
+  "runId": "b1a4ba80-b283-468f-85b3-ca9865c0f7bd",
+  "accountId": "0fbaae27d3ff021bc17109f1493d0b2d",
+  "workersSubdomain": "kitamura-tetsuo",
+  "approval": {
+    "kind": "manual-isolated-synthetic",
+    "reference": "https://github.com/kitamura-tetsuo/agent-table/pull/69#issuecomment-6868721873"
+  },
+  "workers": {
+    "recovery": {
+      "workerName": "agent-table-pr51-recovery-staging",
+      "namespaceIdentity": {
+        "accountId": "0fbaae27d3ff021bc17109f1493d0b2d",
+        "workerName": "agent-table-pr51-recovery-staging",
+        "namespaces": {
+          "OAUTH_KV": "63247a13ec9f4e54912318f73c20dfa3",
+          "TABLES": "3516bed8ba584fb0b3f6743c24b9b4cd",
+          "GUESTS": "87ff46558f6747358c1edbbaa3fe750a",
+          "OAUTH_SERIALIZER": "6641d6933e6642e99fcb8b9f802a3330",
+          "ADMISSION": "f2752cc66c0646f48f571949cbf99a71"
+        },
+        "commitments": {
+          "TABLES": "d8a9469d24ce0c6f49499155ee3f43cda0a0242aec1b221d0a5dc1d6a85dc816",
+          "GUESTS": "6e962c1ebe92e02324492c8588711318049c17736eba8d614a4557f6ac98a0e0",
+          "OAUTH_SERIALIZER": "77943ab8bd24a4d9ed167c7c16311bd82824314857d11aaaaa79ca7e8e163d5f",
+          "ADMISSION": "9243e5b762c70e3f4428503dc8f18c0dfa7d00bfb9c84251582966297f0ab55e"
+        }
+      },
+      "operationId": "4603a356-06f8-408c-bc13-f94f26484328",
+      "generation": "bbdca17200eeca1428bedb579c3461730ded3bb5155d763f8feaf9a514078ce4",
+      "deployment": {
+        "kind": "application",
+        "versionId": "2b545b59-521b-48f9-b84c-4bb7d51bae2b",
+        "observedAt": "2026-11-14T01:54:41.269Z",
+        "configSha256": "c281811405fbb82305d5c8940a82eb4a0586c7bdecc7d24c14063fcad5d9d480",
+        "sourceSha": "3d65b9ace98720afd2ef48275a3bb76a8638f76e",
+        "workersDevDisabled": true,
+        "previewUrlsDisabled": true,
+        "customDomains": 0,
+        "configuredRoutes": 0
+      },
+      "ingress": {
+        "pathsChecked": 9,
+        "all503": true,
+        "allNoStore": true,
+        "transport": "authenticated-service-binding"
+      },
+      "verifiedQuarantine": true
+    },
+    "schema": {
+      "workerName": "agent-table-pr51-schema-staging",
+      "namespaceIdentity": {
+        "accountId": "0fbaae27d3ff021bc17109f1493d0b2d",
+        "workerName": "agent-table-pr51-schema-staging",
+        "namespaces": {
+          "OAUTH_KV": "014faeb094104937bd21c12eb0081ee6",
+          "TABLES": "46a1be2c8d9d49a393cb495d3fb5058e",
+          "GUESTS": "8e18320e2b734fbb92ccad02219d8637",
+          "OAUTH_SERIALIZER": "c64a9e2de40f433a9e51282d7f89ba02",
+          "ADMISSION": "a5afe3a5a32d4a0aa6217bddfd27a374"
+        },
+        "commitments": {
+          "TABLES": "eae470097b2c981e68fb5338450adce2fcd8938967aeba8daf5d4ed6e47160e3",
+          "GUESTS": "9c6bcf62b12cb291e5681d354e1bb4434fefce1de1623e7347a644ea80539267",
+          "OAUTH_SERIALIZER": "784fb801e3261fb113ddde6a5357026843d2bce869f35e7f4694bc1c8e5caa3d",
+          "ADMISSION": "3309c9d01ac21d5b83b56160129a6f7276f7a9339fc13de367ffe8506d2c8370"
+        }
+      },
+      "operationId": "abfd753c-2082-43f6-b24e-0a8bd46184e5",
+      "generation": "9321de8cd69a03da4640b09bf2680f47b82cb38d9172c515f86356d01846b387",
+      "deployment": {
+        "kind": "application",
+        "versionId": "847f5f75-1679-4fb9-880f-b479d832710f",
+        "observedAt": "2026-11-14T01:54:53.027Z",
+        "configSha256": "f69ebc710d8cef86cd9fb53076a0b2d3017c8e885d7dc215785b27c217b7975a",
+        "sourceSha": "3d65b9ace98720afd2ef48275a3bb76a8638f76e",
+        "workersDevDisabled": true,
+        "previewUrlsDisabled": true,
+        "customDomains": 0,
+        "configuredRoutes": 0
+      },
+      "ingress": {
+        "pathsChecked": 9,
+        "all503": true,
+        "allNoStore": true,
+        "transport": "authenticated-service-binding"
+      },
+      "verifiedQuarantine": true
+    }
+  },
+  "publicRoutes": false,
+  "certificatePhase": "reset",
+  "finalState": "verified-quarantine",
+  "retainedFutureSchemaVersion": 13,
+  "productionJournal": false,
+  "permitsClearance": false,
+  "finalizedAt": "2026-11-14T01:55:03.459Z",
+  "signatureKeySha256": "a825c12a747edc3a81334cdcc3d7e0590805a1d952db892ccd5176bedd61325c",
+  "records": [
+    {
+      "action": "plan-created-no-cloud-resources",
+      "observedAt": "2026-11-14T01:32:39.884Z",
+      "previousSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "metadata": {
+        "sourceSha": "3d65b9ace98720afd2ef48275a3bb76a8638f76e",
+        "planSha256": "ac346ce263cdc1f20daeccd4f61068242a319feceaba8a904dad20151ef23c87"
+      },
+      "sha256": "4b473f49658a20ee1913f17cd52b64f6a1ade24187d0a10b4e7a6be2b24566bb"
+    },
+    {
+      "action": "fresh-resource-absence-verified",
+      "observedAt": "2026-11-14T01:35:07.960Z",
+      "previousSha256": "4b473f49658a20ee1913f17cd52b64f6a1ade24187d0a10b4e7a6be2b24566bb",
+      "metadata": {
+        "workers": [
+          "agent-table-pr51-recovery-staging",
+          "agent-table-pr51-schema-staging"
+        ],
+        "namespaces": 0,
+        "matchingKvTitles": 0
+      },
+      "sha256": "d1905ae0cecf839bc6882bdc72009980333d1b447d02ac890e5209fbd22a130b"
+    },
+    {
+      "action": "synthetic-kv-created",
+      "observedAt": "2026-11-14T01:35:08.903Z",
+      "previousSha256": "d1905ae0cecf839bc6882bdc72009980333d1b447d02ac890e5209fbd22a130b",
+      "metadata": {
+        "workerName": "agent-table-pr51-recovery-staging",
+        "kvId": "63247a13ec9f4e54912318f73c20dfa3"
+      },
+      "sha256": "bd29d077f570af84cd61c285b44f0c9103c2f8f723d94381f1757ceb499dd171"
+    },
+    {
+      "action": "deployed",
+      "observedAt": "2026-11-14T01:35:14.885Z",
+      "previousSha256": "bd29d077f570af84cd61c285b44f0c9103c2f8f723d94381f1757ceb499dd171",
+      "metadata": {
+        "workerName": "agent-table-pr51-recovery-staging",
+        "kind": "fixture",
+        "versionId": "cee09ed1-6bec-4161-8830-f44eedf04fca",
+        "observedAt": "2026-11-14T01:35:14.885Z",
+        "configSha256": "fc72fb974ae27d202a53710b5fc4e94e3aadb978cd204f3266408f26532b4a59",
+        "sourceSha": "3d65b9ace98720afd2ef48275a3bb76a8638f76e",
+        "workersDevDisabled": true,
+        "previewUrlsDisabled": true,
+        "customDomains": 0,
+        "configuredRoutes": 0
+      },
+      "sha256": "3057f5006b68ca1810d8b23b949d482fcffe3359d409b0f4fee5720592a7bae6"
+    },
+    {
+      "action": "synthetic-kv-created",
+      "observedAt": "2026-11-14T01:35:22.454Z",
+      "previousSha256": "3057f5006b68ca1810d8b23b949d482fcffe3359d409b0f4fee5720592a7bae6",
+      "metadata": {
+        "workerName": "agent-table-pr51-schema-staging",
+        "kvId": "014faeb094104937bd21c12eb0081ee6"
+      },
+      "sha256": "8b25ecdf7f57d6e0ccbf27a36d582f3632eb0447a4004a8717e264555143928d"
+    },
+    {
+      "action": "deployed",
+      "observedAt": "2026-11-14T01:35:28.298Z",
+      "previousSha256": "8b25ecdf7f57d6e0ccbf27a36d582f3632eb0447a4004a8717e264555143928d",
+      "metadata": {
+        "workerName": "agent-table-pr51-schema-staging",
+        "kind": "fixture",
+        "versionId": "99cc88f9-2de3-43f7-817f-0a899459d4e7",
+        "observedAt": "2026-11-14T01:35:28.298Z",
+        "configSha256": "f6bb62ae8ecf35ec85a251275a9aa5813b09546fa9bb33594cf212877385f571",
+        "sourceSha": "3d65b9ace98720afd2ef48275a3bb76a8638f76e",
+        "workersDevDisabled": true,
+        "previewUrlsDisabled": true,
+        "customDomains": 0,
+        "configuredRoutes": 0
+      },
+      "sha256": "1cca942ce77d6f6b636f51e0a18a6cbdf97d90e7e3ab33ab1f2359a41a8ec3e5"
+    },
+    {
+      "action": "snapshot-and-later-events-verified",
+      "observedAt": "2026-11-14T01:36:21.770Z",
+      "previousSha256": "1cca942ce77d6f6b636f51e0a18a6cbdf97d90e7e3ab33ab1f2359a41a8ec3e5",
+      "metadata": {
+        "workerName": "agent-table-pr51-recovery-staging",
+        "guestObjectId": "175c631c51a0ad77076998b9cd8f03a3928ebbc07a67d8162c829d1b1f3bc5b1",
+        "tableObjectId": "7cc725e315964b18b9dd9511a30ac847717c615cb66ed7676734637148e9feea",
+        "snapshotBeforeRevocation": true,
+        "snapshotBeforeDeletion": true,
+        "snapshotBeforeExpiry": true
+      },
+      "sha256": "89d1cba780b8e5b88849065cc4fdf41556526d07f3569f60f485ad162cde6b8b"
+    },
+    {
+      "action": "synthetic-reset-planned",
+      "observedAt": "2026-11-14T01:37:05.871Z",
+      "previousSha256": "89d1cba780b8e5b88849065cc4fdf41556526d07f3569f60f485ad162cde6b8b",
+      "metadata": {
+        "workerName": "agent-table-pr51-recovery-staging",
+        "operationId": "4603a356-06f8-408c-bc13-f94f26484328",
+        "generation": "bbdca17200eeca1428bedb579c3461730ded3bb5155d763f8feaf9a514078ce4",
+        "namespaceIdentity": {
+          "accountId": "0fbaae27d3ff021bc17109f1493d0b2d",
+          "workerName": "agent-table-pr51-recovery-staging",
+          "namespaces": {
+            "OAUTH_KV": "63247a13ec9f4e54912318f73c20dfa3",
+            "TABLES": "3516bed8ba584fb0b3f6743c24b9b4cd",
+            "GUESTS": "87ff46558f6747358c1edbbaa3fe750a",
+            "OAUTH_SERIALIZER": "6641d6933e6642e99fcb8b9f802a3330",
+            "ADMISSION": "f2752cc66c0646f48f571949cbf99a71"
+          },
+          "commitments": {
+            "TABLES": "d8a9469d24ce0c6f49499155ee3f43cda0a0242aec1b221d0a5dc1d6a85dc816",
+            "GUESTS": "6e962c1ebe92e02324492c8588711318049c17736eba8d614a4557f6ac98a0e0",
+            "OAUTH_SERIALIZER": "77943ab8bd24a4d9ed167c7c16311bd82824314857d11aaaaa79ca7e8e163d5f",
+            "ADMISSION": "9243e5b762c70e3f4428503dc8f18c0dfa7d00bfb9c84251582966297f0ab55e"
+          }
+        },
+        "approvalRef": "https://github.com/kitamura-tetsuo/agent-table/pull/69#issuecomment-6868721873"
+      },
+      "sha256": "4d56055fec6afe02a50e5658ad81d6edd09f3474286aa6af1483dedc99fd0c66"
+    },
+    {
+      "action": "deployed",
+      "observedAt": "2026-11-14T01:37:13.906Z",
+      "previousSha256": "4d56055fec6afe02a50e5658ad81d6edd09f3474286aa6af1483dedc99fd0c66",
+      "metadata": {
+        "workerName": "agent-table-pr51-recovery-staging",
+        "kind": "fixture",
+        "versionId": "5f716bfe-756f-49ba-999c-b2c2b665bb79",
+        "observedAt": "2026-11-14T01:37:13.906Z",
+        "configSha256": "9400584359308d4ad6baf014b755067f7d05a23df9da179e3413fe4fa35a8ab5",
+        "sourceSha": "3d65b9ace98720afd2ef48275a3bb76a8638f76e",
+        "workersDevDisabled": true,
+        "previewUrlsDisabled": true,
+        "customDomains": 0,
+        "configuredRoutes": 0
+      },
+      "sha256": "e7587c88ed80d9f5f3295f16f10dede42cd8c678146a352d772b02fb605118d4"
+    },
+    {
+      "action": "hosted-pitr-and-quarantine-verified",
+      "observedAt": "2026-11-14T01:37:25.160Z",
+      "previousSha256": "e7587c88ed80d9f5f3295f16f10dede42cd8c678146a352d772b02fb605118d4",
+      "metadata": {
+        "workerName": "agent-table-pr51-recovery-staging",
+        "guestSha256": "f5b8713b62be7cbc91def40154ccb77ffab559aff96540ad940b4ce667098d25",
+        "tableSha256": "f5d319d1b9c201c54640c0f41f6b198b902376377db696118231838bbb691ef9",
+        "realPitr": true,
+        "privateAccessDenied": true,
+        "realAlarmsInvoked": true,
+        "sixHourParking": true
+      },
+      "sha256": "16ac70e753a5aa15d5aeddc923ea89b8a31656fa9ab5545695e992d836da8657"
+    },
+    {
+      "action": "deployed",
+      "observedAt": "2026-11-14T01:38:20.640Z",
+      "previousSha256": "16ac70e753a5aa15d5aeddc923ea89b8a31656fa9ab5545695e992d836da8657",
+      "metadata": {
+        "workerName": "agent-table-pr51-recovery-staging",
+        "kind": "application",
+        "versionId": "90044ae9-36c3-435a-9911-cbc816303bad",
+        "observedAt": "2026-11-14T01:38:20.639Z",
+        "configSha256": "bd7a9a6873f2f73c1921299ab44b3facb97b6a78bd0b564087e11382b1c1e06f",
+        "sourceSha": "3d65b9ace98720afd2ef48275a3bb76a8638f76e",
+        "workersDevDisabled": true,
+        "previewUrlsDisabled": true,
+        "customDomains": 0,
+        "configuredRoutes": 0
+      },
+      "sha256": "014c7ae0e759026aaa295e5090f2cca2d7e7c165598ee2b53eaa67f0ded1f374"
+    },
+    {
+      "action": "operator-source-verified",
+      "observedAt": "2026-11-14T01:49:10.370Z",
+      "previousSha256": "014c7ae0e759026aaa295e5090f2cca2d7e7c165598ee2b53eaa67f0ded1f374",
+      "metadata": {
+        "sourceSha": "3d65b9ace98720afd2ef48275a3bb76a8638f76e",
+        "operatorSha": "5f41a40f22fa1fe6dcc28c0238100ed944d18107",
+        "comparedInputsSha256": "c821070c3ff4cad126322ad7dc58daf817b7e1404474cb33d1ddd8672ace2f32",
+        "phase": "discard"
+      },
+      "sha256": "265cde80c580401a3b00b9ad9be8a798394c50246cc19e574d2574a5b6d1021a"
+    },
+    {
+      "action": "deployed",
+      "observedAt": "2026-11-14T01:49:16.557Z",
+      "previousSha256": "265cde80c580401a3b00b9ad9be8a798394c50246cc19e574d2574a5b6d1021a",
+      "metadata": {
+        "workerName": "agent-table-pr51-recovery-staging",
+        "kind": "application",
+        "versionId": "23c63cd8-8e32-4013-8df9-caeba6409573",
+        "observedAt": "2026-11-14T01:49:16.557Z",
+        "configSha256": "a0ed5c12942a5a6ca94244bd6acdbb6df32f2f56661af7e3caa083a8f1b3b0f1",
+        "sourceSha": "3d65b9ace98720afd2ef48275a3bb76a8638f76e",
+        "workersDevDisabled": true,
+        "previewUrlsDisabled": true,
+        "customDomains": 0,
+        "configuredRoutes": 0
+      },
+      "sha256": "fb7364234f65b08f63e38ce4823d74342b5d16260cc7e8063aadfc7e1e5610d9"
+    },
+    {
+      "action": "deployed",
+      "observedAt": "2026-11-14T01:49:34.510Z",
+      "previousSha256": "fb7364234f65b08f63e38ce4823d74342b5d16260cc7e8063aadfc7e1e5610d9",
+      "metadata": {
+        "workerName": "agent-table-pr51-recovery-staging",
+        "kind": "fixture",
+        "versionId": "a524bfdc-88bb-4773-b7c2-637bea339560",
+        "observedAt": "2026-11-14T01:49:34.510Z",
+        "configSha256": "a3f2f5321c00099360863f7af48c65d0e294a9b2bb36b58afe9f92f899ccf961",
+        "sourceSha": "3d65b9ace98720afd2ef48275a3bb76a8638f76e",
+        "workersDevDisabled": true,
+        "previewUrlsDisabled": true,
+        "customDomains": 0,
+        "configuredRoutes": 0
+      },
+      "sha256": "ec3f541ecfc4be89126b0a0fe5c1018dfe5a9b40a9ae2c55286c2f9556ac4236"
+    },
+    {
+      "action": "deployed",
+      "observedAt": "2026-11-14T01:49:42.485Z",
+      "previousSha256": "ec3f541ecfc4be89126b0a0fe5c1018dfe5a9b40a9ae2c55286c2f9556ac4236",
+      "metadata": {
+        "workerName": "agent-table-pr51-recovery-staging",
+        "kind": "application",
+        "versionId": "d616f0c1-411c-4451-9705-26c2a1899656",
+        "observedAt": "2026-11-14T01:49:42.485Z",
+        "configSha256": "9b6baf4370da282eaa0ed97d4992395d9d3d8da5d7bf15fb8698db809a509be4",
+        "sourceSha": "3d65b9ace98720afd2ef48275a3bb76a8638f76e",
+        "workersDevDisabled": true,
+        "previewUrlsDisabled": true,
+        "customDomains": 0,
+        "configuredRoutes": 0
+      },
+      "sha256": "11e15f47f199429748cdc2e6c7e5c4f7c247cfe434189306d8dd1ce5257d505d"
+    },
+    {
+      "action": "synthetic-discard-verified-quarantined",
+      "observedAt": "2026-11-14T01:49:44.996Z",
+      "previousSha256": "11e15f47f199429748cdc2e6c7e5c4f7c247cfe434189306d8dd1ce5257d505d",
+      "metadata": {
+        "workerName": "agent-table-pr51-recovery-staging",
+        "operationId": "4603a356-06f8-408c-bc13-f94f26484328",
+        "generation": "bbdca17200eeca1428bedb579c3461730ded3bb5155d763f8feaf9a514078ce4",
+        "reset": {
+          "format": "agent-table.recovery-reset-summary.v1",
+          "inventorySha256": "84558c841a1dde8a1b15a62119ac2f27dea783ad4124c5c98471211b039696d0",
+          "receiptSha256": "dac62393b8cf72e8d8b4ee61c56179bb62a7469fd9d9158da1c6b533c563306a",
+          "objectCounts": {
+            "TABLES": 1,
+            "GUESTS": 1,
+            "OAUTH_SERIALIZER": 0,
+            "ADMISSION": 0
+          },
+          "totalObjects": 2
+        },
+        "observedInventory": {
+          "sha256": "84558c841a1dde8a1b15a62119ac2f27dea783ad4124c5c98471211b039696d0",
+          "counts": {
+            "TABLES": 1,
+            "GUESTS": 1,
+            "OAUTH_SERIALIZER": 0,
+            "ADMISSION": 0,
+            "OAUTH_KV": 0
+          },
+          "observedAt": "2026-11-14T01:49:25.638Z"
+        },
+        "kvCleanup": {
+          "requested": 2,
+          "deleted": 2,
+          "batches": 1
+        },
+        "sixHourParking": true,
+        "cleared": false
+      },
+      "sha256": "441e63c14a1bfeba4cdf420e04acb88be9a1870ab3ff268167246671c0564948"
+    },
+    {
+      "action": "operator-source-verified",
+      "observedAt": "2026-11-14T01:50:15.411Z",
+      "previousSha256": "441e63c14a1bfeba4cdf420e04acb88be9a1870ab3ff268167246671c0564948",
+      "metadata": {
+        "sourceSha": "3d65b9ace98720afd2ef48275a3bb76a8638f76e",
+        "operatorSha": "5f41a40f22fa1fe6dcc28c0238100ed944d18107",
+        "comparedInputsSha256": "c821070c3ff4cad126322ad7dc58daf817b7e1404474cb33d1ddd8672ace2f32",
+        "phase": "future"
+      },
+      "sha256": "0b9e7936881f0abba7fee842cd0acece1e49993257b315a47bab165c4c369701"
+    },
+    {
+      "action": "synthetic-reset-planned",
+      "observedAt": "2026-11-14T01:50:20.221Z",
+      "previousSha256": "0b9e7936881f0abba7fee842cd0acece1e49993257b315a47bab165c4c369701",
+      "metadata": {
+        "workerName": "agent-table-pr51-schema-staging",
+        "operationId": "abfd753c-2082-43f6-b24e-0a8bd46184e5",
+        "generation": "9321de8cd69a03da4640b09bf2680f47b82cb38d9172c515f86356d01846b387",
+        "namespaceIdentity": {
+          "accountId": "0fbaae27d3ff021bc17109f1493d0b2d",
+          "workerName": "agent-table-pr51-schema-staging",
+          "namespaces": {
+            "OAUTH_KV": "014faeb094104937bd21c12eb0081ee6",
+            "TABLES": "46a1be2c8d9d49a393cb495d3fb5058e",
+            "GUESTS": "8e18320e2b734fbb92ccad02219d8637",
+            "OAUTH_SERIALIZER": "c64a9e2de40f433a9e51282d7f89ba02",
+            "ADMISSION": "a5afe3a5a32d4a0aa6217bddfd27a374"
+          },
+          "commitments": {
+            "TABLES": "eae470097b2c981e68fb5338450adce2fcd8938967aeba8daf5d4ed6e47160e3",
+            "GUESTS": "9c6bcf62b12cb291e5681d354e1bb4434fefce1de1623e7347a644ea80539267",
+            "OAUTH_SERIALIZER": "784fb801e3261fb113ddde6a5357026843d2bce869f35e7f4694bc1c8e5caa3d",
+            "ADMISSION": "3309c9d01ac21d5b83b56160129a6f7276f7a9339fc13de367ffe8506d2c8370"
+          }
+        },
+        "approvalRef": "https://github.com/kitamura-tetsuo/agent-table/pull/69#issuecomment-6868721873"
+      },
+      "sha256": "b1cf9668504f6495e4dfd5311f656afeb90ae5e03e2faa7d1e95e9aecde5f526"
+    },
+    {
+      "action": "deployed",
+      "observedAt": "2026-11-14T01:50:26.869Z",
+      "previousSha256": "b1cf9668504f6495e4dfd5311f656afeb90ae5e03e2faa7d1e95e9aecde5f526",
+      "metadata": {
+        "workerName": "agent-table-pr51-schema-staging",
+        "kind": "fixture",
+        "versionId": "88976668-674f-4390-a51b-77d50cdd1579",
+        "observedAt": "2026-11-14T01:50:26.869Z",
+        "configSha256": "865523c9ee6feb223ac0e6c19d4c4f57740be956619c48699d62e5a37d1a7446",
+        "sourceSha": "3d65b9ace98720afd2ef48275a3bb76a8638f76e",
+        "workersDevDisabled": true,
+        "previewUrlsDisabled": true,
+        "customDomains": 0,
+        "configuredRoutes": 0
+      },
+      "sha256": "0d69c09a41cc7338a76439b8a07d9efbe98cf663e4df845a0115d380b36f32af"
+    },
+    {
+      "action": "deployed",
+      "observedAt": "2026-11-14T01:50:38.038Z",
+      "previousSha256": "0d69c09a41cc7338a76439b8a07d9efbe98cf663e4df845a0115d380b36f32af",
+      "metadata": {
+        "workerName": "agent-table-pr51-schema-staging",
+        "kind": "application",
+        "versionId": "95de9622-4bbf-4891-842f-ec06ba86b13c",
+        "observedAt": "2026-11-14T01:50:38.038Z",
+        "configSha256": "cad11dd7ce615adab9324dbc6830ac540cbd1a2949f2227bc40243438a6d10d0",
+        "sourceSha": "3d65b9ace98720afd2ef48275a3bb76a8638f76e",
+        "workersDevDisabled": true,
+        "previewUrlsDisabled": true,
+        "customDomains": 0,
+        "configuredRoutes": 0
+      },
+      "sha256": "c07d48f7839b2cca90839dbb59399bf0002536d544c9c9403dfdbc36e06c6bc5"
+    },
+    {
+      "action": "deployed",
+      "observedAt": "2026-11-14T01:50:47.492Z",
+      "previousSha256": "c07d48f7839b2cca90839dbb59399bf0002536d544c9c9403dfdbc36e06c6bc5",
+      "metadata": {
+        "workerName": "agent-table-pr51-schema-staging",
+        "kind": "forensic",
+        "versionId": "8d3d1e51-6167-4ac1-87ae-03f82362d6ec",
+        "observedAt": "2026-11-14T01:50:47.492Z",
+        "configSha256": "e24da740d194e22a4b5b928fb1bea7ef5eec7bc8ba834b8c44deede5b26292be",
+        "sourceSha": "3d65b9ace98720afd2ef48275a3bb76a8638f76e",
+        "workersDevDisabled": true,
+        "previewUrlsDisabled": true,
+        "customDomains": 0,
+        "configuredRoutes": 0
+      },
+      "sha256": "2c91e5c590cd3f8215c847f23db441623902bc373b8d9f7882b0dc816b8dc274"
+    },
+    {
+      "action": "operator-source-verified",
+      "observedAt": "2026-11-14T01:53:44.101Z",
+      "previousSha256": "2c91e5c590cd3f8215c847f23db441623902bc373b8d9f7882b0dc816b8dc274",
+      "metadata": {
+        "sourceSha": "3d65b9ace98720afd2ef48275a3bb76a8638f76e",
+        "operatorSha": "5f41a40f22fa1fe6dcc28c0238100ed944d18107",
+        "comparedInputsSha256": "c821070c3ff4cad126322ad7dc58daf817b7e1404474cb33d1ddd8672ace2f32",
+        "phase": "future"
+      },
+      "sha256": "61653384915b40515ba600c5cff34b40b3a71942120693bbb40b7322799293bb"
+    },
+    {
+      "action": "deployed",
+      "observedAt": "2026-11-14T01:53:49.859Z",
+      "previousSha256": "61653384915b40515ba600c5cff34b40b3a71942120693bbb40b7322799293bb",
+      "metadata": {
+        "workerName": "agent-table-pr51-schema-staging",
+        "kind": "application",
+        "versionId": "f8f2ca1d-78dc-45c0-9f50-da977fe397af",
+        "observedAt": "2026-11-14T01:53:49.858Z",
+        "configSha256": "d24f3b14d4e5b78f1ae9a7fd11a42bd7a33098d50d643e1ad00af11d52c8fb4e",
+        "sourceSha": "3d65b9ace98720afd2ef48275a3bb76a8638f76e",
+        "workersDevDisabled": true,
+        "previewUrlsDisabled": true,
+        "customDomains": 0,
+        "configuredRoutes": 0
+      },
+      "sha256": "0b64dbfbe2c1d1c4eeaa963d1e440358ad96a204b575debf4d4e62727d6ac580"
+    },
+    {
+      "action": "deployed",
+      "observedAt": "2026-11-14T01:54:00.277Z",
+      "previousSha256": "0b64dbfbe2c1d1c4eeaa963d1e440358ad96a204b575debf4d4e62727d6ac580",
+      "metadata": {
+        "workerName": "agent-table-pr51-schema-staging",
+        "kind": "forensic",
+        "versionId": "04349d71-8976-48b5-b16d-3a923b3d98eb",
+        "observedAt": "2026-11-14T01:54:00.277Z",
+        "configSha256": "6d4087901a12bf6a33ce66e736891e6597c04e3b5f3b830de0052474893c9223",
+        "sourceSha": "3d65b9ace98720afd2ef48275a3bb76a8638f76e",
+        "workersDevDisabled": true,
+        "previewUrlsDisabled": true,
+        "customDomains": 0,
+        "configuredRoutes": 0
+      },
+      "sha256": "f7109764559105018bcae1c005a08bcc6a52fae4a1259005c6c4d125f54268db"
+    },
+    {
+      "action": "deployed",
+      "observedAt": "2026-11-14T01:54:08.871Z",
+      "previousSha256": "f7109764559105018bcae1c005a08bcc6a52fae4a1259005c6c4d125f54268db",
+      "metadata": {
+        "workerName": "agent-table-pr51-schema-staging",
+        "kind": "application",
+        "versionId": "5e37ebb5-0ed6-4265-b515-5f5a38a57454",
+        "observedAt": "2026-11-14T01:54:08.870Z",
+        "configSha256": "a7990d71dde8dfc8856b2d998936e9ca8b070079b09762d74093bd945f075221",
+        "sourceSha": "3d65b9ace98720afd2ef48275a3bb76a8638f76e",
+        "workersDevDisabled": true,
+        "previewUrlsDisabled": true,
+        "customDomains": 0,
+        "configuredRoutes": 0
+      },
+      "sha256": "db3315fd385d1fa062216a990b78cf294f5846b1bd2123ab2278e1b4de657812"
+    },
+    {
+      "action": "future-schema-retained-quarantined",
+      "observedAt": "2026-11-14T01:54:11.416Z",
+      "previousSha256": "db3315fd385d1fa062216a990b78cf294f5846b1bd2123ab2278e1b4de657812",
+      "metadata": {
+        "workerName": "agent-table-pr51-schema-staging",
+        "objectId": "51445e90c45bdf3f67d26f9f1ebe5e378092fb03ab88b757901ef91b713198c1",
+        "schemaVersion": 13,
+        "canonicalSha256": "411790ad1520b1294256175c99ce842709c42fdaa7d5db85508f7e6be2056436",
+        "constructorRefused": true,
+        "inspectionRefused": true,
+        "resetRefused": true,
+        "unchanged": true,
+        "cleared": false
+      },
+      "sha256": "7901210888cf0b5ab7f1af7e0dbcceba14823cf843c15263ff8007739372fd8b"
+    },
+    {
+      "action": "operator-source-verified",
+      "observedAt": "2026-11-14T01:54:35.225Z",
+      "previousSha256": "7901210888cf0b5ab7f1af7e0dbcceba14823cf843c15263ff8007739372fd8b",
+      "metadata": {
+        "sourceSha": "3d65b9ace98720afd2ef48275a3bb76a8638f76e",
+        "operatorSha": "5f41a40f22fa1fe6dcc28c0238100ed944d18107",
+        "comparedInputsSha256": "c821070c3ff4cad126322ad7dc58daf817b7e1404474cb33d1ddd8672ace2f32",
+        "phase": "finalize"
+      },
+      "sha256": "0aed389938f38df8a105a588c8470cbfcd2d5e0ef45915f9605125d9c8cd4140"
+    },
+    {
+      "action": "deployed",
+      "observedAt": "2026-11-14T01:54:41.270Z",
+      "previousSha256": "0aed389938f38df8a105a588c8470cbfcd2d5e0ef45915f9605125d9c8cd4140",
+      "metadata": {
+        "workerName": "agent-table-pr51-recovery-staging",
+        "kind": "application",
+        "versionId": "2b545b59-521b-48f9-b84c-4bb7d51bae2b",
+        "observedAt": "2026-11-14T01:54:41.269Z",
+        "configSha256": "c281811405fbb82305d5c8940a82eb4a0586c7bdecc7d24c14063fcad5d9d480",
+        "sourceSha": "3d65b9ace98720afd2ef48275a3bb76a8638f76e",
+        "workersDevDisabled": true,
+        "previewUrlsDisabled": true,
+        "customDomains": 0,
+        "configuredRoutes": 0
+      },
+      "sha256": "60cb8eb7b79f51a1af2b966d5a83f1f84a2d2f2068bbd266f70954228230961b"
+    },
+    {
+      "action": "deployed",
+      "observedAt": "2026-11-14T01:54:53.028Z",
+      "previousSha256": "60cb8eb7b79f51a1af2b966d5a83f1f84a2d2f2068bbd266f70954228230961b",
+      "metadata": {
+        "workerName": "agent-table-pr51-schema-staging",
+        "kind": "application",
+        "versionId": "847f5f75-1679-4fb9-880f-b479d832710f",
+        "observedAt": "2026-11-14T01:54:53.027Z",
+        "configSha256": "f69ebc710d8cef86cd9fb53076a0b2d3017c8e885d7dc215785b27c217b7975a",
+        "sourceSha": "3d65b9ace98720afd2ef48275a3bb76a8638f76e",
+        "workersDevDisabled": true,
+        "previewUrlsDisabled": true,
+        "customDomains": 0,
+        "configuredRoutes": 0
+      },
+      "sha256": "c5510246e3c9cd30956a54fef037d258d9b06d62f35bb0c40985bc455bb43a9b"
+    },
+    {
+      "action": "rehearsal-complete-quarantine-retained",
+      "observedAt": "2026-11-14T01:55:03.459Z",
+      "previousSha256": "c5510246e3c9cd30956a54fef037d258d9b06d62f35bb0c40985bc455bb43a9b",
+      "metadata": {
+        "workers": [
+          "agent-table-pr51-recovery-staging",
+          "agent-table-pr51-schema-staging"
+        ],
+        "resetSummary": {
+          "format": "agent-table.recovery-inspection-summary.v1",
+          "inventorySha256": "84558c841a1dde8a1b15a62119ac2f27dea783ad4124c5c98471211b039696d0",
+          "receiptSha256": "d20ec8405aa1797110f08fd9335277a7e1d03e3147dd8a35c0162816034d7e47",
+          "objectCounts": {
+            "TABLES": 1,
+            "GUESTS": 1,
+            "OAUTH_SERIALIZER": 0,
+            "ADMISSION": 0
+          },
+          "totalObjects": 2
+        },
+        "productionDataTouched": false,
+        "hostedClearancePerformed": false
+      },
+      "sha256": "2567285e3fca23fdb7371cbd0644c3cfe57fffc6230d3050448a9f2faffa5d6b"
+    }
+  ],
+  "limitations": [
+    "Manual isolated synthetic approval; no protected workflow approval is asserted.",
+    "KV deletion is observed inventory coverage, not a global cache-empty proof.",
+    "Only reset certificates are issued; quarantine stays active after expiry.",
+    "The schema13 namespace is retained, never reset, renamed, or deleted.",
+    "This synthetic record is separate from the production recovery journal."
+  ]
+}

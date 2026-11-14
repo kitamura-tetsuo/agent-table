@@ -88,8 +88,17 @@ import {
 } from "../shared/private-pilot";
 import { digestSessionSecret, randomBase64Url } from "../shared/random";
 import {
-  deferQuarantinedAlarm,
+  initializeRecoveryFence,
+  inspectRecoveryObject,
+  type RecoveryObjectRequest,
+  recoveryObjectDenied,
+  recoveryStorageWasVirgin,
+  resetRecoveryObject,
+  TABLE_RECOVERY_STORAGE,
+} from "../shared/recovery-storage";
+import {
   isRestoreQuarantined,
+  RESTORE_QUARANTINE_RECHECK_MS,
 } from "../shared/release-quarantine";
 import { ownInboxUri, parseOwnInboxUri } from "../shared/resources";
 import {
@@ -345,6 +354,7 @@ export class TableDO extends DurableObject<Env> {
     (reason, durationMs) => {
       emitOperationalEvent({ kind: "stream", reason, durationMs });
     },
+    () => !this.accessQuarantined(),
   );
   private pendingInboxAttaches = 0;
   // Integration tests configure this private in-object barrier via the test
@@ -362,9 +372,12 @@ export class TableDO extends DurableObject<Env> {
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
+    const virgin = recoveryStorageWasVirgin(ctx.storage);
     initializeApplicationSchema(ctx.storage, "table");
     this.deadlines = new DurableDeadlineScheduler(ctx.storage);
     ctx.blockConcurrencyWhile(async () => {
+      await initializeRecoveryFence(ctx, env, TABLE_RECOVERY_STORAGE, virgin);
+      if (await this.deferQuarantinedWork()) return;
       await this.deadlines.ensureExistingWakeup(() =>
         this.earliestLifecycleDeadline(),
       );
@@ -376,12 +389,54 @@ export class TableDO extends DurableObject<Env> {
     return readApplicationSchemaVersion(this.ctx.storage);
   }
 
+  private accessQuarantined(): boolean {
+    return (
+      isRestoreQuarantined(this.env) ||
+      recoveryObjectDenied(this.ctx.storage, this.env, TABLE_RECOVERY_STORAGE)
+    );
+  }
+
+  /** SQL authorization stays synchronous with the protected read or mutation. */
+  private get privateSql(): SqlStorage {
+    if (this.accessQuarantined()) {
+      throw new Error("Private access unavailable during recovery");
+    }
+    return this.ctx.storage.sql;
+  }
+
+  private async deferQuarantinedWork(): Promise<boolean> {
+    if (!this.accessQuarantined()) return false;
+    await this.ctx.storage.setAlarm(Date.now() + RESTORE_QUARANTINE_RECHECK_MS);
+    return true;
+  }
+
+  inspectRecovery(input: RecoveryObjectRequest) {
+    return inspectRecoveryObject(
+      this.ctx,
+      this.env,
+      TABLE_RECOVERY_STORAGE,
+      input,
+    );
+  }
+
+  async resetRecovery(input: RecoveryObjectRequest) {
+    const result = await resetRecoveryObject(
+      this.ctx,
+      this.env,
+      TABLE_RECOVERY_STORAGE,
+      input,
+    );
+    this.inboxStreams.closeAll();
+    return result;
+  }
+
   /**
    * Internal DO-RPC only: reads persisted table SQLite authority independently
    * of the HTTP create/get results, without any stored content or identifiers.
    */
   async readStagingEvidence(tableId: string, guestId: string) {
     if (
+      this.accessQuarantined() ||
       !stagingEvidenceEnabled(this.env) ||
       this.ctx.id.toString() !== this.env.TABLES.idFromName(tableId).toString()
     ) {
@@ -390,13 +445,18 @@ export class TableDO extends DurableObject<Env> {
     const metadata = this.metadataRow();
     const table = metadata?.table_id === tableId ? metadata : undefined;
     const membership = table
-      ? this.ctx.storage.sql
+      ? this.privateSql
           .exec<Pick<MembershipRow, "guest_id" | "role" | "seat">>(
             "SELECT guest_id, role, seat FROM table_memberships WHERE seat = 1 LIMIT 1",
           )
           .toArray()[0]
       : undefined;
     const tombstone = this.tombstoneRow();
+    const creationFingerprint = table
+      ? await requestFingerprint(table.creation_request_id)
+      : null;
+    if (this.accessQuarantined())
+      throw new Error("Staging evidence is disabled");
     return {
       metadataExists: Boolean(table),
       state: table?.state ?? null,
@@ -408,9 +468,7 @@ export class TableDO extends DurableObject<Env> {
           membership.role === "creator" &&
           membership.seat === 1
         : null,
-      requestFingerprint: table
-        ? await requestFingerprint(table.creation_request_id)
-        : null,
+      requestFingerprint: creationFingerprint,
       tombstoneState:
         !table && tombstone?.table_id === tableId
           ? tombstone.terminal_state
@@ -431,7 +489,7 @@ export class TableDO extends DurableObject<Env> {
     const policy = privatePilotConfiguration(this.env);
     if (
       !stagingEvidenceEnabled(this.env) ||
-      isRestoreQuarantined(this.env) ||
+      this.accessQuarantined() ||
       !policy ||
       policy.observationMode !== "private-redacted" ||
       !privatePilotRecipientMatches(
@@ -460,7 +518,7 @@ export class TableDO extends DurableObject<Env> {
         retention: "unavailable",
       };
     const subscription = this.eventSubscription(member.membership_id);
-    const messages = this.ctx.storage.sql
+    const messages = this.privateSql
       .exec<{
         messageId: string;
         seq: number;
@@ -476,7 +534,7 @@ export class TableDO extends DurableObject<Env> {
         PRIVATE_PILOT_MAX_MESSAGE_SEQ,
       )
       .toArray();
-    const outbox = this.ctx.storage.sql
+    const outbox = this.privateSql
       .exec<{
         eventId: string;
         messageId: string;
@@ -546,7 +604,7 @@ export class TableDO extends DurableObject<Env> {
   }
 
   private metadataRow(): MetadataRow | undefined {
-    return this.ctx.storage.sql
+    return this.privateSql
       .exec<MetadataRow>(
         `SELECT table_id, creation_request_id, request_digest,
                 creator_guest_id, title, purpose, state, created_at,
@@ -565,7 +623,7 @@ export class TableDO extends DurableObject<Env> {
         retain_until: number;
       }
     | undefined {
-    return this.ctx.storage.sql
+    return this.privateSql
       .exec<{
         table_id: string;
         terminal_state: "expired" | "deleted";
@@ -580,29 +638,29 @@ export class TableDO extends DurableObject<Env> {
   private earliestLifecycleDeadline(): number | null {
     const table = this.metadataRow();
     if (table) {
-      const pending = this.ctx.storage.sql
+      const pending = this.privateSql
         .exec<{ deadline: number | null }>(
           "SELECT MIN(expires_at) AS deadline FROM table_delete_confirmations WHERE state = 'pending'",
         )
         .one().deadline;
-      const candidate = this.ctx.storage.sql
+      const candidate = this.privateSql
         .exec<{ deadline: number | null }>(
           "SELECT MIN(expires_at) AS deadline FROM table_event_candidates",
         )
         .one().deadline;
-      const subscription = this.ctx.storage.sql
+      const subscription = this.privateSql
         .exec<{ deadline: number | null }>(
           "SELECT MIN(expires_at) AS deadline FROM table_event_subscriptions WHERE status = 'active'",
         )
         .one().deadline;
-      const rotation = this.ctx.storage.sql
+      const rotation = this.privateSql
         .exec<{ deadline: number | null }>(
           "SELECT MIN(rotation_until) AS deadline FROM table_event_subscriptions WHERE previous_secret_envelope IS NOT NULL",
         )
         .one().deadline;
       // Paused senders schedule only cleanup, never overdue dispatch work.
       const dispatch = this.outboxDispatchEnabled()
-        ? this.ctx.storage.sql
+        ? this.privateSql
             .exec<{ deadline: number | null }>(
               `SELECT MIN(CASE WHEN status = 'pending' THEN next_attempt_at
                          ELSE lease_deadline END) AS deadline
@@ -610,7 +668,7 @@ export class TableDO extends DurableObject<Env> {
             )
             .one().deadline
         : null;
-      const outbox = this.ctx.storage.sql
+      const outbox = this.privateSql
         .exec<{ deadline: number | null }>(
           `SELECT MIN(next_cleanup_at) AS deadline FROM (
             SELECT expires_at AS next_cleanup_at
@@ -654,7 +712,7 @@ export class TableDO extends DurableObject<Env> {
     if (!table) return null;
     this.inboxStreams.closeAll();
     const retainUntil = table.expires_at + 24 * 60 * 60_000;
-    this.ctx.storage.sql.exec(
+    this.privateSql.exec(
       "INSERT INTO table_tombstones (table_id, terminal_state, expires_at, terminal_at, retain_until) VALUES (?, ?, ?, ?, ?)",
       table.table_id,
       state,
@@ -663,22 +721,22 @@ export class TableDO extends DurableObject<Env> {
       retainUntil,
     );
     for (const member of this.memberships()) {
-      this.ctx.storage.sql.exec(
+      this.privateSql.exec(
         "INSERT INTO table_tombstone_guests (guest_id) VALUES (?)",
         member.guest_id,
       );
     }
-    this.ctx.storage.sql.exec("DELETE FROM table_delete_confirmations");
-    this.ctx.storage.sql.exec("DELETE FROM table_event_outbox");
-    this.ctx.storage.sql.exec("DELETE FROM table_event_candidates");
-    this.ctx.storage.sql.exec("DELETE FROM table_event_subscriptions");
-    this.ctx.storage.sql.exec("DELETE FROM table_post_receipts");
-    this.ctx.storage.sql.exec("DELETE FROM table_messages");
-    this.ctx.storage.sql.exec("DELETE FROM table_transcript_usage");
-    this.ctx.storage.sql.exec("DELETE FROM table_join_receipts");
-    this.ctx.storage.sql.exec("DELETE FROM table_invitations");
-    this.ctx.storage.sql.exec("DELETE FROM table_memberships");
-    this.ctx.storage.sql.exec("DELETE FROM table_metadata");
+    this.privateSql.exec("DELETE FROM table_delete_confirmations");
+    this.privateSql.exec("DELETE FROM table_event_outbox");
+    this.privateSql.exec("DELETE FROM table_event_candidates");
+    this.privateSql.exec("DELETE FROM table_event_subscriptions");
+    this.privateSql.exec("DELETE FROM table_post_receipts");
+    this.privateSql.exec("DELETE FROM table_messages");
+    this.privateSql.exec("DELETE FROM table_transcript_usage");
+    this.privateSql.exec("DELETE FROM table_join_receipts");
+    this.privateSql.exec("DELETE FROM table_invitations");
+    this.privateSql.exec("DELETE FROM table_memberships");
+    this.privateSql.exec("DELETE FROM table_metadata");
     return { tableId: table.table_id, expiresAt: table.expires_at };
   }
 
@@ -691,15 +749,15 @@ export class TableDO extends DurableObject<Env> {
     }
     const tombstone = this.tombstoneRow();
     if (tombstone && tombstone.retain_until <= now) {
-      this.ctx.storage.sql.exec("DELETE FROM table_tombstone_delete_receipts");
-      this.ctx.storage.sql.exec("DELETE FROM table_tombstone_guests");
-      this.ctx.storage.sql.exec("DELETE FROM table_tombstones");
+      this.privateSql.exec("DELETE FROM table_tombstone_delete_receipts");
+      this.privateSql.exec("DELETE FROM table_tombstone_guests");
+      this.privateSql.exec("DELETE FROM table_tombstones");
       return 1;
     }
     if (table) {
       const eventsProcessed = this.cleanupExpiredEvents(now, budget);
       if (eventsProcessed > 0) return eventsProcessed;
-      const expiredOutbox = expireOutboxWork(this.ctx.storage.sql, now, budget);
+      const expiredOutbox = expireOutboxWork(this.privateSql, now, budget);
       if (expiredOutbox > 0) {
         recordFutureMetric({
           name: "outbox.delivery_failure",
@@ -707,7 +765,7 @@ export class TableDO extends DurableObject<Env> {
         });
         return expiredOutbox;
       }
-      this.ctx.storage.sql.exec(
+      this.privateSql.exec(
         `UPDATE table_delete_confirmations SET state = 'expired'
          WHERE rowid IN (
            SELECT rowid FROM table_delete_confirmations
@@ -717,7 +775,7 @@ export class TableDO extends DurableObject<Env> {
         now,
         budget,
       );
-      return this.ctx.storage.sql
+      return this.privateSql
         .exec<{ changed: number }>("SELECT changes() AS changed")
         .one().changed;
     }
@@ -732,6 +790,9 @@ export class TableDO extends DurableObject<Env> {
     state: TableState | "missing";
     canDispatch: boolean;
   } {
+    if (this.accessQuarantined()) {
+      return { state: "missing", canDispatch: false };
+    }
     const table = this.metadataRow();
     if (table) {
       const expired = table.expires_at <= Date.now();
@@ -748,7 +809,7 @@ export class TableDO extends DurableObject<Env> {
   }
 
   private memberships(): MembershipRow[] {
-    return this.ctx.storage.sql
+    return this.privateSql
       .exec<MembershipRow>(
         `SELECT membership_id, table_id, guest_id, seat, role,
                 joined_at, latest_peer_seq
@@ -758,7 +819,7 @@ export class TableDO extends DurableObject<Env> {
   }
 
   private memberFor(guestId: string): MembershipRow | undefined {
-    return this.ctx.storage.sql
+    return this.privateSql
       .exec<MembershipRow>(
         `SELECT membership_id, table_id, guest_id, seat, role,
                 joined_at, latest_peer_seq
@@ -771,7 +832,7 @@ export class TableDO extends DurableObject<Env> {
   private eventSubscription(
     membershipId: string,
   ): EventSubscriptionRow | undefined {
-    return this.ctx.storage.sql
+    return this.privateSql
       .exec<EventSubscriptionRow>(
         "SELECT * FROM table_event_subscriptions WHERE membership_id = ?",
         membershipId,
@@ -780,7 +841,7 @@ export class TableDO extends DurableObject<Env> {
   }
 
   private eventCandidate(membershipId: string): EventCandidateRow | undefined {
-    return this.ctx.storage.sql
+    return this.privateSql
       .exec<EventCandidateRow>(
         "SELECT * FROM table_event_candidates WHERE membership_id = ?",
         membershipId,
@@ -793,7 +854,7 @@ export class TableDO extends DurableObject<Env> {
     membershipId: string,
     status: "inactive" | "expired",
   ): void {
-    this.ctx.storage.sql.exec(
+    this.privateSql.exec(
       `UPDATE table_event_subscriptions
        SET generation = generation + 1, fence = fence + 1, status = ?,
            callback_url = NULL, secret_envelope = NULL,
@@ -804,7 +865,7 @@ export class TableDO extends DurableObject<Env> {
       membershipId,
     );
     // Terminal subscription authority also fences any undelivered work.
-    this.ctx.storage.sql.exec(
+    this.privateSql.exec(
       "UPDATE table_event_outbox SET status = 'cancelled', next_attempt_at = NULL, lease_token = NULL, lease_deadline = NULL WHERE recipient_membership_id = ? AND status IN ('pending', 'in_flight')",
       membershipId,
     );
@@ -813,7 +874,7 @@ export class TableDO extends DurableObject<Env> {
   private cleanupExpiredEvents(now: number, budget: number): number {
     if (budget <= 0) return 0;
     let processed = 0;
-    const candidates = this.ctx.storage.sql
+    const candidates = this.privateSql
       .exec<{ membership_id: string }>(
         "SELECT membership_id FROM table_event_candidates WHERE expires_at <= ? LIMIT ?",
         now,
@@ -821,18 +882,18 @@ export class TableDO extends DurableObject<Env> {
       )
       .toArray();
     for (const candidate of candidates) {
-      this.ctx.storage.sql.exec(
+      this.privateSql.exec(
         "DELETE FROM table_event_candidates WHERE membership_id = ?",
         candidate.membership_id,
       );
-      this.ctx.storage.sql.exec(
+      this.privateSql.exec(
         "UPDATE table_event_subscriptions SET fence = fence + 1 WHERE membership_id = ?",
         candidate.membership_id,
       );
       processed++;
     }
     if (processed >= budget) return processed;
-    const expired = this.ctx.storage.sql
+    const expired = this.privateSql
       .exec<{ membership_id: string }>(
         `SELECT membership_id FROM table_event_subscriptions
          WHERE status = 'active' AND expires_at <= ? LIMIT ?`,
@@ -841,7 +902,7 @@ export class TableDO extends DurableObject<Env> {
       )
       .toArray();
     for (const subscription of expired) {
-      this.ctx.storage.sql.exec(
+      this.privateSql.exec(
         "DELETE FROM table_event_candidates WHERE membership_id = ?",
         subscription.membership_id,
       );
@@ -849,7 +910,7 @@ export class TableDO extends DurableObject<Env> {
       processed++;
     }
     if (processed >= budget) return processed;
-    const rotations = this.ctx.storage.sql
+    const rotations = this.privateSql
       .exec<{ membership_id: string }>(
         "SELECT membership_id FROM table_event_subscriptions WHERE previous_secret_envelope IS NOT NULL AND rotation_until <= ? LIMIT ?",
         now,
@@ -858,13 +919,13 @@ export class TableDO extends DurableObject<Env> {
       .toArray();
     for (const rotation of rotations) {
       // Removing the old key is itself a dispatch-generation invalidation.
-      this.ctx.storage.sql.exec(
+      this.privateSql.exec(
         "UPDATE table_event_subscriptions SET previous_secret_envelope = NULL, rotation_until = NULL, generation = generation + 1, fence = fence + 1 WHERE membership_id = ?",
         rotation.membership_id,
       );
       // Keep pending identity and original attempt budgets while fencing
       // in-flight results signed with an obsolete generation.
-      this.ctx.storage.sql.exec(
+      this.privateSql.exec(
         `UPDATE table_event_outbox
          SET subscription_generation = (
            SELECT generation FROM table_event_subscriptions
@@ -910,7 +971,7 @@ export class TableDO extends DurableObject<Env> {
         lastErrorCategory: null,
       };
     }
-    const counts = this.ctx.storage.sql
+    const counts = this.privateSql
       .exec<{ pending_count: number; last_accepted_seq: number | null }>(
         `SELECT COUNT(CASE WHEN status IN ('pending', 'in_flight') THEN 1 END) AS pending_count,
                 MAX(CASE WHEN status = 'accepted' THEN message_seq END) AS last_accepted_seq
@@ -920,7 +981,7 @@ export class TableDO extends DurableObject<Env> {
         row.subscription_id,
       )
       .one();
-    const latestError = this.ctx.storage.sql
+    const latestError = this.privateSql
       .exec<{ last_error_category: string }>(
         `SELECT last_error_category FROM table_event_outbox
          WHERE recipient_membership_id = ? AND subscription_id = ?
@@ -985,7 +1046,7 @@ export class TableDO extends DurableObject<Env> {
     actor: VerifiedConnectionActor,
     requiredScope: ConnectionScope,
   ): Promise<boolean> {
-    if (isRestoreQuarantined(this.env)) return false;
+    if (this.accessQuarantined()) return false;
     if (
       actor?.kind !== "verified-connection" ||
       actor.scope !== requiredScope ||
@@ -1000,13 +1061,13 @@ export class TableDO extends DurableObject<Env> {
       actor.connectionId,
       requiredScope,
     );
-    return decision.allowed;
+    return !this.accessQuarantined() && decision.allowed;
   }
 
   private async freshEventActor(
     actor: VerifiedConnectionActor,
   ): Promise<VerifiedConnectionActor | null> {
-    if (isRestoreQuarantined(this.env)) return null;
+    if (this.accessQuarantined()) return null;
     if (
       actor?.kind !== "verified-connection" ||
       actor.scope !== "events:subscribe" ||
@@ -1021,7 +1082,9 @@ export class TableDO extends DurableObject<Env> {
       "events:subscribe",
     );
     // Never trust the expiry from an earlier RPC or caller-provided actor.
-    return decision.allowed ? decision.actor : null;
+    return !this.accessQuarantined() && decision.allowed
+      ? decision.actor
+      : null;
   }
 
   private eventRegistrationAllowed(
@@ -1055,6 +1118,7 @@ export class TableDO extends DurableObject<Env> {
     actor: VerifiedConnectionActor,
     input: unknown,
   ): Promise<EventResult<Record<string, never>>> {
+    if (this.accessQuarantined()) return { ok: false, code: "TABLE_NOT_FOUND" };
     const parsed = parseEventSubscriptionParams(input, "subscribe");
     if (!parsed) return { ok: false, code: "INVALID_REQUEST" };
     const policy = activePrivatePilotDiscoveryPolicy(this.env);
@@ -1117,7 +1181,10 @@ export class TableDO extends DurableObject<Env> {
         // sampled tail output. This diagnostic never authorizes delivery.
         const policyDigest = await callbackOriginPolicyDigest(currentPolicy);
         const latestPolicy = privatePilotConfiguration(this.env);
-        if (JSON.stringify(latestPolicy) === JSON.stringify(currentPolicy)) {
+        if (
+          !this.accessQuarantined() &&
+          JSON.stringify(latestPolicy) === JSON.stringify(currentPolicy)
+        ) {
           await this.ctx.storage.put(CALLBACK_ORIGIN_DIAGNOSTIC_KEY, {
             schemaVersion: 1,
             policyDigest,
@@ -1244,23 +1311,23 @@ export class TableDO extends DurableObject<Env> {
             return { ok: false, code: "CONFLICT" } as const;
           const nextFence = (row?.fence ?? 0) + 1;
           if (row) {
-            this.ctx.storage.sql.exec(
+            this.privateSql.exec(
               "UPDATE table_event_subscriptions SET fence = ? WHERE membership_id = ?",
               nextFence,
               currentMember.membership_id,
             );
           } else {
-            this.ctx.storage.sql.exec(
+            this.privateSql.exec(
               "INSERT INTO table_event_subscriptions (membership_id, generation, fence, status) VALUES (?, 0, ?, 'inactive')",
               currentMember.membership_id,
               nextFence,
             );
           }
-          this.ctx.storage.sql.exec(
+          this.privateSql.exec(
             "DELETE FROM table_event_candidates WHERE membership_id = ?",
             currentMember.membership_id,
           );
-          this.ctx.storage.sql.exec(
+          this.privateSql.exec(
             "INSERT INTO table_event_candidates (membership_id, candidate_id, subscription_id, guest_id, connection_id, callback_url, secret_envelope, requested_ttl_ms, fence, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             currentMember.membership_id,
             candidateId,
@@ -1276,7 +1343,9 @@ export class TableDO extends DurableObject<Env> {
           return { ok: true, value: { candidateId, subscriptionId } } as const;
         }),
       );
-      return committed.value;
+      return this.accessQuarantined()
+        ? { ok: false, code: "TEMPORARILY_UNAVAILABLE" }
+        : committed.value;
     } catch {
       return { ok: false, code: "TEMPORARILY_UNAVAILABLE" };
     }
@@ -1366,7 +1435,7 @@ export class TableDO extends DurableObject<Env> {
           // A pending refresh cannot resurrect an active subscription that expired
           // before the external verification returned, even before alarm cleanup.
           if (current.status === "active" && (current.expires_at ?? 0) <= now) {
-            this.ctx.storage.sql.exec(
+            this.privateSql.exec(
               "DELETE FROM table_event_candidates WHERE membership_id = ?",
               currentMember.membership_id,
             );
@@ -1401,7 +1470,7 @@ export class TableDO extends DurableObject<Env> {
             ? Math.min(now + EVENT_ROTATION_WINDOW_MS, expiresAt)
             : null;
           const generation = current.generation + 1;
-          this.ctx.storage.sql.exec(
+          this.privateSql.exec(
             "UPDATE table_event_subscriptions SET generation = ?, status = 'active', guest_id = ?, connection_id = ?, subscription_id = ?, callback_url = ?, secret_envelope = ?, previous_secret_envelope = ?, rotation_until = ?, expires_at = ? WHERE membership_id = ?",
             generation,
             fresh.guestId,
@@ -1416,14 +1485,14 @@ export class TableDO extends DurableObject<Env> {
           );
           // Refresh retains the original event identity and retry budget.
           // The generation change fences any pre-refresh completion.
-          this.ctx.storage.sql.exec(
+          this.privateSql.exec(
             "UPDATE table_event_outbox SET subscription_generation = ?, expires_at = ? WHERE recipient_membership_id = ? AND subscription_id = ? AND status IN ('pending', 'in_flight')",
             generation,
             expiresAt,
             currentMember.membership_id,
             pending.subscription_id,
           );
-          this.ctx.storage.sql.exec(
+          this.privateSql.exec(
             "DELETE FROM table_event_candidates WHERE membership_id = ?",
             currentMember.membership_id,
           );
@@ -1433,7 +1502,9 @@ export class TableDO extends DurableObject<Env> {
           } as const;
         }),
       );
-      return committed.value;
+      return this.accessQuarantined()
+        ? { ok: false, code: "TEMPORARILY_UNAVAILABLE" }
+        : committed.value;
     } catch {
       return { ok: false, code: "TEMPORARILY_UNAVAILABLE" };
     }
@@ -1444,6 +1515,7 @@ export class TableDO extends DurableObject<Env> {
     actor: VerifiedConnectionActor,
     candidateId: string,
   ): Promise<void> {
+    if (this.accessQuarantined()) return;
     if (
       actor?.kind !== "verified-connection" ||
       typeof candidateId !== "string" ||
@@ -1460,11 +1532,11 @@ export class TableDO extends DurableObject<Env> {
         candidate.connection_id !== actor.connectionId
       )
         return;
-      this.ctx.storage.sql.exec(
+      this.privateSql.exec(
         "DELETE FROM table_event_candidates WHERE membership_id = ?",
         member.membership_id,
       );
-      this.ctx.storage.sql.exec(
+      this.privateSql.exec(
         "UPDATE table_event_subscriptions SET fence = fence + 1 WHERE membership_id = ?",
         member.membership_id,
       );
@@ -1514,11 +1586,11 @@ export class TableDO extends DurableObject<Env> {
         pending.guest_id === fresh.guestId &&
         pending.connection_id === fresh.connectionId
       ) {
-        this.ctx.storage.sql.exec(
+        this.privateSql.exec(
           "DELETE FROM table_event_candidates WHERE membership_id = ?",
           currentMember.membership_id,
         );
-        this.ctx.storage.sql.exec(
+        this.privateSql.exec(
           "UPDATE table_event_subscriptions SET fence = fence + 1 WHERE membership_id = ?",
           currentMember.membership_id,
         );
@@ -1583,7 +1655,7 @@ export class TableDO extends DurableObject<Env> {
   ): Promise<TableResult<InboxSubscriptionCheck>> {
     // Internal RPCs are not HTTP ingress. A restored grant must not authorize
     // a stream merely because it still looks valid in the old SQLite rows.
-    if (isRestoreQuarantined(this.env))
+    if (this.accessQuarantined())
       return { ok: false, code: "TEMPORARILY_UNAVAILABLE" };
     const filter = parseCanonicalInboxFilter(requested);
     if (!filter) return { ok: false, code: "INVALID_REQUEST" };
@@ -1662,7 +1734,7 @@ export class TableDO extends DurableObject<Env> {
       cancellationId: string;
     }>
   > {
-    if (isRestoreQuarantined(this.env))
+    if (this.accessQuarantined())
       return { ok: false, code: "TEMPORARILY_UNAVAILABLE" };
     if (this.pendingInboxAttaches >= 2)
       return { ok: false, code: "TEMPORARILY_UNAVAILABLE" };
@@ -1695,7 +1767,7 @@ export class TableDO extends DurableObject<Env> {
         admitted.value,
         async () => {
           const result = await check();
-          return result.ok ? result.value : null;
+          return !this.accessQuarantined() && result.ok ? result.value : null;
         },
         cancellationId,
       );
@@ -1729,6 +1801,9 @@ export class TableDO extends DurableObject<Env> {
     input: unknown,
     reservation: CreationReservation,
   ): Promise<TableResult<SafeTableMetadata>> {
+    if (this.accessQuarantined()) {
+      return { ok: false, code: "INVALID_RESERVATION" };
+    }
     let parsed: ReturnType<typeof parseCreationRequest>;
     try {
       parsed = parseCreationRequest(input);
@@ -1829,7 +1904,7 @@ export class TableDO extends DurableObject<Env> {
           }
 
           const membershipId = crypto.randomUUID();
-          this.ctx.storage.sql.exec(
+          this.privateSql.exec(
             `INSERT INTO table_metadata
          (singleton, table_id, creation_request_id, request_digest,
           creator_guest_id, title, purpose, state, created_at, expires_at,
@@ -1844,7 +1919,7 @@ export class TableDO extends DurableObject<Env> {
             trusted.createdAt,
             trusted.expiresAt,
           );
-          this.ctx.storage.sql.exec(
+          this.privateSql.exec(
             `INSERT INTO table_memberships
          (membership_id, table_id, guest_id, seat, role, joined_at, latest_peer_seq)
          VALUES (?, ?, ?, 1, 'creator', ?, 0)`,
@@ -1863,11 +1938,13 @@ export class TableDO extends DurableObject<Env> {
           } as const;
         }),
     );
-    return committed.value;
+    return this.accessQuarantined()
+      ? { ok: false, code: "TEMPORARILY_UNAVAILABLE" }
+      : committed.value;
   }
 
   private inviteForRequest(key: string): InvitationRow | undefined {
-    return this.ctx.storage.sql
+    return this.privateSql
       .exec<InvitationRow>(
         "SELECT * FROM table_invitations WHERE request_id = ?",
         key,
@@ -1966,7 +2043,7 @@ export class TableDO extends DurableObject<Env> {
           return { kind: "error", code: "IDEMPOTENCY_CONFLICT" } as const;
         }
         if (previous.expires_at <= now) {
-          this.ctx.storage.sql.exec(
+          this.privateSql.exec(
             "UPDATE table_invitations SET state = 'revoked', response_envelope = NULL WHERE invite_id = ? AND state = 'active'",
             previous.invite_id,
           );
@@ -1980,10 +2057,10 @@ export class TableDO extends DurableObject<Env> {
       const expiresAt = Math.min(now + 60 * 60 * 1000, current.expires_at);
       if (expiresAt <= now)
         return { kind: "error", code: "TABLE_TERMINAL" } as const;
-      this.ctx.storage.sql.exec(
+      this.privateSql.exec(
         "UPDATE table_invitations SET state = 'revoked', response_envelope = NULL WHERE state = 'active'",
       );
-      this.ctx.storage.sql.exec(
+      this.privateSql.exec(
         "INSERT INTO table_invitations (invite_id, request_id, issuer_guest_id, secret_digest, response_envelope, issued_at, expires_at, state) VALUES (?, ?, ?, ?, ?, ?, ?, 'active')",
         inviteId,
         requestId,
@@ -2091,7 +2168,7 @@ export class TableDO extends DurableObject<Env> {
       ) {
         return { ok: false, code: "INVITATION_INVALID" } as const;
       }
-      const receipt = this.ctx.storage.sql
+      const receipt = this.privateSql
         .exec<JoinReceiptRow>(
           "SELECT * FROM table_join_receipts WHERE guest_id = ? AND request_id = ?",
           guestId,
@@ -2105,7 +2182,7 @@ export class TableDO extends DurableObject<Env> {
       ) {
         return { ok: false, code: "IDEMPOTENCY_CONFLICT" } as const;
       }
-      const invitation = this.ctx.storage.sql
+      const invitation = this.privateSql
         .exec<InvitationRow>(
           "SELECT * FROM table_invitations WHERE invite_id = ?",
           parts.inviteId,
@@ -2122,7 +2199,7 @@ export class TableDO extends DurableObject<Env> {
         table.state === "open"
       ) {
         if (!receipt) {
-          this.ctx.storage.sql.exec(
+          this.privateSql.exec(
             "INSERT INTO table_join_receipts (guest_id, request_id, invite_id, secret_digest, membership_id) VALUES (?, ?, ?, ?, ?)",
             guestId,
             requestId,
@@ -2149,7 +2226,7 @@ export class TableDO extends DurableObject<Env> {
         return { ok: false, code: "INVITATION_INVALID" } as const;
       }
       const membershipId = crypto.randomUUID();
-      this.ctx.storage.sql.exec(
+      this.privateSql.exec(
         "INSERT INTO table_memberships (membership_id, table_id, guest_id, seat, role, joined_at, latest_peer_seq) VALUES (?, ?, ?, 2, 'invitee', ?, ?)",
         membershipId,
         table.table_id,
@@ -2157,16 +2234,16 @@ export class TableDO extends DurableObject<Env> {
         now,
         table.last_seq,
       );
-      this.ctx.storage.sql.exec(
+      this.privateSql.exec(
         "UPDATE table_invitations SET state = 'consumed', consumed_by = ?, consumed_at = ?, response_envelope = NULL WHERE invite_id = ? AND state = 'active'",
         guestId,
         now,
         parts.inviteId,
       );
-      this.ctx.storage.sql.exec(
+      this.privateSql.exec(
         "UPDATE table_metadata SET state = 'open' WHERE singleton = 1 AND state = 'waiting'",
       );
-      this.ctx.storage.sql.exec(
+      this.privateSql.exec(
         "INSERT INTO table_join_receipts (guest_id, request_id, invite_id, secret_digest, membership_id) VALUES (?, ?, ?, ?, ?)",
         guestId,
         requestId,
@@ -2209,6 +2286,7 @@ export class TableDO extends DurableObject<Env> {
     actor: VerifiedConnectionActor,
   ): Promise<TableResult<SafeTableMetadata>> {
     const access = await this.readMembership(actor);
+    if (this.accessQuarantined()) return { ok: false, code: "TABLE_NOT_FOUND" };
     return access.ok
       ? {
           ok: true,
@@ -2225,6 +2303,9 @@ export class TableDO extends DurableObject<Env> {
   async readEventDiagnostics(
     actor: VerifiedConnectionActor,
   ): Promise<TableResult<TableEventDiagnostics>> {
+    if (this.accessQuarantined()) {
+      return { ok: false, code: "TABLE_NOT_FOUND" };
+    }
     const policyAtRead = privatePilotConfiguration(this.env);
     let storedOrigin: unknown;
     let policyDigest: string | null = null;
@@ -2282,6 +2363,7 @@ export class TableDO extends DurableObject<Env> {
     actor: VerifiedConnectionActor,
   ): Promise<TableResult<SafeTableMetadata>> {
     const access = await this.readMembership(actor);
+    if (this.accessQuarantined()) return { ok: false, code: "TABLE_NOT_FOUND" };
     if (!access.ok) return access;
     const { table, member } = access.value;
     return {
@@ -2323,6 +2405,7 @@ export class TableDO extends DurableObject<Env> {
     const parsed = parseOwnInboxUri(inboxUri);
     if (!parsed) return { ok: false, code: "TABLE_NOT_FOUND" };
     const access = await this.readMembership(actor);
+    if (this.accessQuarantined()) return { ok: false, code: "TABLE_NOT_FOUND" };
     if (!access.ok) return access;
     const { table, member } = access.value;
     if (
@@ -2398,7 +2481,7 @@ export class TableDO extends DurableObject<Env> {
       if (table.state === "expired" || table.expires_at <= now) {
         return { ok: false, code: "TABLE_EXPIRED" } as const;
       }
-      const previous = this.ctx.storage.sql
+      const previous = this.privateSql
         .exec<PostReceiptRow>(
           "SELECT * FROM table_post_receipts WHERE guest_id = ? AND request_id = ?",
           actor.guestId,
@@ -2409,7 +2492,7 @@ export class TableDO extends DurableObject<Env> {
         if (previous.request_digest !== digest) {
           return { ok: false, code: "IDEMPOTENCY_CONFLICT" } as const;
         }
-        const original = this.ctx.storage.sql
+        const original = this.privateSql
           .exec<MessageRow>(
             "SELECT * FROM table_messages WHERE seq = ?",
             previous.message_seq,
@@ -2424,7 +2507,7 @@ export class TableDO extends DurableObject<Env> {
         return { ok: false, code: "TABLE_TERMINAL" } as const;
       }
       if (input.reply_to_message_id !== undefined) {
-        const reference = this.ctx.storage.sql
+        const reference = this.privateSql
           .exec(
             "SELECT message_id FROM table_messages WHERE message_id = ?",
             input.reply_to_message_id,
@@ -2432,7 +2515,7 @@ export class TableDO extends DurableObject<Env> {
           .toArray()[0];
         if (!reference) return { ok: false, code: "INVALID_REPLY" } as const;
       }
-      const usage = this.ctx.storage.sql
+      const usage = this.privateSql
         .exec<{ body_bytes: number }>(
           "SELECT body_bytes FROM table_transcript_usage WHERE singleton = 1",
         )
@@ -2443,7 +2526,7 @@ export class TableDO extends DurableObject<Env> {
       ) {
         return { ok: false, code: "LIMIT_REACHED" } as const;
       }
-      const count = this.ctx.storage.sql
+      const count = this.privateSql
         .exec<{ total: number }>(
           "SELECT COUNT(*) AS total FROM table_messages WHERE created_at > ?",
           now - POST_WINDOW_MS,
@@ -2453,14 +2536,14 @@ export class TableDO extends DurableObject<Env> {
         return { ok: false, code: "RATE_LIMITED" } as const;
       }
       const seq = table.last_seq + 1;
-      const peer = this.ctx.storage.sql
+      const peer = this.privateSql
         .exec<{ membership_id: string }>(
           "SELECT membership_id FROM table_memberships WHERE table_id = ? AND guest_id <> ? LIMIT 1",
           table.table_id,
           actor.guestId,
         )
         .toArray()[0];
-      this.ctx.storage.sql.exec(
+      this.privateSql.exec(
         `INSERT INTO table_messages
           (seq, message_id, sender_membership_id, body, body_bytes, created_at, reply_to_message_id)
           VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -2472,21 +2555,21 @@ export class TableDO extends DurableObject<Env> {
         now,
         input.reply_to_message_id ?? null,
       );
-      this.ctx.storage.sql.exec(
+      this.privateSql.exec(
         "UPDATE table_metadata SET last_seq = ? WHERE singleton = 1",
         seq,
       );
-      this.ctx.storage.sql.exec(
+      this.privateSql.exec(
         "UPDATE table_transcript_usage SET body_bytes = body_bytes + ? WHERE singleton = 1",
         bytes,
       );
       // The poster never receives a self-generated peer watermark.
-      this.ctx.storage.sql.exec(
+      this.privateSql.exec(
         "UPDATE table_memberships SET latest_peer_seq = ? WHERE guest_id <> ?",
         seq,
         actor.guestId,
       );
-      this.ctx.storage.sql.exec(
+      this.privateSql.exec(
         "INSERT INTO table_post_receipts (guest_id, request_id, request_digest, message_seq) VALUES (?, ?, ?, ?)",
         actor.guestId,
         input.request_id,
@@ -2501,7 +2584,7 @@ export class TableDO extends DurableObject<Env> {
           subscription.expires_at !== null &&
           subscription.expires_at > now
         ) {
-          this.ctx.storage.sql.exec(
+          this.privateSql.exec(
             `INSERT INTO table_event_outbox
               (event_id, message_id, message_seq, recipient_membership_id,
                subscription_id, subscription_generation, next_attempt_at,
@@ -2548,11 +2631,12 @@ export class TableDO extends DurableObject<Env> {
       Date.now() + 1_000,
       mutation,
     );
+    if (this.accessQuarantined()) {
+      this.inboxStreams.closeAll();
+      return { ok: false, code: "TEMPORARILY_UNAVAILABLE" };
+    }
     if (result.ok && newlyCommitted) {
-      if (isRestoreQuarantined(this.env)) {
-        // No private hint may be emitted by a retained DO in recovery mode.
-        this.inboxStreams.closeAll();
-      } else if (result.peerUpdateHint) {
+      if (result.peerUpdateHint) {
         // The SQLite transaction has committed. Dispatch stays at the table
         // authority and cannot turn a committed post into an uncertain retry.
         this.ctx.waitUntil(
@@ -2631,7 +2715,7 @@ export class TableDO extends DurableObject<Env> {
       if (through > table.last_seq || after > through) {
         return { ok: false, code: "INVALID_CURSOR" } as const;
       }
-      const rows = this.ctx.storage.sql
+      const rows = this.privateSql
         .exec<MessageRow>(
           `SELECT * FROM table_messages
          WHERE seq > ? AND seq <= ? ORDER BY seq ASC LIMIT ?`,
@@ -2732,17 +2816,17 @@ export class TableDO extends DurableObject<Env> {
               },
             } as const;
           }
-          this.ctx.storage.sql.exec(
+          this.privateSql.exec(
             "UPDATE table_metadata SET state = 'closed', closed_at = ? WHERE singleton = 1",
             now,
           );
           this.inboxStreams.closeAll();
-          this.ctx.storage.sql.exec(
+          this.privateSql.exec(
             "UPDATE table_invitations SET state = 'revoked', response_envelope = NULL WHERE state = 'active'",
           );
           // Closed tables cannot acquire or retain event dispatch authority.
-          this.ctx.storage.sql.exec("DELETE FROM table_event_candidates");
-          for (const row of this.ctx.storage.sql
+          this.privateSql.exec("DELETE FROM table_event_candidates");
+          for (const row of this.privateSql
             .exec<{ membership_id: string }>(
               "SELECT membership_id FROM table_event_subscriptions",
             )
@@ -2761,7 +2845,9 @@ export class TableDO extends DurableObject<Env> {
           } as const;
         }),
     );
-    return committed.value;
+    return this.accessQuarantined()
+      ? { ok: false, code: "TEMPORARILY_UNAVAILABLE" }
+      : committed.value;
   }
 
   /**
@@ -2804,14 +2890,16 @@ export class TableDO extends DurableObject<Env> {
           } as const;
         }),
     );
-    return committed.value;
+    return this.accessQuarantined()
+      ? { ok: false, code: "TEMPORARILY_UNAVAILABLE" }
+      : committed.value;
   }
 
   private deleteConfirmation(
     guestId: string,
     requestId: string,
   ): DeleteConfirmationRow | undefined {
-    return this.ctx.storage.sql
+    return this.privateSql
       .exec<DeleteConfirmationRow>(
         "SELECT guest_id, request_id, expires_at, state FROM table_delete_confirmations WHERE guest_id = ? AND request_id = ?",
         guestId,
@@ -2822,7 +2910,7 @@ export class TableDO extends DurableObject<Env> {
 
   private hasDeletionReceipt(guestId: string, requestId: string): boolean {
     return (
-      this.ctx.storage.sql
+      this.privateSql
         .exec<{ guest_id: string }>(
           "SELECT guest_id FROM table_tombstone_delete_receipts WHERE guest_id = ? AND request_id = ?",
           guestId,
@@ -2836,7 +2924,7 @@ export class TableDO extends DurableObject<Env> {
   private async verifyBrowserSession(
     credential: BrowserDeletionCredential,
   ): Promise<boolean> {
-    if (isRestoreQuarantined(this.env)) return false;
+    if (this.accessQuarantined()) return false;
     if (
       !credential ||
       typeof credential.guestId !== "string" ||
@@ -2852,7 +2940,9 @@ export class TableDO extends DurableObject<Env> {
         credential.sessionId,
         credential.secret,
       );
-      return principal?.guestId === credential.guestId;
+      return (
+        !this.accessQuarantined() && principal?.guestId === credential.guestId
+      );
     } catch {
       return false;
     }
@@ -2920,7 +3010,7 @@ export class TableDO extends DurableObject<Env> {
           } as const;
         }
         const expiresAt = now + DELETE_CONFIRMATION_MS;
-        this.ctx.storage.sql.exec(
+        this.privateSql.exec(
           "INSERT INTO table_delete_confirmations (guest_id, request_id, expires_at, state) VALUES (?, ?, ?, 'pending')",
           guestId,
           requestId,
@@ -2936,7 +3026,9 @@ export class TableDO extends DurableObject<Env> {
         } as const;
       }),
     );
-    return committed.value;
+    return this.accessQuarantined()
+      ? { ok: false, code: "TEMPORARILY_UNAVAILABLE" }
+      : committed.value;
   }
 
   /** Only a current tables:delete connection can request browser approval. */
@@ -2963,6 +3055,9 @@ export class TableDO extends DurableObject<Env> {
 
   /** Read-only preview: URL possession conveys no deletion authority. */
   deletionView(guestId: string, requestId: string): TableResult<DeletionView> {
+    if (this.accessQuarantined()) {
+      return { ok: false, code: "NOT_FOUND" };
+    }
     if (!validInvitationOperationId(requestId)) {
       return { ok: false, code: "INVALID_REQUEST" };
     }
@@ -3076,7 +3171,7 @@ export class TableDO extends DurableObject<Env> {
             return { ok: false, code: "CONFIRMATION_EXPIRED" } as const;
           }
           if (decision === "deny") {
-            this.ctx.storage.sql.exec(
+            this.privateSql.exec(
               "UPDATE table_delete_confirmations SET state = 'denied' WHERE guest_id = ? AND request_id = ?",
               guestId,
               requestId,
@@ -3086,7 +3181,7 @@ export class TableDO extends DurableObject<Env> {
           // Tombstone and minimal replay receipt are committed with erasure.
           const purged = this.purgeContent(now, "deleted");
           if (!purged) return { ok: false, code: "NOT_FOUND" } as const;
-          this.ctx.storage.sql.exec(
+          this.privateSql.exec(
             "INSERT INTO table_tombstone_delete_receipts (guest_id, request_id) VALUES (?, ?)",
             guestId,
             requestId,
@@ -3094,11 +3189,14 @@ export class TableDO extends DurableObject<Env> {
           return { ok: true, value: { state: "deleted" as const } } as const;
         }),
     );
-    return committed.value;
+    return this.accessQuarantined()
+      ? { ok: false, code: "TEMPORARILY_UNAVAILABLE" }
+      : committed.value;
   }
 
   /** Public readiness and the protected staging-only trial remain distinct. */
   private outboxDispatchEnabled(): boolean {
+    if (this.accessQuarantined()) return false;
     if (this.env.RELEASE_PROFILE === PRIVATE_PILOT_PROFILE) {
       const policy = activePrivatePilotPolicy(this.env);
       const table = this.metadataRow();
@@ -3117,6 +3215,11 @@ export class TableDO extends DurableObject<Env> {
     request: CallbackRequest,
     observer?: CallbackTransportObserver,
   ): Promise<CallbackTransportOutcome> {
+    if (this.accessQuarantined())
+      return Promise.resolve({
+        ok: false,
+        reason: "connection-boundary-unverified",
+      });
     const pilot = activePrivatePilotPolicy(this.env);
     if (this.env.RELEASE_PROFILE === PRIVATE_PILOT_PROFILE && !pilot)
       return Promise.resolve({
@@ -3134,7 +3237,7 @@ export class TableDO extends DurableObject<Env> {
 
   /** Read current local authority without reading any transcript body. */
   private dispatchWork(eventId: string, now: number): DispatchWork | undefined {
-    const work = this.ctx.storage.sql
+    const work = this.privateSql
       .exec<DispatchWork>(
         `SELECT s.*, o.event_id, o.message_id, o.message_seq, o.created_at,
               o.lease_token, t.table_id, t.expires_at AS table_expires_at
@@ -3196,7 +3299,7 @@ export class TableDO extends DurableObject<Env> {
   private async dispatchOutbox(): Promise<number> {
     if (!this.outboxDispatchEnabled()) return 0;
     const started = Date.now();
-    const due = this.ctx.storage.sql
+    const due = this.privateSql
       .exec<{ event_id: string }>(
         `SELECT event_id FROM table_event_outbox
        WHERE (status = 'pending' AND next_attempt_at <= ?)
@@ -3216,7 +3319,7 @@ export class TableDO extends DurableObject<Env> {
         break;
       const work = this.dispatchWork(row.event_id, Date.now());
       if (!work) {
-        this.ctx.storage.sql.exec(
+        this.privateSql.exec(
           `UPDATE table_event_outbox SET status = 'cancelled',
              last_error_category = 'authorization-revoked', next_attempt_at = NULL,
              lease_token = NULL, lease_deadline = NULL
@@ -3276,7 +3379,7 @@ export class TableDO extends DurableObject<Env> {
         Date.now() + OUTBOX_LEASE_MS,
         () =>
           reserveOutboxAttempt(
-            this.ctx.storage.sql,
+            this.privateSql,
             work.event_id,
             work.generation,
             Date.now(),
@@ -3309,7 +3412,7 @@ export class TableDO extends DurableObject<Env> {
       ) {
         this.ctx.storage.transactionSync(() =>
           releaseUnsentOutboxAttempt(
-            this.ctx.storage.sql,
+            this.privateSql,
             lease,
             now + OUTBOX_AUTHORITY_RETRY_MS,
             !finalGrant.allowed && finalGrant.reason !== "unavailable",
@@ -3370,7 +3473,7 @@ export class TableDO extends DurableObject<Env> {
       const completedAt = Date.now();
       const settled = this.ctx.storage.transactionSync(() =>
         settleOutboxAttempt(
-          this.ctx.storage.sql,
+          this.privateSql,
           lease,
           Date.now(),
           classifyAttemptOutcome(outcome),
@@ -3387,7 +3490,7 @@ export class TableDO extends DurableObject<Env> {
   }
 
   private recordOutboxBacklog(): void {
-    const row = this.ctx.storage.sql
+    const row = this.privateSql
       .exec<{ pending: number; oldest: number | null }>(
         `SELECT COUNT(*) AS pending, MIN(created_at) AS oldest
        FROM table_event_outbox WHERE status IN ('pending', 'in_flight')`,
@@ -3401,7 +3504,7 @@ export class TableDO extends DurableObject<Env> {
   }
 
   private deferOutboxWork(work: DispatchWork, cancelled: boolean): void {
-    this.ctx.storage.sql.exec(
+    this.privateSql.exec(
       `UPDATE table_event_outbox SET status = ?, next_attempt_at = ?,
          lease_token = NULL, lease_deadline = NULL, last_error_category = ?
        WHERE event_id = ? AND subscription_generation = ?
@@ -3419,7 +3522,7 @@ export class TableDO extends DurableObject<Env> {
   async alarm(): Promise<void> {
     // During independent reconciliation, park the wakeup but never prune
     // restored private rows or issue any downstream effect.
-    if (await deferQuarantinedAlarm(this.env, this.ctx.storage)) return;
+    if (await this.deferQuarantinedWork()) return;
     const started = Date.now();
     try {
       const earliest = this.earliestLifecycleDeadline();

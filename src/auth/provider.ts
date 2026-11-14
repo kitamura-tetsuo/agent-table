@@ -2,8 +2,11 @@ import {
   AuthorizationError,
   insufficientScope,
   OAuthAuthorizationServer,
+  type OAuthAuthorizationServerOptions,
   OAuthError,
   OAuthResourceServer,
+  type PurgeOptions,
+  type ValidatedAccessToken,
 } from "@cloudflare/workers-oauth-provider";
 import type { EventDiagnosticTrace } from "../mcp/event-diagnostic-trace";
 import { handleMcp } from "../mcp/server";
@@ -22,6 +25,10 @@ import {
   sameOriginPost,
   sessionCookie,
 } from "./guest";
+import {
+  oauthRecoveryEnvironment,
+  RecoveryOAuthUnavailableError,
+} from "./recovery-kv";
 
 const ACCESS_SECONDS = 15 * 60;
 const REFRESH_SECONDS = 30 * 24 * 60 * 60;
@@ -100,87 +107,138 @@ function oauthProps(value: unknown): OAuthActorProps | null {
   return { guestId: props.guestId, connectionId: props.connectionId };
 }
 
+/** Provider callers cannot accidentally pass an unscoped OAuth KV binding. */
+class RecoveryAuthorizationServer extends OAuthAuthorizationServer<Env> {
+  private readonly recoveryScope: string;
+
+  constructor(options: OAuthAuthorizationServerOptions<Env>, env: Env) {
+    super(options);
+    this.recoveryScope = this.scope(env);
+  }
+
+  private scope(env: Env): string {
+    return JSON.stringify([
+      env.PUBLIC_ORIGIN,
+      env.RECOVERY_AUTHORIZATION,
+      env.RECOVERY_VERIFICATION_KEY,
+      env.RECOVERY_CONFIG_SHA256,
+      env.RECOVERY_NAMESPACE_IDENTITY,
+    ]);
+  }
+
+  private scoped(env: Env): Env {
+    if (this.scope(env) !== this.recoveryScope) {
+      throw new RecoveryOAuthUnavailableError();
+    }
+    return oauthRecoveryEnvironment(env);
+  }
+
+  override fetch(request: Request, env: Env, ctx: ExecutionContext) {
+    return super.fetch(request, this.scoped(env), ctx);
+  }
+
+  override getOAuthApi(env: Env) {
+    return super.getOAuthApi(this.scoped(env));
+  }
+
+  override validateToken<T = unknown>(
+    resource: string,
+    token: string,
+    env: Env,
+  ): Promise<ValidatedAccessToken<T> | null> {
+    return super.validateToken<T>(resource, token, this.scoped(env));
+  }
+
+  override purgeExpiredData(env: Env, options?: PurgeOptions) {
+    return super.purgeExpiredData(this.scoped(env), options);
+  }
+}
+
 export function authorizationServer(env: Env) {
+  env = oauthRecoveryEnvironment(env);
   const issuer = canonicalOAuthOrigin(env);
   const resource = canonicalMcpResource(env);
-  return new OAuthAuthorizationServer<Env>({
-    issuer,
-    resources: [resource],
-    scopesSupported: [...CONNECTION_SCOPES],
-    clientRegistrationEndpoint: "/oauth/register",
-    accessTokenTTL: ACCESS_SECONDS,
-    refreshTokenTTL: REFRESH_SECONDS,
-    // Never turn a refresh into another guest or a larger scope.
-    tokenExchangeCallback: async (options) => {
-      const props = oauthProps(options.props);
-      if (
-        !props ||
-        props.guestId !== options.userId ||
-        options.resource !== resource ||
-        options.scope.length === 0 ||
-        options.scope.some((scope) => !isConnectionScope(scope))
-      ) {
-        throw new OAuthError("invalid_grant", {
-          description: "Invalid connection",
-        });
-      }
-      const guest = env.GUESTS.get(env.GUESTS.idFromName(props.guestId));
-      for (const scope of options.scope) {
-        let allowed = false;
-        try {
-          allowed = (
-            await guest.authorizeConnection(
-              props.guestId,
-              props.connectionId,
-              scope as (typeof CONNECTION_SCOPES)[number],
-            )
-          ).allowed;
-        } catch {
-          throw new OAuthError("temporarily_unavailable", {
-            description: "Authorization service unavailable",
-            statusCode: 503,
-          });
-        }
-        if (!allowed) {
+  return new RecoveryAuthorizationServer(
+    {
+      issuer,
+      resources: [resource],
+      scopesSupported: [...CONNECTION_SCOPES],
+      clientRegistrationEndpoint: "/oauth/register",
+      accessTokenTTL: ACCESS_SECONDS,
+      refreshTokenTTL: REFRESH_SECONDS,
+      // Never turn a refresh into another guest or a larger scope.
+      tokenExchangeCallback: async (options) => {
+        const props = oauthProps(options.props);
+        if (
+          !props ||
+          props.guestId !== options.userId ||
+          options.resource !== resource ||
+          options.scope.length === 0 ||
+          options.scope.some((scope) => !isConnectionScope(scope))
+        ) {
           throw new OAuthError("invalid_grant", {
-            description: "Connection revoked or expired",
+            description: "Invalid connection",
           });
         }
-      }
-      if (env.OAUTH_AUDIT_MODE === "metadata") {
-        // Audit only a one-way binding fingerprint and approved scope names.
-        try {
-          const digest = new Uint8Array(
-            await crypto.subtle.digest(
-              "SHA-256",
-              new TextEncoder().encode(
-                `${props.guestId}:${props.connectionId}`,
-              ),
-            ),
-          );
-          const bindingFingerprint = Array.from(
-            digest.subarray(0, 12),
-            (byte) => byte.toString(16).padStart(2, "0"),
-          ).join("");
-          console.info(
-            JSON.stringify({
-              event: "agent_table.oauth_binding_validated",
-              binding_fingerprint: bindingFingerprint,
-              approved_scopes: [...options.scope].sort(),
-              issued_scopes: [...options.requestedScope].sort(),
-            }),
-          );
-        } catch {
-          // Audit failure must not block valid token exchanges.
+        const guest = env.GUESTS.get(env.GUESTS.idFromName(props.guestId));
+        for (const scope of options.scope) {
+          let allowed = false;
+          try {
+            allowed = (
+              await guest.authorizeConnection(
+                props.guestId,
+                props.connectionId,
+                scope as (typeof CONNECTION_SCOPES)[number],
+              )
+            ).allowed;
+          } catch {
+            throw new OAuthError("temporarily_unavailable", {
+              description: "Authorization service unavailable",
+              statusCode: 503,
+            });
+          }
+          if (!allowed) {
+            throw new OAuthError("invalid_grant", {
+              description: "Connection revoked or expired",
+            });
+          }
         }
-      }
-      return {
-        accessTokenTTL: ACCESS_SECONDS,
-        refreshTokenTTL: REFRESH_SECONDS,
-        accessTokenScope: options.requestedScope,
-      };
+        if (env.OAUTH_AUDIT_MODE === "metadata") {
+          // Audit only a one-way binding fingerprint and approved scope names.
+          try {
+            const digest = new Uint8Array(
+              await crypto.subtle.digest(
+                "SHA-256",
+                new TextEncoder().encode(
+                  `${props.guestId}:${props.connectionId}`,
+                ),
+              ),
+            );
+            const bindingFingerprint = Array.from(
+              digest.subarray(0, 12),
+              (byte) => byte.toString(16).padStart(2, "0"),
+            ).join("");
+            console.info(
+              JSON.stringify({
+                event: "agent_table.oauth_binding_validated",
+                binding_fingerprint: bindingFingerprint,
+                approved_scopes: [...options.scope].sort(),
+                issued_scopes: [...options.requestedScope].sort(),
+              }),
+            );
+          } catch {
+            // Audit failure must not block valid token exchanges.
+          }
+        }
+        return {
+          accessTokenTTL: ACCESS_SECONDS,
+          refreshTokenTTL: REFRESH_SECONDS,
+          accessTokenScope: options.requestedScope,
+        };
+      },
     },
-  });
+    env,
+  );
 }
 
 function escapeHtml(value: string): string {
@@ -449,6 +507,7 @@ export async function handleAuthenticatedMcp(
   ctx: ExecutionContext,
   diagnostics?: EventDiagnosticTrace,
 ): Promise<Response> {
+  env = oauthRecoveryEnvironment(env);
   diagnostics?.record(diagnostics.methodHint, "authentication", "received");
   const origin = canonicalOAuthOrigin(env);
   const resource = canonicalMcpResource(env);

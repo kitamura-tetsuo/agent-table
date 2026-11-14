@@ -1,0 +1,46 @@
+name: Fresh-start recovery (protected)
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: Exact reviewed current main SHA
+        required: true
+        type: string
+      expected_plan_sha256:
+        description: SHA-256 of the reviewed canonical recovery plan
+        required: true
+        type: string
+      expected_active_version_id:
+        description: Exact currently active Cloudflare Worker version UUID
+        required: true
+        type: string
+      expected_record_sha256:
+        description: Current independent recovery record digest; empty only before first recovery
+        required: false
+        type: string
+        default: ""
+      phase:
+        description: Discard remains quarantined; clear requires a separate exact approval; endorse only issues a later release certificate
+        required: true
+        type: choice
+        options:
+          - discard
+          - clear
+          - endorse
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  reviewed-recovery:
+    uses: ./.github/workflows/_recover-reviewed.yml
+    with:
+      target_environment: production
+      expected_sha: ${{ inputs.expected_sha }}
+      expected_plan_sha256: ${{ inputs.expected_plan_sha256 }}
+      expected_active_version_id: ${{ inputs.expected_active_version_id }}
+      expected_record_sha256: ${{ inputs.expected_record_sha256 }}
+      phase: ${{ inputs.phase }}
+    secrets: inherit

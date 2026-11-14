@@ -2,9 +2,34 @@ import { evictDurableObject, runInDurableObject, SELF } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { SESSION_COOKIE_NAME } from "../../src/auth/guest";
+import { digestSessionSecret, randomBase64Url } from "../../src/shared/random";
 import { RESTORE_QUARANTINE_RECHECK_MS } from "../../src/shared/release-quarantine";
 import { ownInboxUri } from "../../src/shared/resources";
 import generatedRestore from "../fixtures/quarantined-restore-generated.json";
+
+/** Seed canonical historical SQL; quarantine never authorizes fixture creation. */
+async function seedSession(guestId: string) {
+  const guest = env.GUESTS.get(env.GUESTS.idFromName(guestId));
+  const sessionId = crypto.randomUUID();
+  const secret = randomBase64Url(32);
+  const digest = await digestSessionSecret(secret);
+  const now = Date.now();
+  await runInDurableObject(guest, async (_instance, state) => {
+    state.storage.sql.exec(
+      "INSERT INTO guest_identity VALUES (1, ?, ?)",
+      guestId,
+      now,
+    );
+    state.storage.sql.exec(
+      "INSERT INTO guest_sessions VALUES (?, ?, ?, ?, NULL)",
+      sessionId,
+      digest,
+      now,
+      now + 60 * 60_000,
+    );
+  });
+  return { sessionId, secret };
+}
 
 describe("generated restore configuration in a constructed Workerd/DO runtime", () => {
   it("installs the generated quarantine mode in the actual Worker and reconstructed Durable Objects", async () => {
@@ -16,7 +41,12 @@ describe("generated restore configuration in a constructed Workerd/DO runtime", 
 
     const guestId = crypto.randomUUID();
     const guest = env.GUESTS.get(env.GUESTS.idFromName(guestId));
-    const session = await guest.createSession(guestId);
+    await runInDurableObject(guest, async (instance) => {
+      await expect(instance.createSession(guestId)).rejects.toThrow(
+        "Guest access unavailable during recovery",
+      );
+    });
+    const session = await seedSession(guestId);
     expect(session.sessionId).toBeTruthy();
     const tableId = crypto.randomUUID();
     const table = env.TABLES.get(env.TABLES.idFromName(tableId));
@@ -108,15 +138,19 @@ describe("unreconciled older snapshot in the generated quarantine runtime", () =
     const membershipId = crypto.randomUUID();
     const guest = env.GUESTS.get(env.GUESTS.idFromName(guestId));
     const table = env.TABLES.get(env.TABLES.idFromName(tableId));
-    const session = await guest.createSession(guestId);
-    const connection = await guest.createConnection(
-      session.sessionId,
-      session.secret,
-      ["tables:read", "tables:write", "events:subscribe"],
-      Date.now() + 60 * 60_000,
-    );
-    if (!connection) throw new Error("Synthetic connection unavailable");
+    const session = await seedSession(guestId);
+    const connection = { connectionId: crypto.randomUUID() };
     const now = Date.now();
+    await runInDurableObject(guest, async (_instance, state) => {
+      state.storage.sql.exec(
+        "INSERT INTO guest_connections VALUES (?, ?, ?, ?, ?, NULL)",
+        connection.connectionId,
+        guestId,
+        JSON.stringify(["tables:read", "tables:write", "events:subscribe"]),
+        now,
+        now + 60 * 60_000,
+      );
+    });
     const privateBody = "Synthetic message retained from before restore";
     const messageId = crypto.randomUUID();
     const subscriptionId = crypto.randomUUID();
@@ -195,6 +229,28 @@ describe("unreconciled older snapshot in the generated quarantine runtime", () =
     // represented in the snapshot. They must never authorize clearance.
     await evictDurableObject(table);
     await evictDurableObject(guest);
+    expect(
+      await guest.validateSession(session.sessionId, session.secret),
+    ).toBeNull();
+    expect(
+      await guest.authorizeConnection(
+        guestId,
+        connection.connectionId,
+        "tables:read",
+      ),
+    ).toEqual({ allowed: false, reason: "unavailable" });
+    expect(
+      await guest.createConnection(
+        session.sessionId,
+        session.secret,
+        ["tables:read"],
+        now + 60_000,
+      ),
+    ).toBeNull();
+    expect(await table.lifecycleStatus()).toEqual({
+      state: "missing",
+      canDispatch: false,
+    });
     // A pre-snapshot connection and membership can appear fully valid even
     // when later revocation/deletion authority is unavailable after restore.
     const actor = {

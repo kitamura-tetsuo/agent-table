@@ -1,6 +1,6 @@
 # Release configuration preflight (Issue #22 / Issue #50)
 
-This script is a fail-closed **offline structural preflight**, not an independent proof of evidence or permission to expose private state. The separate protected-environment [authenticated release workflow](release-runbook.md) adds exact-main CI verification, fresh independently reviewed operator disclosures, live Cloudflare resource/secret/domain/version readback, approval and post-deploy verification. A signed-off PR or offline `PREFLIGHT_MANIFEST_VALID` cannot authorize a deployment. Production infrastructure, credentials, approvals and real-host evidence must still be supplied and executed separately; this document does not claim they exist. Reconciliation-based restore-quarantine **clearance** remains unimplemented and belongs to Issue #51. Do not use this script's output alone to enable Events/autonomous functionality.
+This script is a fail-closed **offline structural preflight**, not an independent proof of evidence or permission to expose private state. The separate protected-environment [authenticated release workflow](release-runbook.md) adds exact-main CI verification, fresh independently reviewed operator disclosures, live Cloudflare resource/secret/domain/version readback, approval and post-deploy verification. A signed-off PR or offline `PREFLIGHT_MANIFEST_VALID` cannot authorize a deployment. Production infrastructure, credentials, approvals and real-host evidence must still be supplied and executed separately; this document does not claim they exist. Issue #51's [verified fresh-start workflow](fresh-start-recovery.md) separately implements discard and clearance after the [policy approval](restore-recovery-decision.md). Actual destructive execution and clearance require their own exact authorization. Do not use this script's output alone to enable Events/autonomous functionality.
 
 The staging-only [`private-pilot-a-only` verification profile](compatibility/private-pilot-activation.md)
 uses the same protected release path with a separately reviewed finite policy.
@@ -27,13 +27,46 @@ The inventory holds **names only**, not secret values. Generate it only after ch
 
 `npm run test:restore-runtime` launches a **separate isolated Workerd/Vitest project** with the exact checked-in `test/fixtures/quarantined-restore-generated.json` as its Wrangler configuration, not a hand-overridden `worker.fetch` binding. The small `test/fixtures/src/index.ts` shim only resolves the real application entry relative to the fixture; it does not replace the Worker or Durable Object code. The independent Node generator regression still checks the candidate bytes against `--prepare-restore`. This runtime test creates synthetic old SQLite session/table/message records, evicts the TableDO and GuestDO, checks real public Worker 503 refusals, and invokes **actual reconstructed DO alarm handlers without an injected env receiver**. It asserts expired data and apparently valid but potentially stale grants cannot be pruned or exposed while the generated quarantine binding is installed, and that alarm rearm remains bounded. A due synthetic Events outbox row is retained unchanged (pending, zero charged attempts and no lease) after the real quarantined TableDO alarm. Setting only the Worker request's flag while leaving reconstructed DOs unquarantined would fail this SQL/alarm oracle.
 
-This is a **synthetic configuration and object-reconstruction check**, not a two-version Cloudflare deployment, an actual historical snapshot restore, or reconciliation of independently missing revocations/deletions. The test-only initial rows are seeded directly under the isolated fixture; it does **not** prove data migration across an actual deployment/version switch. Real **retained-private-state** staging/production restore/restart, independently sourced post-snapshot authority and operator **release** approval remain **NOT RUN / BLOCKED**. No quarantine-clear path is implemented or authorized.
+This is a **synthetic configuration and object-reconstruction check**, not a two-version Cloudflare deployment, an actual historical snapshot restore, or reconciliation of independently missing revocations/deletions. The test-only initial rows are seeded directly under the isolated fixture; it does **not** prove data migration across an actual deployment/version switch. This particular suite supplies denial evidence only. The separate fresh-start implementation and hosted evidence must be assessed independently; no actual-environment quarantine clearance is authorized by this test.
 
 An additional [isolated Cloudflare quarantine-only staging smoke](pr46-cloudflare-quarantine-evidence.md) was completed on 2026-11-10 UTC at tested source `473ee87`: Cloudflare settings and HTTP denial were read back after the first deployment and again after a second deployment with a new version ID, then the temporary `workers.dev` and preview routes were disabled. This verifies **real provider binding propagation and deny-by-default ingress across an empty-state redeployment**. It does **not** change the preceding limitation: no historical private-data restore or independently reconciled authority was involved, and no protected release workflow or quarantine clearance was exercised. In particular, this smoke cannot serve as the retained-state staging/production restart evidence required before an actual restoration decision.
 
 The generated-config runtime also establishes a synthetic old session, connection grant, table membership and private transcript whose historical authority may have been revoked or deleted after the snapshot. With the real reconstructed TableDO under quarantine, direct internal `readMessages`, `postMessage`, `checkInboxSubscription` and `openInboxHintStream` requests must refuse despite that seemingly valid retained grant. Both agent and browser TableDO authorization helpers refuse in recovery mode, and a quarantined TableDO cannot emit new peer inbox hints. This covers a TableDO RPC path that the Worker HTTP ingress gate alone could not protect after the live-subscription implementation landed on `main`.
 
 `scripts/restore-transition-workerd.test.mjs` additionally rehearses an **actual local Workerd lifetime/configuration transition** using persistent SQLite storage. Its first runtime creates and successfully reads a private table and subscribes with a real synthetic old guest session/connection under explicitly non-quarantined bindings. After that runtime is disposed, a second runtime uses the exact checked-in restore-generated configuration against the **same persistence directory**; HTTP entry points and direct TableDO read/write/subscription calls all refuse old authority, while SQL confirms the old message and session rows are preserved. A due historical Events outbox row also remains pending with zero attempts and no lease across the second and third Workerd lifetimes; the separate isolated generated-runtime test invokes the actual quarantined TableDO alarm and verifies the same invariant. A third quarantined runtime restart verifies the deny state remains in effect. CI runs this test alongside the other Node checks. This is stronger evidence than eviction in one runtime, but it is **still a local synthetic configuration change**: the first runtime is not a backed-up Cloudflare version, the data was not restored from a historical provider snapshot, and no external post-snapshot deletion/revocation ledger was reconciled. It grants no permission to clear quarantine or publish.
+
+## Historical local snapshot rehearsal and approved fresh-start policy
+
+`scripts/restore-snapshot-workerd.test.mjs` takes a byte-checked copy of the
+stopped local Workerd SQLite/KV persistence directory while synthetic authority
+is still valid. A separate subsequent runtime revokes the connection,
+invalidates the old browser session, confirms table deletion through the real
+browser/CSRF flow, and observes a grant expire. It preserves these later
+observations outside the snapshot before restoring the original files to the
+same persistence path and namespace identities. The restored rows really do
+contain the obsolete grant and deleted transcript again; reconstructed
+quarantined Worker/DO instances must still deny them. Canonical SQL, unchanged
+outbox attempts and captured outbound requests are the negative oracles.
+Repeated reconstruction and a newer-schema refusal exercise preserve retained
+private rows rather than resetting storage to make a test pass.
+
+The direct boundary regressions in
+`test/integration/recovery-boundaries.test.ts` cover GuestDO session/grant and
+creation operations, direct cleanup, TableDO initialization/status/deletion
+preview and event-candidate changes, and OAuthTokenDO provider entry. The
+generated restore-runtime fixture seeds historical SQL directly: even fixture
+setup must not imply that a quarantined GuestDO can create new sessions.
+Constructors park their alarms under the same independent binding; the
+generated-runtime tests invoke actual reconstructed alarm handlers and verify
+that private state remains unchanged.
+
+These checks establish **local historical-snapshot denial**, not a provider
+PITR operation or a positive reconciliation/clearance decision. The
+[Issue #51 policy decision](restore-recovery-decision.md) records approval of
+verified discard with an independent generation fence, and the separate hosted
+and production acceptance still required. These historical denial regressions
+do not supply positive clearance authority. That belongs to the separately
+verified [fresh-start workflow](fresh-start-recovery.md).
 
 ## Operator-only steps (not run in PR CI)
 

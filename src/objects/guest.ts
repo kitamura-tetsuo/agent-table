@@ -36,7 +36,19 @@ import {
   privatePilotRecipientMatches,
 } from "../shared/private-pilot";
 import { digestSessionSecret, randomBase64Url } from "../shared/random";
-import { deferQuarantinedAlarm } from "../shared/release-quarantine";
+import {
+  GUEST_RECOVERY_STORAGE,
+  initializeRecoveryFence,
+  inspectRecoveryObject,
+  type RecoveryObjectRequest,
+  recoveryObjectDenied,
+  recoveryStorageWasVirgin,
+  resetRecoveryObject,
+} from "../shared/recovery-storage";
+import {
+  isRestoreQuarantined,
+  RESTORE_QUARANTINE_RECHECK_MS,
+} from "../shared/release-quarantine";
 import {
   initializeApplicationSchema,
   readApplicationSchemaVersion,
@@ -232,9 +244,12 @@ export class GuestDO extends DurableObject<Env> {
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
+    const virgin = recoveryStorageWasVirgin(ctx.storage);
     initializeApplicationSchema(ctx.storage, "guest");
     this.deadlines = new DurableDeadlineScheduler(ctx.storage);
     ctx.blockConcurrencyWhile(async () => {
+      await initializeRecoveryFence(ctx, env, GUEST_RECOVERY_STORAGE, virgin);
+      if (await this.deferQuarantinedWork()) return;
       await this.deadlines.ensureExistingWakeup(() => this.earliestDeadline());
     });
   }
@@ -243,11 +258,51 @@ export class GuestDO extends DurableObject<Env> {
     return readApplicationSchemaVersion(this.ctx.storage);
   }
 
+  private accessQuarantined(): boolean {
+    return (
+      isRestoreQuarantined(this.env) ||
+      recoveryObjectDenied(this.ctx.storage, this.env, GUEST_RECOVERY_STORAGE)
+    );
+  }
+
+  /** Every private SQL read or effect rechecks the current durable fence. */
+  private get privateSql(): SqlStorage {
+    if (this.accessQuarantined()) {
+      throw new Error("Private access unavailable during recovery");
+    }
+    return this.ctx.storage.sql;
+  }
+
+  private async deferQuarantinedWork(): Promise<boolean> {
+    if (!this.accessQuarantined()) return false;
+    await this.ctx.storage.setAlarm(Date.now() + RESTORE_QUARANTINE_RECHECK_MS);
+    return true;
+  }
+
+  inspectRecovery(input: RecoveryObjectRequest) {
+    return inspectRecoveryObject(
+      this.ctx,
+      this.env,
+      GUEST_RECOVERY_STORAGE,
+      input,
+    );
+  }
+
+  resetRecovery(input: RecoveryObjectRequest) {
+    return resetRecoveryObject(
+      this.ctx,
+      this.env,
+      GUEST_RECOVERY_STORAGE,
+      input,
+    );
+  }
+
   /** Internal Worker diagnostics only; recording never changes an operation result. */
   async recordEventDiagnostics(
     records: EventDiagnosticRecord[],
     scope: EventDiagnosticScope,
   ): Promise<boolean> {
+    if (this.accessQuarantined()) return false;
     try {
       if (
         !Array.isArray(records) ||
@@ -289,43 +344,48 @@ export class GuestDO extends DurableObject<Env> {
         scope.policyDigest === policyDigest &&
         // Exact normalized bytes preserve the captured digest across awaits.
         JSON.stringify(current) === encodedPolicy;
-      return await this.ctx.storage.transaction(async (transaction) => {
-        const current = activeEventDiagnosticPolicy(this.env);
-        if (!scopeStillMatches(current)) return false;
-        const stored = await transaction.get<unknown>(EVENT_DIAGNOSTIC_KEY);
-        const latest = activeEventDiagnosticPolicy(this.env);
-        if (!scopeStillMatches(latest)) return false;
-        const prior =
-          validDiagnosticRing(stored) &&
-          diagnosticRingMatches(stored, policy, policyDigest) &&
-          stored.retentionUntil > Date.now()
-            ? stored
-            : null;
-        const combined = [...(prior?.records ?? []), ...records].sort(
-          (left, right) => left.observedAt - right.observedAt,
-        );
-        const removed = Math.max(
-          0,
-          combined.length - EVENT_DIAGNOSTIC_RECORD_LIMIT,
-        );
-        const ring: EventDiagnosticRing = {
-          schemaVersion: 1,
-          buildSha: policy.buildSha,
-          approvalRef: policy.approvalRef,
-          recipientConnectionId: policy.recipientConnectionId,
-          policyDigest,
-          retentionUntil:
-            Date.parse(policy.expiresAt) + EVENT_DIAGNOSTIC_RETENTION_MS,
-          records: combined.slice(-EVENT_DIAGNOSTIC_RECORD_LIMIT),
-          droppedCount: Math.min(
-            Number.MAX_SAFE_INTEGER,
-            (prior?.droppedCount ?? 0) + removed,
-          ),
-        };
-        // The asynchronous transaction serializes concurrent request flushes.
-        await transaction.put(EVENT_DIAGNOSTIC_KEY, ring);
-        return true;
-      });
+      const recorded = await this.ctx.storage.transaction(
+        async (transaction) => {
+          const current = activeEventDiagnosticPolicy(this.env);
+          if (this.accessQuarantined() || !scopeStillMatches(current))
+            return false;
+          const stored = await transaction.get<unknown>(EVENT_DIAGNOSTIC_KEY);
+          const latest = activeEventDiagnosticPolicy(this.env);
+          if (this.accessQuarantined() || !scopeStillMatches(latest))
+            return false;
+          const prior =
+            validDiagnosticRing(stored) &&
+            diagnosticRingMatches(stored, policy, policyDigest) &&
+            stored.retentionUntil > Date.now()
+              ? stored
+              : null;
+          const combined = [...(prior?.records ?? []), ...records].sort(
+            (left, right) => left.observedAt - right.observedAt,
+          );
+          const removed = Math.max(
+            0,
+            combined.length - EVENT_DIAGNOSTIC_RECORD_LIMIT,
+          );
+          const ring: EventDiagnosticRing = {
+            schemaVersion: 1,
+            buildSha: policy.buildSha,
+            approvalRef: policy.approvalRef,
+            recipientConnectionId: policy.recipientConnectionId,
+            policyDigest,
+            retentionUntil:
+              Date.parse(policy.expiresAt) + EVENT_DIAGNOSTIC_RETENTION_MS,
+            records: combined.slice(-EVENT_DIAGNOSTIC_RECORD_LIMIT),
+            droppedCount: Math.min(
+              Number.MAX_SAFE_INTEGER,
+              (prior?.droppedCount ?? 0) + removed,
+            ),
+          };
+          // The asynchronous transaction serializes concurrent request flushes.
+          await transaction.put(EVENT_DIAGNOSTIC_KEY, ring);
+          return true;
+        },
+      );
+      return !this.accessQuarantined() && recorded;
     } catch {
       // Never leak storage errors or make diagnostics authoritative.
       return false;
@@ -337,6 +397,7 @@ export class GuestDO extends DurableObject<Env> {
     guestId: string,
     connectionId: string,
   ): Promise<EventDiagnosticSnapshot | null> {
+    if (this.accessQuarantined()) return null;
     try {
       const authorized = () =>
         UUID_V4.test(guestId) &&
@@ -401,6 +462,7 @@ export class GuestDO extends DurableObject<Env> {
     connectionId?: string,
   ) {
     if (
+      this.accessQuarantined() ||
       !stagingEvidenceEnabled(this.env) ||
       this.ctx.id.toString() !== this.env.GUESTS.idFromName(guestId).toString()
     ) {
@@ -415,7 +477,7 @@ export class GuestDO extends DurableObject<Env> {
         ? connection
         : undefined;
     const creation = tableId
-      ? this.ctx.storage.sql
+      ? this.privateSql
           .exec<CreationRow>(
             `SELECT request_id, guest_id, request_digest, table_id, created_at,
                   expires_at, retention_until, charged_at, outcome
@@ -429,7 +491,7 @@ export class GuestDO extends DurableObject<Env> {
     const now = Date.now();
     // Bound the read to eight newest grants; never export their raw IDs.
     const recentRows = identityMatches
-      ? this.ctx.storage.sql
+      ? this.privateSql
           .exec<ConnectionRow>(
             `SELECT connection_id, guest_id, scopes_json, created_at,
                     expires_at, revoked_at
@@ -464,6 +526,11 @@ export class GuestDO extends DurableObject<Env> {
         };
       }),
     );
+    const creationFingerprint = ownedCreation
+      ? await requestFingerprint(ownedCreation.request_id)
+      : null;
+    if (this.accessQuarantined())
+      throw new Error("Staging evidence is disabled");
     return {
       identityMatches,
       recentConnections,
@@ -488,9 +555,7 @@ export class GuestDO extends DurableObject<Env> {
             outcome: ownedCreation?.outcome ?? null,
             createdAt: ownedCreation?.created_at ?? null,
             expiresAt: ownedCreation?.expires_at ?? null,
-            requestFingerprint: ownedCreation
-              ? await requestFingerprint(ownedCreation.request_id)
-              : null,
+            requestFingerprint: creationFingerprint,
           }
         : null,
     };
@@ -498,7 +563,7 @@ export class GuestDO extends DurableObject<Env> {
 
   private guestId(): string | null {
     return (
-      this.ctx.storage.sql
+      this.privateSql
         .exec<{ guest_id: string }>(
           "SELECT guest_id FROM guest_identity WHERE singleton = 1",
         )
@@ -507,7 +572,7 @@ export class GuestDO extends DurableObject<Env> {
   }
 
   private sessionRow(sessionId: string): SessionRow | undefined {
-    return this.ctx.storage.sql
+    return this.privateSql
       .exec<SessionRow>(
         `SELECT session_id, secret_digest, created_at, expires_at, invalidated_at
          FROM guest_sessions WHERE session_id = ?`,
@@ -521,6 +586,7 @@ export class GuestDO extends DurableObject<Env> {
     digest: string,
     now: number,
   ): SessionRow | null {
+    if (this.accessQuarantined()) return null;
     const row = this.sessionRow(sessionId);
     if (
       !row ||
@@ -536,6 +602,9 @@ export class GuestDO extends DurableObject<Env> {
 
   /** Initialize a fresh DO exactly once; never recover from a public guest ID. */
   async createSession(guestId: string): Promise<NewGuestSession> {
+    if (this.accessQuarantined()) {
+      throw new Error("Guest access unavailable during recovery");
+    }
     if (!UUID_V4.test(guestId)) throw new Error("Invalid guest identifier");
     const secret = randomBase64Url(32);
     const digest = await digestSessionSecret(secret);
@@ -548,12 +617,12 @@ export class GuestDO extends DurableObject<Env> {
         if (this.guestId() !== null) {
           throw new Error("Guest already initialized");
         }
-        this.ctx.storage.sql.exec(
+        this.privateSql.exec(
           "INSERT INTO guest_identity (singleton, guest_id, created_at) VALUES (1, ?, ?)",
           guestId,
           now,
         );
-        this.ctx.storage.sql.exec(
+        this.privateSql.exec(
           `INSERT INTO guest_sessions
          (session_id, secret_digest, created_at, expires_at, invalidated_at)
          VALUES (?, ?, ?, ?, NULL)`,
@@ -564,6 +633,8 @@ export class GuestDO extends DurableObject<Env> {
         );
       });
     });
+    if (this.accessQuarantined())
+      throw new Error("Guest access unavailable during recovery");
     return { guestId, sessionId, secret, createdAt: now, expiresAt };
   }
 
@@ -572,8 +643,10 @@ export class GuestDO extends DurableObject<Env> {
     sessionId: string,
     secret: string,
   ): Promise<GuestSessionPrincipal | null> {
+    if (this.accessQuarantined()) return null;
     if (!validCredential(sessionId, secret)) return null;
     const digest = await digestSessionSecret(secret);
+    if (this.accessQuarantined()) return null;
     const row = this.activeSession(sessionId, digest, Date.now());
     const guestId = this.guestId();
     return row && guestId
@@ -586,53 +659,54 @@ export class GuestDO extends DurableObject<Env> {
     sessionId: string,
     secret: string,
   ): Promise<NewGuestSession | null> {
+    if (this.accessQuarantined()) return null;
     if (!validCredential(sessionId, secret)) return null;
     const digest = await digestSessionSecret(secret);
     const nextSecret = randomBase64Url(32);
     const nextDigest = await digestSessionSecret(nextSecret);
     const nextSessionId = crypto.randomUUID();
     const safetyDeadline = Date.now() + SESSION_LIFETIME_MS;
-    return (
-      await this.deadlines.commitWithWakeup(safetyDeadline, () =>
-        this.ctx.storage.transactionSync(() => {
-          const now = Date.now();
-          const expiresAt = now + SESSION_LIFETIME_MS;
-          const prior = this.activeSession(sessionId, digest, now);
-          const guestId = this.guestId();
-          if (!prior || !guestId) return null;
-          this.ctx.storage.sql.exec(
-            "UPDATE guest_sessions SET invalidated_at = ? WHERE session_id = ?",
-            now,
-            sessionId,
-          );
-          this.ctx.storage.sql.exec(
-            `INSERT INTO guest_sessions
+    const result = await this.deadlines.commitWithWakeup(safetyDeadline, () =>
+      this.ctx.storage.transactionSync(() => {
+        const now = Date.now();
+        const expiresAt = now + SESSION_LIFETIME_MS;
+        const prior = this.activeSession(sessionId, digest, now);
+        const guestId = this.guestId();
+        if (!prior || !guestId) return null;
+        this.privateSql.exec(
+          "UPDATE guest_sessions SET invalidated_at = ? WHERE session_id = ?",
+          now,
+          sessionId,
+        );
+        this.privateSql.exec(
+          `INSERT INTO guest_sessions
          (session_id, secret_digest, created_at, expires_at, invalidated_at)
          VALUES (?, ?, ?, ?, NULL)`,
-            nextSessionId,
-            nextDigest,
-            now,
-            expiresAt,
-          );
-          return {
-            guestId,
-            sessionId: nextSessionId,
-            secret: nextSecret,
-            createdAt: now,
-            expiresAt,
-          };
-        }),
-      )
-    ).value;
+          nextSessionId,
+          nextDigest,
+          now,
+          expiresAt,
+        );
+        return {
+          guestId,
+          sessionId: nextSessionId,
+          secret: nextSecret,
+          createdAt: now,
+          expiresAt,
+        };
+      }),
+    );
+    return this.accessQuarantined() ? null : result.value;
   }
 
   async invalidateSession(sessionId: string, secret: string): Promise<boolean> {
+    if (this.accessQuarantined()) return false;
     if (!validCredential(sessionId, secret)) return false;
     const digest = await digestSessionSecret(secret);
     const now = Date.now();
     return this.ctx.storage.transactionSync(() => {
       if (!this.activeSession(sessionId, digest, now)) return false;
-      this.ctx.storage.sql.exec(
+      this.privateSql.exec(
         "UPDATE guest_sessions SET invalidated_at = ? WHERE session_id = ?",
         now,
         sessionId,
@@ -643,11 +717,12 @@ export class GuestDO extends DurableObject<Env> {
 
   /** Bounded physical cleanup; logical authorization has already expired. */
   pruneExpiredSessions(limit = MAX_CLEANUP_BATCH): number {
+    if (this.accessQuarantined()) return 0;
     if (!Number.isInteger(limit) || limit < 1 || limit > MAX_CLEANUP_BATCH) {
       throw new Error("Invalid cleanup batch size");
     }
     return this.ctx.storage.transactionSync(() => {
-      this.ctx.storage.sql.exec(
+      this.privateSql.exec(
         `DELETE FROM guest_sessions WHERE session_id IN (
           SELECT session_id FROM guest_sessions
           WHERE expires_at <= ? OR invalidated_at IS NOT NULL
@@ -656,14 +731,14 @@ export class GuestDO extends DurableObject<Env> {
         Date.now(),
         limit,
       );
-      return this.ctx.storage.sql
+      return this.privateSql
         .exec<{ count: number }>("SELECT changes() AS count")
         .one().count;
     });
   }
 
   private connectionRow(connectionId: string): ConnectionRow | undefined {
-    return this.ctx.storage.sql
+    return this.privateSql
       .exec<ConnectionRow>(
         `SELECT connection_id, guest_id, scopes_json, created_at, expires_at, revoked_at
          FROM guest_connections WHERE connection_id = ?`,
@@ -682,6 +757,7 @@ export class GuestDO extends DurableObject<Env> {
     approvedScopes: ConnectionScope[],
     expiresAt: number,
   ): Promise<NewConnectionGrant | null> {
+    if (this.accessQuarantined()) return null;
     if (
       !Array.isArray(approvedScopes) ||
       approvedScopes.length === 0 ||
@@ -703,39 +779,35 @@ export class GuestDO extends DurableObject<Env> {
     const digest = await digestSessionSecret(secret);
     const connectionId = crypto.randomUUID();
     const scopes = [...approvedScopes].sort();
-    return (
-      await this.deadlines.commitWithWakeup(expiresAt, () =>
-        this.ctx.storage.transactionSync(() => {
-          const effectiveNow = Date.now();
-          if (expiresAt <= effectiveNow) return null;
-          const guestId = this.guestId();
-          if (
-            !guestId ||
-            !this.activeSession(sessionId, digest, effectiveNow)
-          ) {
-            return null;
-          }
-          this.ctx.storage.sql.exec(
-            `INSERT INTO guest_connections
+    const result = await this.deadlines.commitWithWakeup(expiresAt, () =>
+      this.ctx.storage.transactionSync(() => {
+        const effectiveNow = Date.now();
+        if (expiresAt <= effectiveNow) return null;
+        const guestId = this.guestId();
+        if (!guestId || !this.activeSession(sessionId, digest, effectiveNow)) {
+          return null;
+        }
+        this.privateSql.exec(
+          `INSERT INTO guest_connections
          (connection_id, guest_id, scopes_json, created_at, expires_at, revoked_at)
          VALUES (?, ?, ?, ?, ?, NULL)`,
-            connectionId,
-            guestId,
-            JSON.stringify(scopes),
-            effectiveNow,
-            expiresAt,
-          );
-          return {
-            connectionId,
-            guestId,
-            scopes,
-            createdAt: effectiveNow,
-            expiresAt,
-            revokedAt: null,
-          };
-        }),
-      )
-    ).value;
+          connectionId,
+          guestId,
+          JSON.stringify(scopes),
+          effectiveNow,
+          expiresAt,
+        );
+        return {
+          connectionId,
+          guestId,
+          scopes,
+          createdAt: effectiveNow,
+          expiresAt,
+          revokedAt: null,
+        };
+      }),
+    );
+    return this.accessQuarantined() ? null : result.value;
   }
 
   /** Every new protected operation calls this read; there is no allow cache. */
@@ -744,6 +816,9 @@ export class GuestDO extends DurableObject<Env> {
     connectionId: string,
     requiredScope: ConnectionScope,
   ): ConnectionDecision {
+    if (this.accessQuarantined()) {
+      return { allowed: false, reason: "unavailable" };
+    }
     if (
       !UUID_V4.test(expectedGuestId) ||
       !UUID_V4.test(connectionId) ||
@@ -796,13 +871,14 @@ export class GuestDO extends DurableObject<Env> {
     sessionId: string,
     secret: string,
   ): Promise<ConnectionSummary[] | null> {
+    if (this.accessQuarantined()) return null;
     if (!validCredential(sessionId, secret)) return null;
     const digest = await digestSessionSecret(secret);
     const owner = this.guestId();
     if (!owner || !this.activeSession(sessionId, digest, Date.now())) {
       return null;
     }
-    return this.ctx.storage.sql
+    return this.privateSql
       .exec<ConnectionRow>(
         `SELECT connection_id, guest_id, scopes_json, created_at, expires_at, revoked_at
          FROM guest_connections WHERE guest_id = ?
@@ -828,6 +904,7 @@ export class GuestDO extends DurableObject<Env> {
     secret: string,
     connectionId: string,
   ): Promise<ConnectionRevocation> {
+    if (this.accessQuarantined()) return { status: "unauthorized" };
     if (!validCredential(sessionId, secret)) {
       return { status: "unauthorized" };
     }
@@ -837,52 +914,51 @@ export class GuestDO extends DurableObject<Env> {
     const nextDigest = await digestSessionSecret(nextSecret);
     const nextSessionId = crypto.randomUUID();
     const expiresAt = Date.now() + SESSION_LIFETIME_MS;
-    return (
-      await this.deadlines.commitWithWakeup<ConnectionRevocation>(
-        expiresAt,
-        () =>
-          this.ctx.storage.transactionSync(() => {
-            const now = Date.now();
-            const owner = this.guestId();
-            const session = this.activeSession(sessionId, digest, now);
-            if (!owner || !session) return { status: "unauthorized" };
-            const row = this.connectionRow(connectionId);
-            if (!row || row.guest_id !== owner) return { status: "not-found" };
-            if (row.revoked_at === null) {
-              this.ctx.storage.sql.exec(
-                "UPDATE guest_connections SET revoked_at = ? WHERE connection_id = ? AND guest_id = ? AND revoked_at IS NULL",
-                now,
-                connectionId,
-                owner,
-              );
-            }
-            this.ctx.storage.sql.exec(
-              "UPDATE guest_sessions SET invalidated_at = ? WHERE session_id = ?",
+    const result = await this.deadlines.commitWithWakeup<ConnectionRevocation>(
+      expiresAt,
+      () =>
+        this.ctx.storage.transactionSync(() => {
+          const now = Date.now();
+          const owner = this.guestId();
+          const session = this.activeSession(sessionId, digest, now);
+          if (!owner || !session) return { status: "unauthorized" };
+          const row = this.connectionRow(connectionId);
+          if (!row || row.guest_id !== owner) return { status: "not-found" };
+          if (row.revoked_at === null) {
+            this.privateSql.exec(
+              "UPDATE guest_connections SET revoked_at = ? WHERE connection_id = ? AND guest_id = ? AND revoked_at IS NULL",
               now,
-              sessionId,
+              connectionId,
+              owner,
             );
-            this.ctx.storage.sql.exec(
-              `INSERT INTO guest_sessions
+          }
+          this.privateSql.exec(
+            "UPDATE guest_sessions SET invalidated_at = ? WHERE session_id = ?",
+            now,
+            sessionId,
+          );
+          this.privateSql.exec(
+            `INSERT INTO guest_sessions
          (session_id, secret_digest, created_at, expires_at, invalidated_at)
          VALUES (?, ?, ?, ?, NULL)`,
-              nextSessionId,
-              nextDigest,
-              now,
+            nextSessionId,
+            nextDigest,
+            now,
+            expiresAt,
+          );
+          return {
+            status: "revoked",
+            session: {
+              guestId: owner,
+              sessionId: nextSessionId,
+              secret: nextSecret,
+              createdAt: now,
               expiresAt,
-            );
-            return {
-              status: "revoked",
-              session: {
-                guestId: owner,
-                sessionId: nextSessionId,
-                secret: nextSecret,
-                createdAt: now,
-                expiresAt,
-              },
-            };
-          }),
-      )
-    ).value;
+            },
+          };
+        }),
+    );
+    return this.accessQuarantined() ? { status: "unauthorized" } : result.value;
   }
 
   private creationAuthorized(actor: VerifiedConnectionActor): boolean {
@@ -905,6 +981,7 @@ export class GuestDO extends DurableObject<Env> {
   private async creationPermission(
     actor: CreationActor,
   ): Promise<() => boolean> {
+    if (this.accessQuarantined()) return () => false;
     if (!actor || typeof actor !== "object") return () => false;
     if ("kind" in actor) return () => this.creationAuthorized(actor);
     if (
@@ -915,12 +992,13 @@ export class GuestDO extends DurableObject<Env> {
       return () => false;
     const digest = await digestSessionSecret(actor.secret);
     return () =>
+      !this.accessQuarantined() &&
       this.guestId() === actor.guestId &&
       this.activeSession(actor.sessionId, digest, Date.now()) !== null;
   }
 
   private creationRow(requestId: string): CreationRow | undefined {
-    return this.ctx.storage.sql
+    return this.privateSql
       .exec<CreationRow>(
         `SELECT request_id, guest_id, request_digest, table_id, created_at,
                 expires_at, retention_until, charged_at, outcome
@@ -954,6 +1032,9 @@ export class GuestDO extends DurableObject<Env> {
     actor: CreationActor,
     input: unknown,
   ): Promise<CreationResult> {
+    if (this.accessQuarantined()) {
+      return { ok: false, code: "UNAUTHORIZED" };
+    }
     const permitted = await this.creationPermission(actor);
     let parsed: ReturnType<typeof parseCreationRequest>;
     try {
@@ -971,8 +1052,9 @@ export class GuestDO extends DurableObject<Env> {
 
     const retentionDeadline =
       Date.now() + CREATION_LIMITS.reservationRetentionMs;
-    return (
-      await this.deadlines.commitWithWakeup(retentionDeadline, () =>
+    const result = await this.deadlines.commitWithWakeup(
+      retentionDeadline,
+      () =>
         this.ctx.storage.transactionSync(() => {
           if (!permitted()) {
             return { ok: false, code: "UNAUTHORIZED" } as const;
@@ -996,14 +1078,14 @@ export class GuestDO extends DurableObject<Env> {
           }
           // A record beyond eight days is no longer part of the dedupe contract.
           if (previous) {
-            this.ctx.storage.sql.exec(
+            this.privateSql.exec(
               "DELETE FROM guest_creation_reservations WHERE request_id = ?",
               parsed.requestId,
             );
           }
 
           const windowStart = now - CREATION_LIMITS.reservationWindowMs;
-          const quota = this.ctx.storage.sql
+          const quota = this.privateSql
             .exec<{ count: number; oldest: number | null }>(
               `SELECT COUNT(*) AS count, MIN(charged_at) AS oldest
            FROM guest_creation_reservations
@@ -1027,7 +1109,7 @@ export class GuestDO extends DurableObject<Env> {
 
           const expiresAt = now + parsed.arguments.ttl_seconds * 1_000;
           const retentionUntil = now + CREATION_LIMITS.reservationRetentionMs;
-          this.ctx.storage.sql.exec(
+          this.privateSql.exec(
             `INSERT INTO guest_creation_reservations
          (request_id, guest_id, request_digest, table_id, created_at,
           expires_at, retention_until, charged_at, outcome)
@@ -1055,8 +1137,10 @@ export class GuestDO extends DurableObject<Env> {
             },
           } as const;
         }),
-      )
-    ).value;
+    );
+    return this.accessQuarantined()
+      ? { ok: false, code: "UNAUTHORIZED" }
+      : result.value;
   }
 
   /** Read a retained receipt without implicitly authorizing initialization. */
@@ -1064,6 +1148,9 @@ export class GuestDO extends DurableObject<Env> {
     actor: CreationActor,
     requestId: string,
   ): Promise<CreationLookupResult> {
+    if (this.accessQuarantined()) {
+      return { ok: false, code: "UNAUTHORIZED" };
+    }
     if (!validCreationRequestId(requestId)) {
       return { ok: false, code: "INVALID_REQUEST" };
     }
@@ -1090,6 +1177,9 @@ export class GuestDO extends DurableObject<Env> {
     tableId: string,
     outcome: CreationOutcome,
   ): Promise<CreationResult> {
+    if (this.accessQuarantined()) {
+      return { ok: false, code: "UNAUTHORIZED" };
+    }
     if (
       !validCreationRequestId(requestId) ||
       !UUID_V4.test(tableId) ||
@@ -1119,7 +1209,7 @@ export class GuestDO extends DurableObject<Env> {
       if (row.expires_at <= now) {
         return { ok: false, code: "TABLE_EXPIRED" } as const;
       }
-      this.ctx.storage.sql.exec(
+      this.privateSql.exec(
         "UPDATE guest_creation_reservations SET outcome = ? WHERE request_id = ?",
         outcome,
         requestId,
@@ -1135,6 +1225,7 @@ export class GuestDO extends DurableObject<Env> {
   pruneExpiredReservations(
     limit: number = CREATION_LIMITS.maxCleanupBatch,
   ): number {
+    if (this.accessQuarantined()) return 0;
     if (
       !Number.isInteger(limit) ||
       limit < 1 ||
@@ -1143,7 +1234,7 @@ export class GuestDO extends DurableObject<Env> {
       throw new Error("Invalid cleanup batch size");
     }
     return this.ctx.storage.transactionSync(() => {
-      this.ctx.storage.sql.exec(
+      this.privateSql.exec(
         `DELETE FROM guest_creation_reservations WHERE request_id IN (
           SELECT request_id FROM guest_creation_reservations
           WHERE retention_until <= ? ORDER BY retention_until LIMIT ?
@@ -1151,7 +1242,7 @@ export class GuestDO extends DurableObject<Env> {
         Date.now(),
         limit,
       );
-      return this.ctx.storage.sql
+      return this.privateSql
         .exec<{ count: number }>("SELECT changes() AS count")
         .one().count;
     });
@@ -1159,7 +1250,7 @@ export class GuestDO extends DurableObject<Env> {
 
   /** The next durable cleanup deadline, independent of any in-memory timer. */
   private earliestDeadline(): number | null {
-    return this.ctx.storage.sql
+    return this.privateSql
       .exec<{ deadline: number | null }>(
         `SELECT MIN(next_deadline) AS deadline FROM (
           SELECT MIN(expires_at) AS next_deadline FROM guest_sessions
@@ -1190,8 +1281,8 @@ export class GuestDO extends DurableObject<Env> {
         ORDER BY retention_until LIMIT ?
       )`,
     } as const;
-    this.ctx.storage.sql.exec(statements[kind], now, limit);
-    return this.ctx.storage.sql
+    this.privateSql.exec(statements[kind], now, limit);
+    return this.privateSql
       .exec<{ count: number }>("SELECT changes() AS count")
       .one().count;
   }
@@ -1207,7 +1298,7 @@ export class GuestDO extends DurableObject<Env> {
   async alarm(): Promise<void> {
     // During independent reconciliation, park the wakeup but never prune
     // restored private rows or issue any downstream effect.
-    if (await deferQuarantinedAlarm(this.env, this.ctx.storage)) return;
+    if (await this.deferQuarantinedWork()) return;
     const started = Date.now();
     try {
       const earliest = this.earliestDeadline();
