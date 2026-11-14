@@ -480,6 +480,53 @@ test("client allows only bounded fixed-origin inventory and inventoried-key dele
   assert.equal(calls.length, 1);
 });
 
+test("client accepts successful Cloudflare envelopes with absent, null or empty errors", async () => {
+  const path = `${prefix}/workers/durable_objects/namespaces?page=1&per_page=100`;
+  const result = [
+    {
+      id: identity.namespaces.TABLES,
+      script: identity.workerName,
+      class: "TableDO",
+      use_sqlite: true,
+    },
+  ];
+  const resultInfo = { page: 1, per_page: 100, count: 1, total_count: 1 };
+  for (const errors of [undefined, null, []]) {
+    const client = recoveryCloudflareClient("test-token-never-echo", async () =>
+      Response.json({ success: true, result, errors, result_info: resultInfo }),
+    );
+    assert.deepEqual(await client(path, { withPageInfo: true }), {
+      result,
+      resultInfo,
+    });
+  }
+});
+
+test("null errors never substitutes for explicit success or permits invalid error shapes", async () => {
+  const path = `${objectPath("TABLES")}?limit=1000`;
+  const envelopes = [
+    ...[undefined, false, null, "true", 1].map((success) => ({
+      success,
+      result: [],
+      errors: null,
+    })),
+    ...[{}, "", false, 0, ["DO_NOT_LOG_PRIVATE_DATA"]].map((errors) => ({
+      success: true,
+      result: [],
+      errors,
+    })),
+  ];
+  for (const envelope of envelopes) {
+    const client = recoveryCloudflareClient("test-token-never-echo", async () =>
+      Response.json(envelope),
+    );
+    await assert.rejects(
+      client(path),
+      /^RecoveryProviderError: recovery-provider-result-unverified$/,
+    );
+  }
+});
+
 test("client refuses partial API success and oversized bodies without leaking response text", async () => {
   const path = `${objectPath("TABLES")}?limit=1000`;
   for (const response of [

@@ -226,6 +226,7 @@ export function recoveryCloudflareClient(token, fetchImpl = fetch) {
       envelope?.success === true &&
         Object.hasOwn(envelope, "result") &&
         (envelope.errors === undefined ||
+          envelope.errors === null ||
           (Array.isArray(envelope.errors) && envelope.errors.length === 0)),
       "recovery-provider-result-unverified",
     );

@@ -12,6 +12,7 @@ import {
   unlink,
   writeFile,
 } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -22,6 +23,7 @@ import {
 } from "../src/shared/recovery.ts";
 import {
   canonicalJson,
+  RecoveryVerificationError,
   recoveryDigest,
   signedRecoveryConfiguration,
   verifyRecoveryConfiguration,
@@ -29,6 +31,7 @@ import {
 import {
   deleteInventoriedOAuthKeys,
   inventoryRecoveryResources,
+  RecoveryProviderError,
   recoveryCloudflareClient,
   recoveryInventoryDigest,
   verifyObjectInspectionReceipts,
@@ -38,7 +41,9 @@ import { verifyRecoveryIngress } from "./recovery-run.mjs";
 
 // This is a manually approved, isolated synthetic rehearsal, not a producer of
 // production recovery approval or a replacement for the protected workflow.
-const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const OPERATOR_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+let ROOT = OPERATOR_ROOT;
+let operatorSha;
 const ACCOUNT = "0fbaae27d3ff021bc17109f1493d0b2d";
 const SUBDOMAIN = "kitamura-tetsuo";
 const WORKERS = {
@@ -132,27 +137,88 @@ export function rehearsalPlan(sourceSha, runId) {
   };
 }
 
-async function assertSource(sourceSha) {
-  ensure(SHA.test(sourceSha), "source-sha-required");
-  const [head, dirty] = await Promise.all([
-    execFileAsync("git", ["rev-parse", "HEAD"], { cwd: ROOT }),
-    execFileAsync("git", ["status", "--porcelain", "--untracked-files=no"], {
-      cwd: ROOT,
-    }),
-  ]);
-  ensure(head.stdout.trim() === sourceSha, "source-head-mismatch");
-  ensure(dirty.stdout.trim() === "", "tracked-source-is-dirty");
-  await execFileAsync(
-    "git",
-    [
-      "ls-files",
-      "--error-unmatch",
-      "scripts/recovery-hosted-rehearsal.mjs",
-      "test/recovery-hosted/worker.ts",
-      "src/index.ts",
-    ],
-    { cwd: ROOT },
+// A provider-client correction may run from its own reviewed checkout while
+// the exact previously reviewed application/fixture stays pinned. Every other
+// tracked input must be byte-identical; neither the plan nor its authority moves.
+const OPERATOR_ONLY_PATHS = new Set([
+  "scripts/recovery-hosted-rehearsal.mjs",
+  "scripts/recovery-hosted-rehearsal.test.mjs",
+  "scripts/recovery-provider.mjs",
+  "scripts/recovery-provider.test.mjs",
+]);
+export async function verifyRehearsalCheckouts({
+  sourceRoot,
+  operatorRoot,
+  sourceSha,
+  expectedOperatorSha,
+}) {
+  ensure(
+    SHA.test(sourceSha) && SHA.test(expectedOperatorSha),
+    "explicit-source-and-operator-shas-required",
   );
+  const check = async (root, expectedSha) => {
+    ensure(
+      isAbsolute(root) &&
+        root === resolve(root) &&
+        (await realpath(root)) === root,
+      "canonical-checkout-path-required",
+    );
+    const [head, top, dirty, tree] = await Promise.all([
+      execFileAsync("git", ["rev-parse", "HEAD"], { cwd: root }),
+      execFileAsync("git", ["rev-parse", "--show-toplevel"], { cwd: root }),
+      execFileAsync("git", ["status", "--porcelain", "--untracked-files=all"], {
+        cwd: root,
+      }),
+      execFileAsync(
+        "git",
+        ["ls-tree", "-r", "-z", "--full-tree", expectedSha],
+        {
+          cwd: root,
+        },
+      ),
+    ]);
+    ensure(head.stdout.trim() === expectedSha, "checkout-head-mismatch");
+    ensure(top.stdout.trim() === root, "checkout-root-mismatch");
+    ensure(dirty.stdout.trim() === "", "checkout-is-dirty");
+    await execFileAsync(
+      "git",
+      [
+        "ls-files",
+        "--error-unmatch",
+        "scripts/recovery-hosted-rehearsal.mjs",
+        "test/recovery-hosted/worker.ts",
+        "src/index.ts",
+      ],
+      { cwd: root },
+    );
+    return tree.stdout
+      .split("\0")
+      .filter(Boolean)
+      .filter(
+        (entry) =>
+          !OPERATOR_ONLY_PATHS.has(entry.slice(entry.indexOf("\t") + 1)),
+      )
+      .sort()
+      .join("\0");
+  };
+  const [sourceInputs, operatorInputs] = await Promise.all([
+    check(sourceRoot, sourceSha),
+    check(operatorRoot, expectedOperatorSha),
+  ]);
+  ensure(sourceInputs === operatorInputs, "pinned-runtime-inputs-changed");
+  return {
+    sourceSha,
+    operatorSha: expectedOperatorSha,
+    comparedInputsSha256: recoveryDigest(sourceInputs),
+  };
+}
+async function assertSource(sourceSha) {
+  return verifyRehearsalCheckouts({
+    sourceRoot: ROOT,
+    operatorRoot: OPERATOR_ROOT,
+    sourceSha,
+    expectedOperatorSha: operatorSha ?? sourceSha,
+  });
 }
 
 async function privateDirectory(path) {
@@ -171,13 +237,15 @@ async function privateDirectory(path) {
     "private-state-directory-required",
   );
   ensure((await realpath(parent)) === parent, "private-state-symlink-refused");
-  const fromRoot = relative(ROOT, parent);
-  ensure(
-    fromRoot === ".." ||
-      fromRoot.startsWith(`..${sep}`) ||
-      isAbsolute(fromRoot),
-    "state-must-be-outside-repository",
-  );
+  for (const root of new Set([ROOT, OPERATOR_ROOT])) {
+    const fromRoot = relative(root, parent);
+    ensure(
+      fromRoot === ".." ||
+        fromRoot.startsWith(`..${sep}`) ||
+        isAbsolute(fromRoot),
+      "state-must-be-outside-repository",
+    );
+  }
 }
 async function readState(path, sourceSha) {
   const stat = await lstat(path);
@@ -418,7 +486,10 @@ async function connect(statePath, target) {
   );
   let proxy;
   try {
-    const { getPlatformProxy } = await import("wrangler");
+    const sourceRequire = createRequire(resolve(ROOT, "package.json"));
+    const { getPlatformProxy } = await import(
+      pathToFileURL(sourceRequire.resolve("wrangler")).href
+    );
     proxy = await getPlatformProxy({
       configPath: path,
       envFiles: [],
@@ -1416,24 +1487,40 @@ async function saveEvidence(path, state) {
 }
 
 function argumentsFor(argv) {
-  ensure(argv.length === 6, "usage-phase-state-source-sha-required");
+  ensure(
+    argv.length === 6 || argv.length === 10,
+    "usage-phase-state-source-sha-required",
+  );
   const args = {};
   for (let i = 0; i < argv.length; i += 2) {
     ensure(
-      ["--phase", "--state", "--source-sha"].includes(argv[i]) &&
-        !Object.hasOwn(args, argv[i]),
+      [
+        "--phase",
+        "--state",
+        "--source-sha",
+        "--source-root",
+        "--operator-sha",
+      ].includes(argv[i]) && !Object.hasOwn(args, argv[i]),
       "unknown-cli-argument",
     );
     args[argv[i]] = argv[i + 1];
   }
   ensure(
-    PHASES.includes(args["--phase"]) && SHA.test(args["--source-sha"]),
+    PHASES.includes(args["--phase"]) &&
+      SHA.test(args["--source-sha"]) &&
+      typeof args["--state"] === "string" &&
+      ((args["--source-root"] === undefined &&
+        args["--operator-sha"] === undefined) ||
+        (isAbsolute(args["--source-root"] ?? "") &&
+          SHA.test(args["--operator-sha"]))),
     "invalid-cli-argument",
   );
   return {
     phase: args["--phase"],
     path: args["--state"],
     sourceSha: args["--source-sha"],
+    sourceRoot: args["--source-root"] ?? OPERATOR_ROOT,
+    operatorSha: args["--operator-sha"] ?? args["--source-sha"],
   };
 }
 async function main() {
@@ -1441,7 +1528,9 @@ async function main() {
   try {
     const args = argumentsFor(process.argv.slice(2));
     phase = args.phase;
-    await assertSource(args.sourceSha);
+    ROOT = args.sourceRoot;
+    operatorSha = args.operatorSha;
+    const provenance = await assertSource(args.sourceSha);
     await privateDirectory(args.path);
     if (phase === "plan") {
       const runId = randomUUID();
@@ -1467,7 +1556,7 @@ async function main() {
         records: [],
       };
       record(state, "plan-created-no-cloud-resources", {
-        sourceSha: args.sourceSha,
+        ...provenance,
         planSha256: recoveryDigest(state.plan),
       });
       await saveState(args.path, state, true);
@@ -1481,6 +1570,10 @@ async function main() {
       !state.finalizedAt || phase === "finalize",
       "rehearsal-already-finalized",
     );
+    if (!state.finalizedAt) {
+      record(state, "operator-source-verified", { ...provenance, phase });
+      await saveState(args.path, state);
+    }
     ensure(
       process.env.CLOUDFLARE_ACCOUNT_ID === ACCOUNT,
       "explicit-account-binding-required",
@@ -1517,7 +1610,10 @@ async function main() {
         ok: false,
         phase: phase ?? "arguments",
         code:
-          error instanceof RehearsalError
+          (error instanceof RehearsalError ||
+            error instanceof RecoveryProviderError ||
+            error instanceof RecoveryVerificationError) &&
+          /^[a-z0-9-]{1,120}$/.test(error.message)
             ? error.message
             : "hosted-rehearsal-failed",
         note: "Private state is retained. A failed command does not establish verified quarantine or authorize clearance.",
