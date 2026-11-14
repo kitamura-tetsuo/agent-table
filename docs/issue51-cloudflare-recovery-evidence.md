@@ -1,5 +1,11 @@
 # Issue #51: isolated Cloudflare recovery evidence
 
+**2026-11-15 continuation:** pre-activation review found that the original
+unsigned clearance proposal omitted the required manual release profile. It was
+stopped before signing or deployment. The [correction record](issue51-synthetic-clearance-correction.md)
+and [replacement proposal](issue51-synthetic-clearance-proposal-v2.json) preserve
+the original evidence and require approval of the corrected configuration.
+
 **Outcome: the hosted synthetic PITR, quarantine, canonical discard and future-schema refusal checks passed. Both Workers remain quarantined, with all public routes disabled. No hosted clearance was performed; Issue #51 remains open for the separate approval gate.**
 
 The rehearsal was finalized at **2026-11-14 01:55:03.459 UTC / 10:55:03.459 JST**.

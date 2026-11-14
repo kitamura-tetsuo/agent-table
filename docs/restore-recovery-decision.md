@@ -4,6 +4,13 @@
 isolated synthetic staging rehearsal. Actual user-data destruction, production
 deployment and quarantine clearance are not authorized by this policy decision.**
 
+**2026-11-15 continuation:** the owner approved continuing the original exact
+synthetic-clearance proposal, but pre-activation review found its missing manual
+release profile. No certificate renewal or deployment occurred. The
+[corrected proposal](issue51-synthetic-clearance-proposal-v2.json) requires approval
+of its replacement configuration commitment; see the
+[correction and read-only observation](issue51-synthetic-clearance-correction.md).
+
 ## Recorded decision
 
 The owner approved `#51 FRESH_START_POLICY 承認` in the active ChatGPT conversation.

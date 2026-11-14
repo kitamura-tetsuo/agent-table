@@ -1,0 +1,76 @@
+{
+  "format": "agent-table.synthetic-clearance-preflight.v1",
+  "scope": "manual-isolated-synthetic-only",
+  "observedAt": "2026-11-14T22:47:05.653Z",
+  "status": "STOPPED_BEFORE_SIGNING_OR_DEPLOYMENT",
+  "originalProposalSha256": "06ae66192aaa4d2cd6345447a70bb519c38c287c3b59eb2e89f4030102b60cfb",
+  "originalServingConfigurationSha256": "18d29f9b18e0fe67802427c2e18cf5a98ec8d1b4b9b7e7358a99adf851f82e0e",
+  "approvalReference": "https://github.com/kitamura-tetsuo/agent-table/issues/51#issuecomment-6885394764",
+  "approvalScope": "The owner's continue response authorized the original exact proposal. It does not silently authorize a replacement configuration commitment.",
+  "blocker": {
+    "code": "missing-manual-release-profile",
+    "sourceSha": "3d65b9ace98720afd2ef48275a3bb76a8638f76e",
+    "sourcePath": "src/shared/release-quarantine.ts",
+    "finding": "The proposed staging serve configuration lacks RELEASE_PROFILE. The actual application remains quarantined even with valid recovery serving authorization.",
+    "requiredChange": {
+      "path": "/intendedServingConfiguration/configuration/vars/RELEASE_PROFILE",
+      "previouslyAbsent": true,
+      "value": "manual"
+    },
+    "correctedServingConfigurationSha256": "58aaf16f7cacf06c3b0b568b4e3858c9c399d86b826348630c99a99f0a2330fa"
+  },
+  "providerReads": [
+    "GET /accounts/{account}/workers/scripts/{worker}/settings",
+    "GET /accounts/{account}/workers/scripts/{worker}/deployments",
+    "GET /accounts/{account}/workers/scripts/{worker}/subdomain"
+  ],
+  "workers": [
+    {
+      "workerName": "agent-table-pr51-recovery-staging",
+      "versionId": "2b545b59-521b-48f9-b84c-4bb7d51bae2b",
+      "activeVersionPercentage": 100,
+      "completeTextBindingsMatchFinalizedDeployment": true,
+      "providerBindingNamespaceIdsWhenReportedMatch": true,
+      "restoreQuarantine": true,
+      "releaseProfile": null,
+      "flags": {
+        "ALLOW_NEW_GUESTS": false,
+        "ALLOW_NEW_TABLES": false,
+        "ENABLE_MCP_SUBSCRIPTIONS": false,
+        "ENABLE_OPENAI_EVENTS": false,
+        "ALLOW_OUTBOUND_NOTIFICATIONS": false
+      },
+      "workersDevEnabled": false,
+      "previewsEnabled": false
+    },
+    {
+      "workerName": "agent-table-pr51-schema-staging",
+      "versionId": "847f5f75-1679-4fb9-880f-b479d832710f",
+      "activeVersionPercentage": 100,
+      "completeTextBindingsMatchFinalizedDeployment": true,
+      "providerBindingNamespaceIdsWhenReportedMatch": true,
+      "restoreQuarantine": true,
+      "releaseProfile": null,
+      "flags": {
+        "ALLOW_NEW_GUESTS": false,
+        "ALLOW_NEW_TABLES": false,
+        "ENABLE_MCP_SUBSCRIPTIONS": false,
+        "ENABLE_OPENAI_EVENTS": false,
+        "ALLOW_OUTBOUND_NOTIFICATIONS": false
+      },
+      "workersDevEnabled": false,
+      "previewsEnabled": false
+    }
+  ],
+  "completeNamespaceOwnershipReadbackPerformed": false,
+  "canonicalStorageReinspectionPerformed": false,
+  "kvInventoryReinspectionPerformed": false,
+  "privateIngressReinspectionPerformed": false,
+  "customRouteAndDomainReinspectionPerformed": false,
+  "authorizationIssued": false,
+  "cloudflareMutationPerformed": false,
+  "deploymentPerformed": false,
+  "resetPerformed": false,
+  "clearancePerformed": false,
+  "limitations": "This is a read-only provider metadata observation and a source-level blocker. It is not a new canonical storage inspection, clearance receipt, protected Environment attestation or production recovery-journal record. The expired reset certificate was not renewed."
+}
