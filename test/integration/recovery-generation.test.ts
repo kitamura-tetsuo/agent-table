@@ -1,5 +1,6 @@
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
+import { Buffer } from "node:buffer";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { APPLICATION_SCHEMA_VERSION } from "../../schema/migrations";
 import { GuestDO } from "../../src/objects/guest";
@@ -83,7 +84,13 @@ describe("source-bound recovery certificate", () => {
 
   it("rejects altered signatures, keys, identity, build, config and unsupported claims", () => {
     const f = recoveryFixture(env);
-    const changed = `${f.env.RECOVERY_AUTHORIZATION?.slice(0, -2)}AA`;
+    const original = f.env.RECOVERY_AUTHORIZATION ?? "";
+    const [payload, encodedSignature] = original.split(".");
+    const signature = Buffer.from(encodedSignature, "base64url");
+    // Change actual signature bytes; replacing a fixed suffix can be a no-op.
+    signature[0] ^= 1;
+    const changed = `${payload}.${signature.toString("base64url")}`;
+    expect(changed).not.toBe(original);
     for (const patch of [
       { RECOVERY_AUTHORIZATION: changed },
       {
