@@ -48,7 +48,11 @@ test("the local factory pins the private service and removes all temporary files
       assert.equal(config.workers_dev, false);
       assert.equal(config.preview_urls, false);
       assert.deepEqual(config.routes, []);
-      assert.equal(options.local, true);
+      // Explicit local:true makes Wrangler treat remote services as missing
+      // local Workers. Its default keeps the relay local with remote bindings.
+      assert.equal(Object.hasOwn(options, "local"), false);
+      assert.equal(Object.hasOwn(options, "remote"), false);
+      assert.equal(Object.hasOwn(options.experimental, "forceLocal"), false);
       assert.equal(options.ip, "127.0.0.1");
       assert.equal(options.port, 0);
       assert.equal(options.persist, false);

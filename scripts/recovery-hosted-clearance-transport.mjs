@@ -262,11 +262,12 @@ export async function createPrivateClearanceTransport({ unstable_dev }) {
       }),
       { flag: "wx", mode: 0o600 },
     );
+    // Wrangler's default keeps this Worker local and permits remote bindings.
+    // Explicit local:true instead disables remote Service bindings entirely.
     const starting = Promise.resolve().then(() =>
       unstable_dev(script, {
         config: path,
         envFiles: [],
-        local: true,
         ip: "127.0.0.1",
         port: 0,
         inspectorPort: 0,

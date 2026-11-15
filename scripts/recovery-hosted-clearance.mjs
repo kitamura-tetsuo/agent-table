@@ -635,6 +635,8 @@ async function services(_ctx, operation, useLocalRelay = false) {
   );
   let proxy;
   let relay;
+  let primaryFailure;
+  let result;
   try {
     const requireSource = createRequire(`${SOURCE_ROOT}/package.json`);
     const { getPlatformProxy, unstable_dev } = await import(
@@ -654,24 +656,38 @@ async function services(_ctx, operation, useLocalRelay = false) {
       );
       relay = await createPrivateClearanceTransport({ unstable_dev });
     }
-    return plain(
+    result = plain(
       await operation({
         CONTROL: proxy.env.CONTROL,
         APPLICATION: relay ? relay.application : proxy.env.APPLICATION,
       }),
     );
-  } finally {
-    try {
-      if (relay) await relay.dispose();
-    } finally {
-      try {
-        if (proxy) await proxy.dispose();
-      } finally {
-        await unlink(path);
-      }
-    }
+  } catch (error) {
+    primaryFailure = error;
   }
+  const cleanup = await Promise.allSettled([
+    Promise.resolve().then(() => relay?.dispose()),
+    Promise.resolve().then(() => proxy?.dispose()),
+  ]);
+  const cleanupFile = await Promise.allSettled([unlink(path)]);
+  const failure = [...cleanup, ...cleanupFile].find(
+    (value) => value.status === "rejected",
+  );
+  if (primaryFailure) {
+    if (failure)
+      process.stdout.write(
+        `${JSON.stringify({
+          action: "local-cleanup-failed",
+          primaryErrorCode: safeError(primaryFailure),
+          cleanupErrorCode: safeError(failure.reason),
+        })}\n`,
+      );
+    throw primaryFailure;
+  }
+  if (failure) throw failure.reason;
+  return result;
 }
+
 function identity(ctx, current) {
   ensure(
     current?.buildSha === SOURCE &&
@@ -761,11 +777,35 @@ async function quarantineRelayProbe(ctx, config) {
             signal: AbortSignal.timeout(15_000),
           },
         );
+        // Drain or cancel before assertions so teardown cannot hide a
+        // primary response mismatch behind an unread response stream.
+        const reader = response.body?.getReader();
+        const chunks = [];
+        let size = 0;
+        try {
+          if (reader)
+            for (;;) {
+              const part = await reader.read();
+              if (part.done) break;
+              size += part.value.byteLength;
+              ensure(size <= 1024, "relay-quarantine-response-too-large");
+              chunks.push(part.value);
+            }
+        } finally {
+          if (reader) {
+            void reader.cancel().catch(() => undefined);
+            reader.releaseLock();
+          }
+        }
+        const body = Buffer.concat(chunks).toString("utf8");
         ensure(
-          response.status === 503 &&
-            response.headers.get("Cache-Control") === "no-store" &&
-            (await response.text()) === "Service unavailable during recovery",
-          "relay-quarantine-probe-failed",
+          response.status === 503,
+          `relay-quarantine-probe-status:${response.status}`,
+        );
+        ensure(
+          response.headers.get("Cache-Control") === "no-store" &&
+            body === "Service unavailable during recovery",
+          "relay-quarantine-probe-result",
         );
         return {
           status: 503,
