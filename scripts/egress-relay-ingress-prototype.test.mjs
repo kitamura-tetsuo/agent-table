@@ -1,6 +1,6 @@
-import test from "node:test";
 import assert from "node:assert/strict";
 import { createPrivateKey, sign } from "node:crypto";
+import test from "node:test";
 import {
   createRelayIngress,
   memoryReplayStoreForTests,
@@ -28,6 +28,7 @@ const targets = [
 ];
 const base = {
   version: 1,
+  audience: "test:synthetic-relay",
   requestId: "synthetic-request-1",
   timestamp: 100000,
   destination: "https://callback.example.org/events",
@@ -51,6 +52,7 @@ function message(changes = {}) {
 function setup(overrides = {}) {
   let sent = 0;
   const handler = createRelayIngress({
+    audience: "test:synthetic-relay",
     callers: new Map([[callerId, { publicKey, targets }]]),
     replayStore: memoryReplayStoreForTests(),
     clock: () => 100000,
@@ -87,6 +89,8 @@ test("tamper, unknown caller, stale time, unreviewed origin and caller Host fail
     { headers: { host: "evil.example.org" } },
     { payload: "AQI" },
     { version: 2 },
+    { audience: "production:synthetic-relay" },
+    { audience: "test:different-relay" },
   ])
     assert.equal((await handler(message(changes))).status, 400);
   assert.equal(sent(), 0);

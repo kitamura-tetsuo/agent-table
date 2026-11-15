@@ -3,9 +3,10 @@
  * Public keys/policy and atomic replay store are operator-injected, never
  * supplied by the HTTP caller. No key generation or credential persistence.
  */
-import { verify, createPublicKey } from "node:crypto";
-import { checkedHeaders } from "./egress-relay-prototype.mjs";
+import { createPublicKey, verify } from "node:crypto";
 import { validateReviewedCallbackDestination } from "../src/notifications/egress.ts";
+import { checkedHeaders } from "./egress-relay-prototype.mjs";
+
 const WINDOW = 60000;
 const MAX_SKEW = 60000;
 const MAX_ENVELOPE = 32768;
@@ -45,7 +46,10 @@ export function memoryReplayStoreForTests(capacity = 1000) {
 
 export function createRelayIngress({
   callers,
+  audience,
   replayStore,
+  admissionStore,
+  enabled = () => true,
   send,
   clock = Date.now,
   perMinute = 10,
@@ -55,7 +59,14 @@ export function createRelayIngress({
 }) {
   if (
     !(callers instanceof Map) ||
-    !replayStore?.reserve ||
+    typeof audience !== "string" ||
+    !/^(production|test):[a-z][a-z0-9-]{2,63}$/.test(audience) ||
+    !!replayStore === !!admissionStore ||
+    (replayStore && typeof replayStore.reserve !== "function") ||
+    (admissionStore &&
+      (typeof admissionStore.acquire !== "function" ||
+        typeof admissionStore.finish !== "function")) ||
+    typeof enabled !== "function" ||
     typeof send !== "function"
   )
     throw new Error("invalid-configuration");
@@ -89,6 +100,7 @@ export function createRelayIngress({
     active = 0;
   const result = (status, code) => ({ status, body: { code } });
   return async ({ method, path, callerId, signature, bytes }) => {
+    if (enabled() !== true) return result(503, "unavailable");
     if (method !== "POST" || path !== "/relay/v1")
       return result(404, "unavailable");
     if (!(bytes instanceof Uint8Array) || bytes.length > MAX_ENVELOPE)
@@ -123,6 +135,7 @@ export function createRelayIngress({
     if (
       !exact(envelope, [
         "version",
+        "audience",
         "requestId",
         "timestamp",
         "destination",
@@ -130,6 +143,7 @@ export function createRelayIngress({
         "payload",
       ]) ||
       envelope.version !== 1 ||
+      envelope.audience !== audience ||
       !ID.test(envelope.requestId) ||
       !Number.isSafeInteger(envelope.timestamp) ||
       Math.abs(now - envelope.timestamp) > MAX_SKEW ||
@@ -152,9 +166,10 @@ export function createRelayIngress({
     global = global.filter((t) => t > now - WINDOW);
     const recent = (calls.get(callerId) ?? []).filter((t) => t > now - WINDOW);
     if (
-      active >= concurrency ||
-      recent.length >= perMinute ||
-      global.length >= globalPerMinute
+      !admissionStore &&
+      (active >= concurrency ||
+        recent.length >= perMinute ||
+        global.length >= globalPerMinute)
     )
       return result(429, "capacity");
     // Reserve local capacity synchronously, before awaiting replay storage.
@@ -162,16 +177,23 @@ export function createRelayIngress({
     recent.push(now);
     calls.set(callerId, recent);
     global.push(now);
+    let leaseId;
     try {
       let reserveTimer;
       let reserved;
       try {
         reserved = await Promise.race([
-          replayStore.reserve(
-            callerId + ":" + envelope.requestId,
-            envelope.timestamp + MAX_SKEW,
-            now,
-          ),
+          admissionStore
+            ? admissionStore.acquire({
+                callerId,
+                requestId: envelope.requestId,
+                expiresAt: envelope.timestamp + MAX_SKEW,
+              })
+            : replayStore.reserve(
+                callerId + ":" + envelope.requestId,
+                envelope.timestamp + MAX_SKEW,
+                now,
+              ),
           new Promise((_, reject) => {
             reserveTimer = setTimeout(
               () => reject(new Error("reservation-timeout")),
@@ -183,7 +205,22 @@ export function createRelayIngress({
         clearTimeout(reserveTimer);
       }
       // A late reservation may persist, but cannot resume this failed handler.
-      if (reserved !== true) return result(409, "duplicate-or-capacity");
+      if (admissionStore) {
+        if (reserved?.ok !== true)
+          return result(
+            ["replay", "duplicate"].includes(reserved?.reason) ? 409 : 429,
+            "duplicate-or-capacity",
+          );
+        leaseId = reserved.leaseId;
+        if (
+          !(
+            typeof leaseId === "string" ||
+            (Number.isSafeInteger(leaseId) && leaseId > 0)
+          )
+        )
+          return result(502, "delivery-failed");
+      } else if (reserved !== true) return result(409, "duplicate-or-capacity");
+      if (enabled() !== true) return result(503, "unavailable");
       // Store/delivery delays cannot turn a stale authorization into a send.
       if (Math.abs(clock() - envelope.timestamp) > MAX_SKEW)
         return result(400, "expired");
@@ -213,6 +250,14 @@ export function createRelayIngress({
       return result(502, "delivery-failed");
     } finally {
       active--;
+      if (leaseId) {
+        // Failure to release stays conservatively uncertain in durable storage.
+        try {
+          admissionStore.finish(leaseId);
+        } catch {
+          /* no unsafe lease reset */
+        }
+      }
     }
   };
 }

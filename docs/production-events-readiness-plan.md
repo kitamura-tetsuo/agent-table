@@ -31,7 +31,7 @@ No application security predicate or runtime configuration has been changed. No 
 
 scripts/egress-relay-prototype.mjs is a Node library with no listener, CLI, service binding, credentials or production import. It uses the existing reviewed callback URL parser, resolves A records once, refuses mixed public/private answers, and pins the selected literal IPv4 address into TLS. It retains the original hostname for TLS identity and releases the socket to HTTP only after authorization and actual peer IP/port match. A per-request agent prevents cross-target pooling. The overall ten-second deadline includes DNS and pending TLS; cancellation destroys pending sockets. Headers are allowlisted, payload is snapshotted and limited to 16 KiB, response bytes to 64 KiB, with no redirects or retries. Response bytes are retained for the existing challenge verifier, not treated as proof of callback ownership.
 
-Tracked by https://github.com/kitamura-tetsuo/agent-table/issues/74 . This prototype is deliberately IPv4-only; IPv6-only callbacks fail closed. Its dependency-injection factory is for trusted local tests, not a remote caller API. Production must never deserialize or accept transport overrides. Nothing authenticates inbound relay callers yet: there is no inbound server to expose.
+Tracked by https://github.com/kitamura-tetsuo/agent-table/issues/74 . This prototype is deliberately IPv4-only; IPv6-only callbacks fail closed. Its dependency-injection factory is for trusted local tests, not a remote caller API. Production must never deserialize or accept transport overrides. The first transport-only revision had no inbound authentication. The additional offline implementation below now supplies a bounded authenticated listener library; it is not deployed.
 
 Tests: node --test scripts/egress-relay-prototype.test.mjs passes eight test cases, including address policy, TLS/peer mismatch, original-host certificate check, forbidden headers, pending socket cancellation, bounded response, redirects, stream failure, and no late send after DNS deadline. These use injected DNS/socket/HTTP observations, not external traffic or a hosted connection. Independent review found the pending-TLS resource leak and challenge-response incompatibility; both were corrected. A real Node TLS/HTTPS joined-path integration test, real hosted DNS-change adversary, independent address-range audit and existing MCP challenge/outbox integration are still required.
 
@@ -52,7 +52,7 @@ Before production, approve exact credential ownership and provisioning, supporte
 
 scripts/egress-relay-ingress-prototype.mjs adds an unconnected handler accepting only a configured caller's Ed25519 signature over method, fixed path, caller ID and the exact envelope bytes. Only public verification keys are injected. It enforces timestamp freshness, strict envelope shape, per-caller reviewed destinations and safe headers/body limits, atomic replay reservation before forwarding, and bounded per-caller/global rate and concurrency. Failure consumes the request identity; no retry under a new ID is implied by this handler. A deployment must reconcile outcomes with the existing outbox operation contract.
 
-The replay-store interface must use shared durable atomic insert-if-absent through the acceptance horizon, including restarts and multiple instances. memoryReplayStoreForTests is explicitly not a deployment store. Local rate limits also need shared or single-instance admission semantics before scaling. No authenticated listener, keys, durable replay service, Worker binding or production integration has been installed. A deployment must additionally bound HTTP parsing/body ingestion before calling the in-memory handler.
+The replay-store interface must use shared durable atomic insert-if-absent through the acceptance horizon, including restarts and multiple instances. memoryReplayStoreForTests is explicitly not a deployment store. Local rate limits also need shared or single-instance admission semantics before scaling. The current offline additions below implement listener/store libraries; no keys, durable service, Worker binding or production integration has been installed. A deployment must additionally bound HTTP parsing/body ingestion before calling the in-memory handler.
 
 Signature tests use the public RFC 8032 TEST 1 vector, not generated or usable account credentials. These verify exact-byte tampering, unknown caller, freshness, origin/header rejection, duplicate/concurrent replay, unavailable replay storage, rate limits and fixed safe errors.
 
@@ -61,3 +61,52 @@ scripts/egress-relay-local-tls.test.mjs uses an ephemeral one-day test-only cert
 The latest user direction also requests all-table Events in the test environment and separately accepts the native-fetch DNS residual risk there. That is a separate test-only profile task; it does not change this production relay's safety contract or authorize production activation.
 
 Independent review also found unbounded replay-store reservation wait. The handler now bounds that wait to two seconds (shorter trusted test seam), releases admission capacity on timeout and cannot send when a late reservation succeeds. The late reservation remains owned by the durable store and is not deleted or retried automatically. Seventeen local tests pass, including this regression. The injected send adapter must honor the transport bounded-completion contract; the candidate sender bounds its complete operation to ten seconds.
+
+## Additional production building blocks (still not activated)
+
+The HTTPS boundary in scripts/egress-relay-http.mjs limits headers, body size,
+connections and ingestion time, accepts only the fixed signed POST route, and
+does not expose an administrative toggle. It uses operator-injected TLS material.
+Its shutdown tracks actual handler completion even when a caller disconnects;
+timeout reports unresolved rather than falsely closing the backing store.
+
+scripts/relay-admission-store.mjs implements SQLite atomic replay plus caller,
+global and concurrency admission shared across actual processes on one local
+filesystem. Its policy/environment/service binding survives reopen. Expired
+unsettled attempts remain uncertain and consume capacity, rather than being
+silently forgotten. See docs/relay-admission-store.md. This is NOT a multi-host
+database, and NFS or independent replica files are unsupported.
+
+scripts/egress-relay-application.mjs composes the listener, durable admission and
+pinned sender. Every start is paused. Enabling requires an explicit local operator
+operation and no expired uncertain attempts. No CLI, automatic bind, deployment
+manifest or credential generation is supplied. The signed audience binds test or
+production plus the selected service identity, including when public keys are
+accidentally reused.
+
+src/notifications/relay-client.ts is an unwired Worker WebCrypto adapter. It signs
+the exact request and rechecks caller-supplied current authority after signing,
+immediately before transport. A bounded deadline covers transport and response
+streams even if an injected transport ignores AbortSignal. It never enables the
+production readiness predicate.
+
+### Remaining integration blocker, not an accepted limitation
+
+The relay currently consumes replay identities but does not persist/retrieve
+delivery outcomes. If the callback succeeds and only the relay response is lost,
+a repeat is refused with 409 and the Worker cannot recover the challenge/result.
+The existing outbox has legitimate bounded retries and lease renewal, so simply
+using a new identity risks duplicate delivery, while permanently terminalizing
+the operation would weaken that contract. Production integration MUST remain
+disabled until durable outcome/readback and logical-attempt identity persistence
+are implemented and independently tested. Persisting challenge/response bytes
+would add a data-retention boundary and needs an explicit bounded storage design;
+do not silently start saving private payloads.
+
+Local verification covers signature/audience refusal, real loopback HTTPS,
+disconnected-client drain, paused restart, real SQLite multiprocess uniqueness
+and quotas, and Worker signing/deadline behavior. These are not hosted public-IP
+success, real callback delivery, full MCP/outbox integration or host idle-agent
+wake-up evidence. Production architecture, credentials, public endpoint, storage
+and monitoring ownership, exact release/rollback and concrete activation approval
+remain separate unperformed steps.
