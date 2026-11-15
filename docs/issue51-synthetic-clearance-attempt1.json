@@ -1,0 +1,1266 @@
+{
+  "format": "agent-table.synthetic-controlled-clearance-evidence.v1",
+  "scope": "manual-isolated-synthetic-only",
+  "proposalSha256": "020534bdd708a01c501d27829ff80d01f8ebb2b48336ac49d29196f9959046c9",
+  "approvalRef": "https://github.com/kitamura-tetsuo/agent-table/issues/51#issuecomment-6886616675",
+  "subject": {
+    "environment": "staging",
+    "schemaVersion": 12,
+    "sourceSha": "3d65b9ace98720afd2ef48275a3bb76a8638f76e",
+    "operationId": "4603a356-06f8-408c-bc13-f94f26484328",
+    "generation": "bbdca17200eeca1428bedb579c3461730ded3bb5155d763f8feaf9a514078ce4",
+    "namespaceIdentity": {
+      "accountId": "0fbaae27d3ff021bc17109f1493d0b2d",
+      "workerName": "agent-table-pr51-recovery-staging",
+      "namespaces": {
+        "OAUTH_KV": "63247a13ec9f4e54912318f73c20dfa3",
+        "TABLES": "3516bed8ba584fb0b3f6743c24b9b4cd",
+        "GUESTS": "87ff46558f6747358c1edbbaa3fe750a",
+        "OAUTH_SERIALIZER": "6641d6933e6642e99fcb8b9f802a3330",
+        "ADMISSION": "f2752cc66c0646f48f571949cbf99a71"
+      },
+      "commitments": {
+        "TABLES": "d8a9469d24ce0c6f49499155ee3f43cda0a0242aec1b221d0a5dc1d6a85dc816",
+        "GUESTS": "6e962c1ebe92e02324492c8588711318049c17736eba8d614a4557f6ac98a0e0",
+        "OAUTH_SERIALIZER": "77943ab8bd24a4d9ed167c7c16311bd82824314857d11aaaaa79ca7e8e163d5f",
+        "ADMISSION": "9243e5b762c70e3f4428503dc8f18c0dfa7d00bfb9c84251582966297f0ab55e"
+      }
+    }
+  },
+  "sourceProvenance": {
+    "sourceSha": "3d65b9ace98720afd2ef48275a3bb76a8638f76e",
+    "operatorSha": "5f41a40f22fa1fe6dcc28c0238100ed944d18107",
+    "comparedInputsSha256": "c821070c3ff4cad126322ad7dc58daf817b7e1404474cb33d1ddd8672ace2f32"
+  },
+  "originalEvidenceSha256": "3cd59ec2fa2f69d44f9c471332e1e0eb5343a4df6c6ce5601cba185bef2ec0f7",
+  "originalRecordHeadSha256": "2567285e3fca23fdb7371cbd0644c3cfe57fffc6230d3050448a9f2faffa5d6b",
+  "phase": "rolled-back",
+  "completedAt": null,
+  "currentDeployment": {
+    "observedAt": "2026-11-15T00:41:50.086Z",
+    "workerName": "agent-table-pr51-recovery-staging",
+    "versionId": "c419489a-a11d-4486-bd8d-7d60cf02ae31",
+    "completeConfigurationSha256": "0b886ef1c82a54292096961cf38ab90dcb2b62fc5c61094090ce70cff6456ca2",
+    "configurationCommitment": "56be00421e272f3415e9ee8a694998cfb95243c25462c4ac0b123f0bfdfceb07",
+    "workersDevDisabled": true,
+    "previewsDisabled": true,
+    "actualServiceRoutes": 0,
+    "customDomains": 0,
+    "serviceEnvironment": "production"
+  },
+  "records": [
+    {
+      "action": "approved-preflight-recorded",
+      "observedAt": "2026-11-15T00:40:17.770Z",
+      "previousSha256": "2567285e3fca23fdb7371cbd0644c3cfe57fffc6230d3050448a9f2faffa5d6b",
+      "metadata": {
+        "proposalSha256": "020534bdd708a01c501d27829ff80d01f8ebb2b48336ac49d29196f9959046c9",
+        "approvalRef": "https://github.com/kitamura-tetsuo/agent-table/issues/51#issuecomment-6886616675",
+        "provenance": {
+          "sourceSha": "3d65b9ace98720afd2ef48275a3bb76a8638f76e",
+          "operatorSha": "5f41a40f22fa1fe6dcc28c0238100ed944d18107",
+          "comparedInputsSha256": "c821070c3ff4cad126322ad7dc58daf817b7e1404474cb33d1ddd8672ace2f32"
+        },
+        "executionHelperSha256": "e0c42b91c253935d8f1ea49e0e857f0cd0eee538359240b105482fbbf40ba142",
+        "verificationHelperSha256": "36c359e7a4c2a3ab1d31066fa44ddbfc252e797a5c105aab780b8f0f897daf88",
+        "receipt": {
+          "observedAt": "2026-11-15T00:40:09.687Z",
+          "workerName": "agent-table-pr51-recovery-staging",
+          "versionId": "2b545b59-521b-48f9-b84c-4bb7d51bae2b",
+          "completeConfigurationSha256": "c281811405fbb82305d5c8940a82eb4a0586c7bdecc7d24c14063fcad5d9d480",
+          "configurationCommitment": "56be00421e272f3415e9ee8a694998cfb95243c25462c4ac0b123f0bfdfceb07",
+          "workersDevDisabled": true,
+          "previewsDisabled": true,
+          "actualServiceRoutes": 0,
+          "customDomains": 0,
+          "serviceEnvironment": "production"
+        },
+        "excludedReceipt": {
+          "observedAt": "2026-11-15T00:40:10.245Z",
+          "workerName": "agent-table-pr51-schema-staging",
+          "versionId": "847f5f75-1679-4fb9-880f-b479d832710f",
+          "completeConfigurationSha256": "f69ebc710d8cef86cd9fb53076a0b2d3017c8e885d7dc215785b27c217b7975a",
+          "configurationCommitment": "150f4c6a0cfe1ea364731872cacbab19bd6a2b0425e12cb2c03fa20fc7119ad1",
+          "workersDevDisabled": true,
+          "previewsDisabled": true,
+          "actualServiceRoutes": 0,
+          "customDomains": 0,
+          "serviceEnvironment": "production"
+        },
+        "inventory": {
+          "format": "agent-table.recovery-inventory.v1",
+          "namespaceIdentity": {
+            "accountId": "0fbaae27d3ff021bc17109f1493d0b2d",
+            "workerName": "agent-table-pr51-recovery-staging",
+            "namespaces": {
+              "OAUTH_KV": "63247a13ec9f4e54912318f73c20dfa3",
+              "TABLES": "3516bed8ba584fb0b3f6743c24b9b4cd",
+              "GUESTS": "87ff46558f6747358c1edbbaa3fe750a",
+              "OAUTH_SERIALIZER": "6641d6933e6642e99fcb8b9f802a3330",
+              "ADMISSION": "f2752cc66c0646f48f571949cbf99a71"
+            },
+            "commitments": {
+              "TABLES": "d8a9469d24ce0c6f49499155ee3f43cda0a0242aec1b221d0a5dc1d6a85dc816",
+              "GUESTS": "6e962c1ebe92e02324492c8588711318049c17736eba8d614a4557f6ac98a0e0",
+              "OAUTH_SERIALIZER": "77943ab8bd24a4d9ed167c7c16311bd82824314857d11aaaaa79ca7e8e163d5f",
+              "ADMISSION": "9243e5b762c70e3f4428503dc8f18c0dfa7d00bfb9c84251582966297f0ab55e"
+            }
+          },
+          "startedAt": "2026-11-15T00:40:10.245Z",
+          "completedAt": "2026-11-15T00:40:13.004Z",
+          "objects": {
+            "TABLES": [
+              {
+                "id": "7cc725e315964b18b9dd9511a30ac847717c615cb66ed7676734637148e9feea",
+                "hasStoredData": true
+              }
+            ],
+            "GUESTS": [
+              {
+                "id": "175c631c51a0ad77076998b9cd8f03a3928ebbc07a67d8162c829d1b1f3bc5b1",
+                "hasStoredData": true
+              }
+            ],
+            "OAUTH_SERIALIZER": [],
+            "ADMISSION": []
+          },
+          "oauthKeys": [],
+          "counts": {
+            "TABLES": 1,
+            "GUESTS": 1,
+            "OAUTH_SERIALIZER": 0,
+            "ADMISSION": 0,
+            "OAUTH_KV": 0
+          }
+        },
+        "ingress": {
+          "checkedAt": "2026-11-15T00:40:17.752Z",
+          "routes": 9,
+          "all503": true,
+          "allNoStore": true,
+          "transport": "authenticated-private-service-binding"
+        }
+      },
+      "sha256": "dbf0c2cc11349b3dea98f286b1620a52237fd0496a2935e522d81f24c8456858"
+    },
+    {
+      "action": "deployment-prepared",
+      "observedAt": "2026-11-15T00:40:33.804Z",
+      "previousSha256": "dbf0c2cc11349b3dea98f286b1620a52237fd0496a2935e522d81f24c8456858",
+      "metadata": {
+        "purpose": "same-generation-inspection-renewal",
+        "configurationCommitment": "56be00421e272f3415e9ee8a694998cfb95243c25462c4ac0b123f0bfdfceb07",
+        "completeConfigurationSha256": "34ce8d266f5642dd21c09e490592580eea8f5dbfff46e2d5c5a325f1f8038cfb",
+        "certificateSha256": "0e65774348dec8ff4b2c7eb2bffc21d5b919b0d576d7e368a3c3fa90ee115c75",
+        "claims": {
+          "format": "agent-table.fresh-start.v1",
+          "phase": "reset",
+          "operationId": "4603a356-06f8-408c-bc13-f94f26484328",
+          "generation": "bbdca17200eeca1428bedb579c3461730ded3bb5155d763f8feaf9a514078ce4",
+          "environment": "staging",
+          "buildSha": "3d65b9ace98720afd2ef48275a3bb76a8638f76e",
+          "configSha256": "56be00421e272f3415e9ee8a694998cfb95243c25462c4ac0b123f0bfdfceb07",
+          "schemaVersion": 12,
+          "namespaceIdentity": {
+            "accountId": "0fbaae27d3ff021bc17109f1493d0b2d",
+            "workerName": "agent-table-pr51-recovery-staging",
+            "namespaces": {
+              "OAUTH_KV": "63247a13ec9f4e54912318f73c20dfa3",
+              "TABLES": "3516bed8ba584fb0b3f6743c24b9b4cd",
+              "GUESTS": "87ff46558f6747358c1edbbaa3fe750a",
+              "OAUTH_SERIALIZER": "6641d6933e6642e99fcb8b9f802a3330",
+              "ADMISSION": "f2752cc66c0646f48f571949cbf99a71"
+            },
+            "commitments": {
+              "TABLES": "d8a9469d24ce0c6f49499155ee3f43cda0a0242aec1b221d0a5dc1d6a85dc816",
+              "GUESTS": "6e962c1ebe92e02324492c8588711318049c17736eba8d614a4557f6ac98a0e0",
+              "OAUTH_SERIALIZER": "77943ab8bd24a4d9ed167c7c16311bd82824314857d11aaaaa79ca7e8e163d5f",
+              "ADMISSION": "9243e5b762c70e3f4428503dc8f18c0dfa7d00bfb9c84251582966297f0ab55e"
+            }
+          },
+          "planSha256": "8a917fe2c076578a98d7f7b6ae5db27183b859148bcd890885be83e6e73db398",
+          "evidenceSha256": null,
+          "previousRecordSha256": "dbf0c2cc11349b3dea98f286b1620a52237fd0496a2935e522d81f24c8456858",
+          "issuedAt": "2026-11-15T00:40:33.382Z",
+          "expiresAt": "2026-11-15T01:25:33.382Z",
+          "approvalRef": "https://github.com/kitamura-tetsuo/agent-table/issues/51#issuecomment-6886616675"
+        }
+      },
+      "sha256": "ab8cb3083005e2c4b5d332f5f17810c7ad9578882d9d21d0a9e6f66e460c779f"
+    },
+    {
+      "action": "deployment-verified",
+      "observedAt": "2026-11-15T00:40:40.210Z",
+      "previousSha256": "ab8cb3083005e2c4b5d332f5f17810c7ad9578882d9d21d0a9e6f66e460c779f",
+      "metadata": {
+        "purpose": "same-generation-inspection-renewal",
+        "recoveredCommandFailure": false,
+        "observedAt": "2026-11-15T00:40:40.209Z",
+        "workerName": "agent-table-pr51-recovery-staging",
+        "versionId": "20ec8926-7377-46ac-bcc3-85412431dd41",
+        "completeConfigurationSha256": "34ce8d266f5642dd21c09e490592580eea8f5dbfff46e2d5c5a325f1f8038cfb",
+        "configurationCommitment": "56be00421e272f3415e9ee8a694998cfb95243c25462c4ac0b123f0bfdfceb07",
+        "workersDevDisabled": true,
+        "previewsDisabled": true,
+        "actualServiceRoutes": 0,
+        "customDomains": 0,
+        "serviceEnvironment": "production"
+      },
+      "sha256": "3e3742633cf72f721d898cefebf19196fb62314639a8a99a9827b55c30cff8dc"
+    },
+    {
+      "action": "inspection-renewal-quarantined",
+      "observedAt": "2026-11-15T00:40:43.755Z",
+      "previousSha256": "3e3742633cf72f721d898cefebf19196fb62314639a8a99a9827b55c30cff8dc",
+      "metadata": {
+        "observedAt": "2026-11-15T00:40:40.209Z",
+        "workerName": "agent-table-pr51-recovery-staging",
+        "versionId": "20ec8926-7377-46ac-bcc3-85412431dd41",
+        "completeConfigurationSha256": "34ce8d266f5642dd21c09e490592580eea8f5dbfff46e2d5c5a325f1f8038cfb",
+        "configurationCommitment": "56be00421e272f3415e9ee8a694998cfb95243c25462c4ac0b123f0bfdfceb07",
+        "workersDevDisabled": true,
+        "previewsDisabled": true,
+        "actualServiceRoutes": 0,
+        "customDomains": 0,
+        "serviceEnvironment": "production",
+        "ingress": {
+          "checkedAt": "2026-11-15T00:40:43.739Z",
+          "routes": 9,
+          "all503": true,
+          "allNoStore": true,
+          "transport": "authenticated-private-service-binding"
+        }
+      },
+      "sha256": "91a0f75149cb2371069c70777f1fc7d260984d011d6ea954e2043e36f2adb312"
+    },
+    {
+      "action": "fresh-canonical-reset-state-verified",
+      "observedAt": "2026-11-15T00:41:13.844Z",
+      "previousSha256": "91a0f75149cb2371069c70777f1fc7d260984d011d6ea954e2043e36f2adb312",
+      "metadata": {
+        "at": "2026-11-15T00:41:13.843Z",
+        "inventory": {
+          "format": "agent-table.recovery-inventory.v1",
+          "namespaceIdentity": {
+            "accountId": "0fbaae27d3ff021bc17109f1493d0b2d",
+            "workerName": "agent-table-pr51-recovery-staging",
+            "namespaces": {
+              "OAUTH_KV": "63247a13ec9f4e54912318f73c20dfa3",
+              "TABLES": "3516bed8ba584fb0b3f6743c24b9b4cd",
+              "GUESTS": "87ff46558f6747358c1edbbaa3fe750a",
+              "OAUTH_SERIALIZER": "6641d6933e6642e99fcb8b9f802a3330",
+              "ADMISSION": "f2752cc66c0646f48f571949cbf99a71"
+            },
+            "commitments": {
+              "TABLES": "d8a9469d24ce0c6f49499155ee3f43cda0a0242aec1b221d0a5dc1d6a85dc816",
+              "GUESTS": "6e962c1ebe92e02324492c8588711318049c17736eba8d614a4557f6ac98a0e0",
+              "OAUTH_SERIALIZER": "77943ab8bd24a4d9ed167c7c16311bd82824314857d11aaaaa79ca7e8e163d5f",
+              "ADMISSION": "9243e5b762c70e3f4428503dc8f18c0dfa7d00bfb9c84251582966297f0ab55e"
+            }
+          },
+          "startedAt": "2026-11-15T00:41:09.203Z",
+          "completedAt": "2026-11-15T00:41:11.091Z",
+          "objects": {
+            "TABLES": [
+              {
+                "id": "7cc725e315964b18b9dd9511a30ac847717c615cb66ed7676734637148e9feea",
+                "hasStoredData": true
+              }
+            ],
+            "GUESTS": [
+              {
+                "id": "175c631c51a0ad77076998b9cd8f03a3928ebbc07a67d8162c829d1b1f3bc5b1",
+                "hasStoredData": true
+              }
+            ],
+            "OAUTH_SERIALIZER": [],
+            "ADMISSION": []
+          },
+          "oauthKeys": [],
+          "counts": {
+            "TABLES": 1,
+            "GUESTS": 1,
+            "OAUTH_SERIALIZER": 0,
+            "ADMISSION": 0,
+            "OAUTH_KV": 0
+          }
+        },
+        "expected": {
+          "format": "agent-table.fresh-start.v1",
+          "phase": "reset",
+          "operationId": "4603a356-06f8-408c-bc13-f94f26484328",
+          "generation": "bbdca17200eeca1428bedb579c3461730ded3bb5155d763f8feaf9a514078ce4",
+          "environment": "staging",
+          "buildSha": "3d65b9ace98720afd2ef48275a3bb76a8638f76e",
+          "configSha256": "56be00421e272f3415e9ee8a694998cfb95243c25462c4ac0b123f0bfdfceb07",
+          "schemaVersion": 12,
+          "namespaceIdentity": {
+            "accountId": "0fbaae27d3ff021bc17109f1493d0b2d",
+            "workerName": "agent-table-pr51-recovery-staging",
+            "namespaces": {
+              "OAUTH_KV": "63247a13ec9f4e54912318f73c20dfa3",
+              "TABLES": "3516bed8ba584fb0b3f6743c24b9b4cd",
+              "GUESTS": "87ff46558f6747358c1edbbaa3fe750a",
+              "OAUTH_SERIALIZER": "6641d6933e6642e99fcb8b9f802a3330",
+              "ADMISSION": "f2752cc66c0646f48f571949cbf99a71"
+            },
+            "commitments": {
+              "TABLES": "d8a9469d24ce0c6f49499155ee3f43cda0a0242aec1b221d0a5dc1d6a85dc816",
+              "GUESTS": "6e962c1ebe92e02324492c8588711318049c17736eba8d614a4557f6ac98a0e0",
+              "OAUTH_SERIALIZER": "77943ab8bd24a4d9ed167c7c16311bd82824314857d11aaaaa79ca7e8e163d5f",
+              "ADMISSION": "9243e5b762c70e3f4428503dc8f18c0dfa7d00bfb9c84251582966297f0ab55e"
+            }
+          },
+          "planSha256": "8a917fe2c076578a98d7f7b6ae5db27183b859148bcd890885be83e6e73db398",
+          "evidenceSha256": null,
+          "previousRecordSha256": "dbf0c2cc11349b3dea98f286b1620a52237fd0496a2935e522d81f24c8456858",
+          "issuedAt": "2026-11-15T00:40:33.382Z",
+          "expiresAt": "2026-11-15T01:25:33.382Z",
+          "approvalRef": "https://github.com/kitamura-tetsuo/agent-table/issues/51#issuecomment-6886616675",
+          "requestNonce": "24323ba8a9e679addf777b48fe497c9b2f0fb0bac29d35e58ed0d430ca2511da"
+        },
+        "receipts": [
+          {
+            "format": "agent-table.recovery-inspection.v1",
+            "environment": "staging",
+            "buildSha": "3d65b9ace98720afd2ef48275a3bb76a8638f76e",
+            "configSha256": "56be00421e272f3415e9ee8a694998cfb95243c25462c4ac0b123f0bfdfceb07",
+            "operationId": "4603a356-06f8-408c-bc13-f94f26484328",
+            "generation": "bbdca17200eeca1428bedb579c3461730ded3bb5155d763f8feaf9a514078ce4",
+            "objectId": "7cc725e315964b18b9dd9511a30ac847717c615cb66ed7676734637148e9feea",
+            "binding": "TABLES",
+            "component": "table",
+            "schemaVersion": 12,
+            "manifest": [
+              {
+                "name": "__agent_table_schema",
+                "columns": [
+                  "singleton",
+                  "component",
+                  "version"
+                ]
+              },
+              {
+                "name": "__agent_table_recovery",
+                "columns": [
+                  "singleton",
+                  "component",
+                  "generation",
+                  "operation_id",
+                  "plan_sha256"
+                ]
+              },
+              {
+                "name": "table_event_outbox",
+                "columns": [
+                  "event_id",
+                  "message_id",
+                  "message_seq",
+                  "recipient_membership_id",
+                  "subscription_id",
+                  "subscription_generation",
+                  "status",
+                  "attempt_count",
+                  "first_attempt_at",
+                  "next_attempt_at",
+                  "lease_token",
+                  "lease_deadline",
+                  "created_at",
+                  "expires_at",
+                  "last_error_category"
+                ]
+              },
+              {
+                "name": "table_event_candidates",
+                "columns": [
+                  "membership_id",
+                  "candidate_id",
+                  "subscription_id",
+                  "guest_id",
+                  "connection_id",
+                  "callback_url",
+                  "secret_envelope",
+                  "requested_ttl_ms",
+                  "fence",
+                  "expires_at"
+                ]
+              },
+              {
+                "name": "table_event_subscriptions",
+                "columns": [
+                  "membership_id",
+                  "generation",
+                  "fence",
+                  "status",
+                  "guest_id",
+                  "connection_id",
+                  "subscription_id",
+                  "callback_url",
+                  "secret_envelope",
+                  "previous_secret_envelope",
+                  "rotation_until",
+                  "expires_at"
+                ]
+              },
+              {
+                "name": "table_delete_confirmations",
+                "columns": [
+                  "guest_id",
+                  "request_id",
+                  "expires_at",
+                  "state"
+                ]
+              },
+              {
+                "name": "table_tombstone_delete_receipts",
+                "columns": [
+                  "guest_id",
+                  "request_id"
+                ]
+              },
+              {
+                "name": "table_post_receipts",
+                "columns": [
+                  "guest_id",
+                  "request_id",
+                  "request_digest",
+                  "message_seq"
+                ]
+              },
+              {
+                "name": "table_messages",
+                "columns": [
+                  "seq",
+                  "message_id",
+                  "sender_membership_id",
+                  "body",
+                  "body_bytes",
+                  "created_at",
+                  "reply_to_message_id"
+                ]
+              },
+              {
+                "name": "table_transcript_usage",
+                "columns": [
+                  "singleton",
+                  "body_bytes"
+                ]
+              },
+              {
+                "name": "table_join_receipts",
+                "columns": [
+                  "guest_id",
+                  "request_id",
+                  "invite_id",
+                  "secret_digest",
+                  "membership_id"
+                ]
+              },
+              {
+                "name": "table_invitations",
+                "columns": [
+                  "invite_id",
+                  "request_id",
+                  "issuer_guest_id",
+                  "secret_digest",
+                  "response_envelope",
+                  "issued_at",
+                  "expires_at",
+                  "state",
+                  "consumed_by",
+                  "consumed_at"
+                ]
+              },
+              {
+                "name": "table_memberships",
+                "columns": [
+                  "membership_id",
+                  "table_id",
+                  "guest_id",
+                  "seat",
+                  "role",
+                  "joined_at",
+                  "latest_peer_seq"
+                ]
+              },
+              {
+                "name": "table_metadata",
+                "columns": [
+                  "singleton",
+                  "table_id",
+                  "creation_request_id",
+                  "request_digest",
+                  "creator_guest_id",
+                  "title",
+                  "purpose",
+                  "state",
+                  "created_at",
+                  "expires_at",
+                  "closed_at",
+                  "deleted_at",
+                  "last_seq"
+                ]
+              },
+              {
+                "name": "table_tombstone_guests",
+                "columns": [
+                  "guest_id"
+                ]
+              },
+              {
+                "name": "table_tombstones",
+                "columns": [
+                  "table_id",
+                  "terminal_state",
+                  "expires_at",
+                  "terminal_at",
+                  "retain_until"
+                ]
+              }
+            ],
+            "counts": {
+              "table_event_outbox": 0,
+              "table_event_candidates": 0,
+              "table_event_subscriptions": 0,
+              "table_delete_confirmations": 0,
+              "table_tombstone_delete_receipts": 0,
+              "table_post_receipts": 0,
+              "table_messages": 0,
+              "table_transcript_usage": 1,
+              "table_join_receipts": 0,
+              "table_invitations": 0,
+              "table_memberships": 0,
+              "table_metadata": 0,
+              "table_tombstone_guests": 0,
+              "table_tombstones": 0
+            },
+            "kvEntries": 0,
+            "markerGeneration": "bbdca17200eeca1428bedb579c3461730ded3bb5155d763f8feaf9a514078ce4",
+            "empty": true,
+            "requestNonce": "24323ba8a9e679addf777b48fe497c9b2f0fb0bac29d35e58ed0d430ca2511da"
+          },
+          {
+            "format": "agent-table.recovery-inspection.v1",
+            "environment": "staging",
+            "buildSha": "3d65b9ace98720afd2ef48275a3bb76a8638f76e",
+            "configSha256": "56be00421e272f3415e9ee8a694998cfb95243c25462c4ac0b123f0bfdfceb07",
+            "operationId": "4603a356-06f8-408c-bc13-f94f26484328",
+            "generation": "bbdca17200eeca1428bedb579c3461730ded3bb5155d763f8feaf9a514078ce4",
+            "objectId": "175c631c51a0ad77076998b9cd8f03a3928ebbc07a67d8162c829d1b1f3bc5b1",
+            "binding": "GUESTS",
+            "component": "guest",
+            "schemaVersion": 12,
+            "manifest": [
+              {
+                "name": "__agent_table_schema",
+                "columns": [
+                  "singleton",
+                  "component",
+                  "version"
+                ]
+              },
+              {
+                "name": "__agent_table_recovery",
+                "columns": [
+                  "singleton",
+                  "component",
+                  "generation",
+                  "operation_id",
+                  "plan_sha256"
+                ]
+              },
+              {
+                "name": "guest_creation_reservations",
+                "columns": [
+                  "request_id",
+                  "guest_id",
+                  "request_digest",
+                  "table_id",
+                  "created_at",
+                  "expires_at",
+                  "retention_until",
+                  "charged_at",
+                  "outcome"
+                ]
+              },
+              {
+                "name": "guest_connections",
+                "columns": [
+                  "connection_id",
+                  "guest_id",
+                  "scopes_json",
+                  "created_at",
+                  "expires_at",
+                  "revoked_at"
+                ]
+              },
+              {
+                "name": "guest_sessions",
+                "columns": [
+                  "session_id",
+                  "secret_digest",
+                  "created_at",
+                  "expires_at",
+                  "invalidated_at"
+                ]
+              },
+              {
+                "name": "guest_identity",
+                "columns": [
+                  "singleton",
+                  "guest_id",
+                  "created_at"
+                ]
+              }
+            ],
+            "counts": {
+              "guest_creation_reservations": 0,
+              "guest_connections": 0,
+              "guest_sessions": 0,
+              "guest_identity": 0
+            },
+            "kvEntries": 0,
+            "markerGeneration": "bbdca17200eeca1428bedb579c3461730ded3bb5155d763f8feaf9a514078ce4",
+            "empty": true,
+            "requestNonce": "24323ba8a9e679addf777b48fe497c9b2f0fb0bac29d35e58ed0d430ca2511da"
+          }
+        ],
+        "summary": {
+          "format": "agent-table.recovery-reset-summary.v1",
+          "inventorySha256": "84558c841a1dde8a1b15a62119ac2f27dea783ad4124c5c98471211b039696d0",
+          "receiptSha256": "459c3cd43086112ddcca6bdf8866691473a1492c5406bee19b41e7b2618efe2f",
+          "objectCounts": {
+            "TABLES": 1,
+            "GUESTS": 1,
+            "OAUTH_SERIALIZER": 0,
+            "ADMISSION": 0
+          },
+          "totalObjects": 2
+        },
+        "ingress": {
+          "checkedAt": "2026-11-15T00:41:13.410Z",
+          "routes": 9,
+          "all503": true,
+          "allNoStore": true,
+          "transport": "authenticated-private-service-binding"
+        },
+        "provider": {
+          "observedAt": "2026-11-15T00:41:02.329Z",
+          "workerName": "agent-table-pr51-recovery-staging",
+          "versionId": "20ec8926-7377-46ac-bcc3-85412431dd41",
+          "completeConfigurationSha256": "34ce8d266f5642dd21c09e490592580eea8f5dbfff46e2d5c5a325f1f8038cfb",
+          "configurationCommitment": "56be00421e272f3415e9ee8a694998cfb95243c25462c4ac0b123f0bfdfceb07",
+          "workersDevDisabled": true,
+          "previewsDisabled": true,
+          "actualServiceRoutes": 0,
+          "customDomains": 0,
+          "serviceEnvironment": "production"
+        }
+      },
+      "sha256": "aacce2f0c58fd9dec0774e93ed8dde840efc94f2759972f846a0387793745b4b"
+    },
+    {
+      "action": "fresh-canonical-reset-state-verified",
+      "observedAt": "2026-11-15T00:41:33.953Z",
+      "previousSha256": "aacce2f0c58fd9dec0774e93ed8dde840efc94f2759972f846a0387793745b4b",
+      "metadata": {
+        "at": "2026-11-15T00:41:33.953Z",
+        "inventory": {
+          "format": "agent-table.recovery-inventory.v1",
+          "namespaceIdentity": {
+            "accountId": "0fbaae27d3ff021bc17109f1493d0b2d",
+            "workerName": "agent-table-pr51-recovery-staging",
+            "namespaces": {
+              "OAUTH_KV": "63247a13ec9f4e54912318f73c20dfa3",
+              "TABLES": "3516bed8ba584fb0b3f6743c24b9b4cd",
+              "GUESTS": "87ff46558f6747358c1edbbaa3fe750a",
+              "OAUTH_SERIALIZER": "6641d6933e6642e99fcb8b9f802a3330",
+              "ADMISSION": "f2752cc66c0646f48f571949cbf99a71"
+            },
+            "commitments": {
+              "TABLES": "d8a9469d24ce0c6f49499155ee3f43cda0a0242aec1b221d0a5dc1d6a85dc816",
+              "GUESTS": "6e962c1ebe92e02324492c8588711318049c17736eba8d614a4557f6ac98a0e0",
+              "OAUTH_SERIALIZER": "77943ab8bd24a4d9ed167c7c16311bd82824314857d11aaaaa79ca7e8e163d5f",
+              "ADMISSION": "9243e5b762c70e3f4428503dc8f18c0dfa7d00bfb9c84251582966297f0ab55e"
+            }
+          },
+          "startedAt": "2026-11-15T00:41:29.518Z",
+          "completedAt": "2026-11-15T00:41:31.392Z",
+          "objects": {
+            "TABLES": [
+              {
+                "id": "7cc725e315964b18b9dd9511a30ac847717c615cb66ed7676734637148e9feea",
+                "hasStoredData": true
+              }
+            ],
+            "GUESTS": [
+              {
+                "id": "175c631c51a0ad77076998b9cd8f03a3928ebbc07a67d8162c829d1b1f3bc5b1",
+                "hasStoredData": true
+              }
+            ],
+            "OAUTH_SERIALIZER": [],
+            "ADMISSION": []
+          },
+          "oauthKeys": [],
+          "counts": {
+            "TABLES": 1,
+            "GUESTS": 1,
+            "OAUTH_SERIALIZER": 0,
+            "ADMISSION": 0,
+            "OAUTH_KV": 0
+          }
+        },
+        "expected": {
+          "format": "agent-table.fresh-start.v1",
+          "phase": "reset",
+          "operationId": "4603a356-06f8-408c-bc13-f94f26484328",
+          "generation": "bbdca17200eeca1428bedb579c3461730ded3bb5155d763f8feaf9a514078ce4",
+          "environment": "staging",
+          "buildSha": "3d65b9ace98720afd2ef48275a3bb76a8638f76e",
+          "configSha256": "56be00421e272f3415e9ee8a694998cfb95243c25462c4ac0b123f0bfdfceb07",
+          "schemaVersion": 12,
+          "namespaceIdentity": {
+            "accountId": "0fbaae27d3ff021bc17109f1493d0b2d",
+            "workerName": "agent-table-pr51-recovery-staging",
+            "namespaces": {
+              "OAUTH_KV": "63247a13ec9f4e54912318f73c20dfa3",
+              "TABLES": "3516bed8ba584fb0b3f6743c24b9b4cd",
+              "GUESTS": "87ff46558f6747358c1edbbaa3fe750a",
+              "OAUTH_SERIALIZER": "6641d6933e6642e99fcb8b9f802a3330",
+              "ADMISSION": "f2752cc66c0646f48f571949cbf99a71"
+            },
+            "commitments": {
+              "TABLES": "d8a9469d24ce0c6f49499155ee3f43cda0a0242aec1b221d0a5dc1d6a85dc816",
+              "GUESTS": "6e962c1ebe92e02324492c8588711318049c17736eba8d614a4557f6ac98a0e0",
+              "OAUTH_SERIALIZER": "77943ab8bd24a4d9ed167c7c16311bd82824314857d11aaaaa79ca7e8e163d5f",
+              "ADMISSION": "9243e5b762c70e3f4428503dc8f18c0dfa7d00bfb9c84251582966297f0ab55e"
+            }
+          },
+          "planSha256": "8a917fe2c076578a98d7f7b6ae5db27183b859148bcd890885be83e6e73db398",
+          "evidenceSha256": null,
+          "previousRecordSha256": "dbf0c2cc11349b3dea98f286b1620a52237fd0496a2935e522d81f24c8456858",
+          "issuedAt": "2026-11-15T00:40:33.382Z",
+          "expiresAt": "2026-11-15T01:25:33.382Z",
+          "approvalRef": "https://github.com/kitamura-tetsuo/agent-table/issues/51#issuecomment-6886616675",
+          "requestNonce": "cb0a03366f6d60e418375a5f57afbc754715c34a8fbb6d7f324cd0f5b9db4b92"
+        },
+        "receipts": [
+          {
+            "format": "agent-table.recovery-inspection.v1",
+            "environment": "staging",
+            "buildSha": "3d65b9ace98720afd2ef48275a3bb76a8638f76e",
+            "configSha256": "56be00421e272f3415e9ee8a694998cfb95243c25462c4ac0b123f0bfdfceb07",
+            "operationId": "4603a356-06f8-408c-bc13-f94f26484328",
+            "generation": "bbdca17200eeca1428bedb579c3461730ded3bb5155d763f8feaf9a514078ce4",
+            "objectId": "7cc725e315964b18b9dd9511a30ac847717c615cb66ed7676734637148e9feea",
+            "binding": "TABLES",
+            "component": "table",
+            "schemaVersion": 12,
+            "manifest": [
+              {
+                "name": "__agent_table_schema",
+                "columns": [
+                  "singleton",
+                  "component",
+                  "version"
+                ]
+              },
+              {
+                "name": "__agent_table_recovery",
+                "columns": [
+                  "singleton",
+                  "component",
+                  "generation",
+                  "operation_id",
+                  "plan_sha256"
+                ]
+              },
+              {
+                "name": "table_event_outbox",
+                "columns": [
+                  "event_id",
+                  "message_id",
+                  "message_seq",
+                  "recipient_membership_id",
+                  "subscription_id",
+                  "subscription_generation",
+                  "status",
+                  "attempt_count",
+                  "first_attempt_at",
+                  "next_attempt_at",
+                  "lease_token",
+                  "lease_deadline",
+                  "created_at",
+                  "expires_at",
+                  "last_error_category"
+                ]
+              },
+              {
+                "name": "table_event_candidates",
+                "columns": [
+                  "membership_id",
+                  "candidate_id",
+                  "subscription_id",
+                  "guest_id",
+                  "connection_id",
+                  "callback_url",
+                  "secret_envelope",
+                  "requested_ttl_ms",
+                  "fence",
+                  "expires_at"
+                ]
+              },
+              {
+                "name": "table_event_subscriptions",
+                "columns": [
+                  "membership_id",
+                  "generation",
+                  "fence",
+                  "status",
+                  "guest_id",
+                  "connection_id",
+                  "subscription_id",
+                  "callback_url",
+                  "secret_envelope",
+                  "previous_secret_envelope",
+                  "rotation_until",
+                  "expires_at"
+                ]
+              },
+              {
+                "name": "table_delete_confirmations",
+                "columns": [
+                  "guest_id",
+                  "request_id",
+                  "expires_at",
+                  "state"
+                ]
+              },
+              {
+                "name": "table_tombstone_delete_receipts",
+                "columns": [
+                  "guest_id",
+                  "request_id"
+                ]
+              },
+              {
+                "name": "table_post_receipts",
+                "columns": [
+                  "guest_id",
+                  "request_id",
+                  "request_digest",
+                  "message_seq"
+                ]
+              },
+              {
+                "name": "table_messages",
+                "columns": [
+                  "seq",
+                  "message_id",
+                  "sender_membership_id",
+                  "body",
+                  "body_bytes",
+                  "created_at",
+                  "reply_to_message_id"
+                ]
+              },
+              {
+                "name": "table_transcript_usage",
+                "columns": [
+                  "singleton",
+                  "body_bytes"
+                ]
+              },
+              {
+                "name": "table_join_receipts",
+                "columns": [
+                  "guest_id",
+                  "request_id",
+                  "invite_id",
+                  "secret_digest",
+                  "membership_id"
+                ]
+              },
+              {
+                "name": "table_invitations",
+                "columns": [
+                  "invite_id",
+                  "request_id",
+                  "issuer_guest_id",
+                  "secret_digest",
+                  "response_envelope",
+                  "issued_at",
+                  "expires_at",
+                  "state",
+                  "consumed_by",
+                  "consumed_at"
+                ]
+              },
+              {
+                "name": "table_memberships",
+                "columns": [
+                  "membership_id",
+                  "table_id",
+                  "guest_id",
+                  "seat",
+                  "role",
+                  "joined_at",
+                  "latest_peer_seq"
+                ]
+              },
+              {
+                "name": "table_metadata",
+                "columns": [
+                  "singleton",
+                  "table_id",
+                  "creation_request_id",
+                  "request_digest",
+                  "creator_guest_id",
+                  "title",
+                  "purpose",
+                  "state",
+                  "created_at",
+                  "expires_at",
+                  "closed_at",
+                  "deleted_at",
+                  "last_seq"
+                ]
+              },
+              {
+                "name": "table_tombstone_guests",
+                "columns": [
+                  "guest_id"
+                ]
+              },
+              {
+                "name": "table_tombstones",
+                "columns": [
+                  "table_id",
+                  "terminal_state",
+                  "expires_at",
+                  "terminal_at",
+                  "retain_until"
+                ]
+              }
+            ],
+            "counts": {
+              "table_event_outbox": 0,
+              "table_event_candidates": 0,
+              "table_event_subscriptions": 0,
+              "table_delete_confirmations": 0,
+              "table_tombstone_delete_receipts": 0,
+              "table_post_receipts": 0,
+              "table_messages": 0,
+              "table_transcript_usage": 1,
+              "table_join_receipts": 0,
+              "table_invitations": 0,
+              "table_memberships": 0,
+              "table_metadata": 0,
+              "table_tombstone_guests": 0,
+              "table_tombstones": 0
+            },
+            "kvEntries": 0,
+            "markerGeneration": "bbdca17200eeca1428bedb579c3461730ded3bb5155d763f8feaf9a514078ce4",
+            "empty": true,
+            "requestNonce": "cb0a03366f6d60e418375a5f57afbc754715c34a8fbb6d7f324cd0f5b9db4b92"
+          },
+          {
+            "format": "agent-table.recovery-inspection.v1",
+            "environment": "staging",
+            "buildSha": "3d65b9ace98720afd2ef48275a3bb76a8638f76e",
+            "configSha256": "56be00421e272f3415e9ee8a694998cfb95243c25462c4ac0b123f0bfdfceb07",
+            "operationId": "4603a356-06f8-408c-bc13-f94f26484328",
+            "generation": "bbdca17200eeca1428bedb579c3461730ded3bb5155d763f8feaf9a514078ce4",
+            "objectId": "175c631c51a0ad77076998b9cd8f03a3928ebbc07a67d8162c829d1b1f3bc5b1",
+            "binding": "GUESTS",
+            "component": "guest",
+            "schemaVersion": 12,
+            "manifest": [
+              {
+                "name": "__agent_table_schema",
+                "columns": [
+                  "singleton",
+                  "component",
+                  "version"
+                ]
+              },
+              {
+                "name": "__agent_table_recovery",
+                "columns": [
+                  "singleton",
+                  "component",
+                  "generation",
+                  "operation_id",
+                  "plan_sha256"
+                ]
+              },
+              {
+                "name": "guest_creation_reservations",
+                "columns": [
+                  "request_id",
+                  "guest_id",
+                  "request_digest",
+                  "table_id",
+                  "created_at",
+                  "expires_at",
+                  "retention_until",
+                  "charged_at",
+                  "outcome"
+                ]
+              },
+              {
+                "name": "guest_connections",
+                "columns": [
+                  "connection_id",
+                  "guest_id",
+                  "scopes_json",
+                  "created_at",
+                  "expires_at",
+                  "revoked_at"
+                ]
+              },
+              {
+                "name": "guest_sessions",
+                "columns": [
+                  "session_id",
+                  "secret_digest",
+                  "created_at",
+                  "expires_at",
+                  "invalidated_at"
+                ]
+              },
+              {
+                "name": "guest_identity",
+                "columns": [
+                  "singleton",
+                  "guest_id",
+                  "created_at"
+                ]
+              }
+            ],
+            "counts": {
+              "guest_creation_reservations": 0,
+              "guest_connections": 0,
+              "guest_sessions": 0,
+              "guest_identity": 0
+            },
+            "kvEntries": 0,
+            "markerGeneration": "bbdca17200eeca1428bedb579c3461730ded3bb5155d763f8feaf9a514078ce4",
+            "empty": true,
+            "requestNonce": "cb0a03366f6d60e418375a5f57afbc754715c34a8fbb6d7f324cd0f5b9db4b92"
+          }
+        ],
+        "summary": {
+          "format": "agent-table.recovery-reset-summary.v1",
+          "inventorySha256": "84558c841a1dde8a1b15a62119ac2f27dea783ad4124c5c98471211b039696d0",
+          "receiptSha256": "8da403971ed27f23b54639c05da7c3282d3fa947a7457bfe0a160a95ce49971f",
+          "objectCounts": {
+            "TABLES": 1,
+            "GUESTS": 1,
+            "OAUTH_SERIALIZER": 0,
+            "ADMISSION": 0
+          },
+          "totalObjects": 2
+        },
+        "ingress": {
+          "checkedAt": "2026-11-15T00:41:33.521Z",
+          "routes": 9,
+          "all503": true,
+          "allNoStore": true,
+          "transport": "authenticated-private-service-binding"
+        },
+        "provider": {
+          "observedAt": "2026-11-15T00:41:23.900Z",
+          "workerName": "agent-table-pr51-recovery-staging",
+          "versionId": "20ec8926-7377-46ac-bcc3-85412431dd41",
+          "completeConfigurationSha256": "34ce8d266f5642dd21c09e490592580eea8f5dbfff46e2d5c5a325f1f8038cfb",
+          "configurationCommitment": "56be00421e272f3415e9ee8a694998cfb95243c25462c4ac0b123f0bfdfceb07",
+          "workersDevDisabled": true,
+          "previewsDisabled": true,
+          "actualServiceRoutes": 0,
+          "customDomains": 0,
+          "serviceEnvironment": "production"
+        }
+      },
+      "sha256": "3f8d5034400f2d7ba709f305275f5e2e92a075a2f67f92aa11b7ec79e275ee18"
+    },
+    {
+      "action": "deployment-prepared",
+      "observedAt": "2026-11-15T00:41:34.356Z",
+      "previousSha256": "3f8d5034400f2d7ba709f305275f5e2e92a075a2f67f92aa11b7ec79e275ee18",
+      "metadata": {
+        "purpose": "approved-synthetic-clearance",
+        "configurationCommitment": "58aaf16f7cacf06c3b0b568b4e3858c9c399d86b826348630c99a99f0a2330fa",
+        "completeConfigurationSha256": "2ba3b86777a782cde9aba670bff51a244c89ceb664d1e3c82abe0996f7ffde71",
+        "certificateSha256": "80f6f473d025c816b55c87a3db0507f33f4c9ed9e2acd26d2655d045ee9e8d10",
+        "claims": {
+          "format": "agent-table.fresh-start.v1",
+          "phase": "serve",
+          "operationId": "4603a356-06f8-408c-bc13-f94f26484328",
+          "generation": "bbdca17200eeca1428bedb579c3461730ded3bb5155d763f8feaf9a514078ce4",
+          "environment": "staging",
+          "buildSha": "3d65b9ace98720afd2ef48275a3bb76a8638f76e",
+          "configSha256": "58aaf16f7cacf06c3b0b568b4e3858c9c399d86b826348630c99a99f0a2330fa",
+          "schemaVersion": 12,
+          "namespaceIdentity": {
+            "accountId": "0fbaae27d3ff021bc17109f1493d0b2d",
+            "workerName": "agent-table-pr51-recovery-staging",
+            "namespaces": {
+              "OAUTH_KV": "63247a13ec9f4e54912318f73c20dfa3",
+              "TABLES": "3516bed8ba584fb0b3f6743c24b9b4cd",
+              "GUESTS": "87ff46558f6747358c1edbbaa3fe750a",
+              "OAUTH_SERIALIZER": "6641d6933e6642e99fcb8b9f802a3330",
+              "ADMISSION": "f2752cc66c0646f48f571949cbf99a71"
+            },
+            "commitments": {
+              "TABLES": "d8a9469d24ce0c6f49499155ee3f43cda0a0242aec1b221d0a5dc1d6a85dc816",
+              "GUESTS": "6e962c1ebe92e02324492c8588711318049c17736eba8d614a4557f6ac98a0e0",
+              "OAUTH_SERIALIZER": "77943ab8bd24a4d9ed167c7c16311bd82824314857d11aaaaa79ca7e8e163d5f",
+              "ADMISSION": "9243e5b762c70e3f4428503dc8f18c0dfa7d00bfb9c84251582966297f0ab55e"
+            }
+          },
+          "planSha256": "8a917fe2c076578a98d7f7b6ae5db27183b859148bcd890885be83e6e73db398",
+          "evidenceSha256": "3cd59ec2fa2f69d44f9c471332e1e0eb5343a4df6c6ce5601cba185bef2ec0f7",
+          "previousRecordSha256": "3f8d5034400f2d7ba709f305275f5e2e92a075a2f67f92aa11b7ec79e275ee18",
+          "issuedAt": "2026-11-15T00:41:33.958Z",
+          "expiresAt": null,
+          "approvalRef": "https://github.com/kitamura-tetsuo/agent-table/issues/51#issuecomment-6886616675"
+        }
+      },
+      "sha256": "7e2035b01d8b810b0fa1eab28db6900b04fd875ea4ae43b374cbea20c31cbe05"
+    },
+    {
+      "action": "deployment-verified",
+      "observedAt": "2026-11-15T00:41:40.526Z",
+      "previousSha256": "7e2035b01d8b810b0fa1eab28db6900b04fd875ea4ae43b374cbea20c31cbe05",
+      "metadata": {
+        "purpose": "approved-synthetic-clearance",
+        "recoveredCommandFailure": false,
+        "observedAt": "2026-11-15T00:41:40.525Z",
+        "workerName": "agent-table-pr51-recovery-staging",
+        "versionId": "ffe95a9c-518e-444d-9051-f38bf7a56622",
+        "completeConfigurationSha256": "2ba3b86777a782cde9aba670bff51a244c89ceb664d1e3c82abe0996f7ffde71",
+        "configurationCommitment": "58aaf16f7cacf06c3b0b568b4e3858c9c399d86b826348630c99a99f0a2330fa",
+        "workersDevDisabled": true,
+        "previewsDisabled": true,
+        "actualServiceRoutes": 0,
+        "customDomains": 0,
+        "serviceEnvironment": "production"
+      },
+      "sha256": "1b021475f5f351941df7750bf11f479516e5d8c4643ab06fde703a9a2a5b3c4d"
+    },
+    {
+      "action": "clearance-verification-failed",
+      "observedAt": "2026-11-15T00:41:43.465Z",
+      "previousSha256": "1b021475f5f351941df7750bf11f479516e5d8c4643ab06fde703a9a2a5b3c4d",
+      "metadata": {
+        "errorCode": "new-guest-admission-remains-disabled:status"
+      },
+      "sha256": "8bd70b188571dece8c62c13ea222ad192163e0fdd4423ce72df983bddab7d4aa"
+    },
+    {
+      "action": "deployment-prepared",
+      "observedAt": "2026-11-15T00:41:44.594Z",
+      "previousSha256": "8bd70b188571dece8c62c13ea222ad192163e0fdd4423ce72df983bddab7d4aa",
+      "metadata": {
+        "purpose": "quarantine-only-rollback",
+        "configurationCommitment": "56be00421e272f3415e9ee8a694998cfb95243c25462c4ac0b123f0bfdfceb07",
+        "completeConfigurationSha256": "0b886ef1c82a54292096961cf38ab90dcb2b62fc5c61094090ce70cff6456ca2",
+        "certificateSha256": "9970d7d50abd10a01ce145032b3c0f4e386c7d5d8e037c99478be20083e83ce5",
+        "claims": {
+          "format": "agent-table.fresh-start.v1",
+          "phase": "reset",
+          "operationId": "4603a356-06f8-408c-bc13-f94f26484328",
+          "generation": "bbdca17200eeca1428bedb579c3461730ded3bb5155d763f8feaf9a514078ce4",
+          "environment": "staging",
+          "buildSha": "3d65b9ace98720afd2ef48275a3bb76a8638f76e",
+          "configSha256": "56be00421e272f3415e9ee8a694998cfb95243c25462c4ac0b123f0bfdfceb07",
+          "schemaVersion": 12,
+          "namespaceIdentity": {
+            "accountId": "0fbaae27d3ff021bc17109f1493d0b2d",
+            "workerName": "agent-table-pr51-recovery-staging",
+            "namespaces": {
+              "OAUTH_KV": "63247a13ec9f4e54912318f73c20dfa3",
+              "TABLES": "3516bed8ba584fb0b3f6743c24b9b4cd",
+              "GUESTS": "87ff46558f6747358c1edbbaa3fe750a",
+              "OAUTH_SERIALIZER": "6641d6933e6642e99fcb8b9f802a3330",
+              "ADMISSION": "f2752cc66c0646f48f571949cbf99a71"
+            },
+            "commitments": {
+              "TABLES": "d8a9469d24ce0c6f49499155ee3f43cda0a0242aec1b221d0a5dc1d6a85dc816",
+              "GUESTS": "6e962c1ebe92e02324492c8588711318049c17736eba8d614a4557f6ac98a0e0",
+              "OAUTH_SERIALIZER": "77943ab8bd24a4d9ed167c7c16311bd82824314857d11aaaaa79ca7e8e163d5f",
+              "ADMISSION": "9243e5b762c70e3f4428503dc8f18c0dfa7d00bfb9c84251582966297f0ab55e"
+            }
+          },
+          "planSha256": "8a917fe2c076578a98d7f7b6ae5db27183b859148bcd890885be83e6e73db398",
+          "evidenceSha256": null,
+          "previousRecordSha256": "8bd70b188571dece8c62c13ea222ad192163e0fdd4423ce72df983bddab7d4aa",
+          "issuedAt": "2026-11-15T00:41:43.995Z",
+          "expiresAt": "2026-11-15T01:26:43.995Z",
+          "approvalRef": "https://github.com/kitamura-tetsuo/agent-table/issues/51#issuecomment-6886616675"
+        }
+      },
+      "sha256": "d08079a97ae8b9e2e5e52c0db02ea5fdb32776ac53703431a30731bff1e225fa"
+    },
+    {
+      "action": "deployment-verified",
+      "observedAt": "2026-11-15T00:41:50.086Z",
+      "previousSha256": "d08079a97ae8b9e2e5e52c0db02ea5fdb32776ac53703431a30731bff1e225fa",
+      "metadata": {
+        "purpose": "quarantine-only-rollback",
+        "recoveredCommandFailure": false,
+        "observedAt": "2026-11-15T00:41:50.086Z",
+        "workerName": "agent-table-pr51-recovery-staging",
+        "versionId": "c419489a-a11d-4486-bd8d-7d60cf02ae31",
+        "completeConfigurationSha256": "0b886ef1c82a54292096961cf38ab90dcb2b62fc5c61094090ce70cff6456ca2",
+        "configurationCommitment": "56be00421e272f3415e9ee8a694998cfb95243c25462c4ac0b123f0bfdfceb07",
+        "workersDevDisabled": true,
+        "previewsDisabled": true,
+        "actualServiceRoutes": 0,
+        "customDomains": 0,
+        "serviceEnvironment": "production"
+      },
+      "sha256": "a9f69d2c8063f6eb7961ed0ad32a5bd1bf88cf320ae9058064501d97c38addef"
+    },
+    {
+      "action": "rollback-verified",
+      "observedAt": "2026-11-15T00:41:52.700Z",
+      "previousSha256": "a9f69d2c8063f6eb7961ed0ad32a5bd1bf88cf320ae9058064501d97c38addef",
+      "metadata": {
+        "observedAt": "2026-11-15T00:41:50.086Z",
+        "workerName": "agent-table-pr51-recovery-staging",
+        "versionId": "c419489a-a11d-4486-bd8d-7d60cf02ae31",
+        "completeConfigurationSha256": "0b886ef1c82a54292096961cf38ab90dcb2b62fc5c61094090ce70cff6456ca2",
+        "configurationCommitment": "56be00421e272f3415e9ee8a694998cfb95243c25462c4ac0b123f0bfdfceb07",
+        "workersDevDisabled": true,
+        "previewsDisabled": true,
+        "actualServiceRoutes": 0,
+        "customDomains": 0,
+        "serviceEnvironment": "production",
+        "ingress": {
+          "checkedAt": "2026-11-15T00:41:52.685Z",
+          "routes": 9,
+          "all503": true,
+          "allNoStore": true,
+          "transport": "authenticated-private-service-binding"
+        },
+        "destructiveRpcCalls": false,
+        "namespaceChanges": false
+      },
+      "sha256": "7a142579d74b589b7abf611116ec9701b457b1221642ed66767669aa1fd60fe0"
+    }
+  ],
+  "protectedWorkflowAttestation": null,
+  "productionRecoveryJournalClaim": null,
+  "destructiveResetPerformed": false,
+  "pitrPerformed": false,
+  "namespaceChanges": false,
+  "limitations": [
+    "Synthetic-only manual approval does not authorize existing staging, production or public intake.",
+    "Old hosted credentials are also expired; their denial alone does not isolate revocation or reset.",
+    "Admission rate metadata can be created by ordinary private HTTP checks after clearance.",
+    "KV listing and canonical receipts are observations, not claims of global cache or backup erasure."
+  ]
+}
