@@ -152,7 +152,8 @@ async function grantFor(
     }),
   );
   expect(exchanged.status).toBe(200);
-  const token = String((await json(exchanged)).access_token);
+  const tokenResponse = await json(exchanged);
+  const token = String(tokenResponse.access_token);
   const newCookie =
     consent.headers
       .getSetCookie()
@@ -170,6 +171,8 @@ async function grantFor(
     guestId,
     guest,
     token,
+    refreshToken: String(tokenResponse.refresh_token),
+    clientId,
     cookie: newCookie,
     connectionId: live?.connectionId ?? "",
   };
@@ -3875,3 +3878,332 @@ describe("protected production relay runtime selection", () => {
     }
   });
 });
+
+// Optional local Node/HTTPS/SQLite boundary; run via run-relay-operator-workerd.mjs.
+declare const __OPERATOR_BRIDGE__: string;
+it.skipIf(typeof __OPERATOR_BRIDGE__ === "undefined" || !__OPERATOR_BRIDGE__)(
+  "actual operator recovery from MCP producer preserves unknown and charges next ordinal",
+  async () => {
+    const a = await newPrincipal(undefined, "192.0.2.51");
+    const b = await newPrincipal(undefined, "192.0.2.51");
+    const setupA = await clientFor(a.token),
+      setupB = await clientFor(b.token);
+    const tableId = await createTable(setupA);
+    const invite = toolOutput(
+      await setupA.callTool({
+        name: "create_invite",
+        arguments: { table_id: tableId, request_id: crypto.randomUUID() },
+      }),
+    );
+    expect(
+      (
+        await setupB.callTool({
+          name: "join_table",
+          arguments: {
+            invitation: invite.invitation,
+            request_id: crypto.randomUUID(),
+          },
+        })
+      ).isError,
+    ).not.toBe(true);
+    await setupA.close();
+    await setupB.close();
+    const overlay: Env = {
+      ...env,
+      ...relayBindings(),
+      EVENTS_RELAY_SIGNING_KEY_PKCS8: syntheticRelayKey,
+    };
+    const configure = async () => {
+      const stub = env.TABLES.get(env.TABLES.idFromName(tableId));
+      await evictDurableObject(stub);
+      await runInDurableObject(stub, (instance) => {
+        (instance as unknown as { env: Env }).env = overlay;
+      });
+      return stub;
+    };
+    await configure();
+
+    const originalFetch = globalThis.fetch.bind(globalThis);
+    const control = async (path: string, data: unknown = {}) => {
+      const response = await originalFetch(`${__OPERATOR_BRIDGE__}${path}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(data),
+      });
+      expect(response.status).toBe(200);
+      return response.json() as Promise<{
+        recovered: boolean;
+        outcome: string;
+        machineVerifiedTransportStop: boolean;
+        completed: number;
+        messages: Array<{ requestId: string; payload: string }>;
+      }>;
+    };
+    const paths: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      expect(new URL(String(url)).origin).toBe("https://relay.example.org");
+      const path = new URL(String(url)).pathname;
+      paths.push(path);
+      const bytes = new Uint8Array(init?.body as ArrayBuffer);
+      return originalFetch(`${__OPERATOR_BRIDGE__}/relay`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          path,
+          headers: Object.fromEntries(new Headers(init?.headers)),
+          body: btoa(String.fromCharCode(...bytes)),
+          now: Date.now(),
+        }),
+      });
+    });
+    let ac = await clientFor(a.token, overlay),
+      bc = await clientFor(b.token, overlay);
+    try {
+      await callEvent(ac, "events/subscribe", subscriptionParams(tableId));
+      const post = await bc.callTool({
+        name: "post_message",
+        arguments: {
+          table_id: tableId,
+          body: "SYNTHETIC OPERATOR WORKER",
+          request_id: crypto.randomUUID(),
+        },
+      });
+      expect(post.isError).not.toBe(true);
+      const rows = async () => {
+        const stub = await configure();
+        return runInDurableObject(stub, (_instance, state) => ({
+          outbox: state.storage.sql
+            .exec<Record<string, string | number | null>>(
+              "SELECT * FROM table_event_outbox",
+            )
+            .toArray(),
+          attempts: state.storage.sql
+            .exec<Record<string, string | number | null>>(
+              "SELECT * FROM table_event_relay_attempts ORDER BY ordinal",
+            )
+            .toArray(),
+        }));
+      };
+      const alarm = async () => {
+        const stub = await configure();
+        await runInDurableObject(stub, async (instance) => {
+          await instance.alarm();
+        });
+      };
+      const queued = await rows();
+      expect(queued.outbox).toHaveLength(1);
+      vi.spyOn(Date, "now").mockReturnValue(
+        Number(queued.outbox[0].next_attempt_at) + 1,
+      );
+      await alarm();
+      const before = await rows();
+      expect(before.outbox).toHaveLength(1);
+      expect(before.attempts).toHaveLength(1);
+      expect(before.outbox[0]).toMatchObject({
+        status: "in_flight",
+        attempt_count: 1,
+      });
+      expect(before.attempts[0].state).toBe("unknown");
+      const original = before.attempts[0];
+      const now = Number(before.outbox[0].lease_deadline) + 1;
+      vi.spyOn(Date, "now").mockReturnValue(now);
+      expect(await control("/recover", { now })).toEqual({
+        recovered: true,
+        outcome: "unknown",
+        machineVerifiedTransportStop: false,
+      });
+      await alarm();
+      const recovered = await rows();
+      expect(recovered.attempts[0]).toEqual(original);
+      expect(recovered.outbox[0]).toMatchObject({
+        status: "pending",
+        attempt_count: 1,
+      });
+      vi.spyOn(Date, "now").mockReturnValue(
+        Number(recovered.outbox[0].next_attempt_at) + 1,
+      );
+      await alarm();
+      const finished = await rows();
+      expect(finished.attempts).toHaveLength(2);
+      expect(finished.attempts[0]).toEqual(original);
+      expect(finished.outbox[0]).toMatchObject({
+        status: "accepted",
+        attempt_count: 2,
+        first_attempt_at: before.outbox[0].first_attempt_at,
+      });
+      expect(finished.attempts[1].request_id).not.toBe(original.request_id);
+      expect(finished.attempts[1].event_id).toBe(original.event_id);
+      const observed = await control("/inspect");
+      expect(observed.completed).toBe(2);
+      expect(observed.recovered).toBe(true);
+      expect(observed.messages.map((m) => m.requestId)).toEqual(
+        finished.attempts.map((r) => r.request_id),
+      );
+      const payloads = observed.messages.map((m) =>
+        JSON.parse(atob(m.payload)),
+      );
+      expect(payloads[1]).toEqual(payloads[0]);
+      expect(paths).toEqual([
+        "/relay/v1/challenge",
+        "/relay/v1/message",
+        "/relay/v1/status",
+        "/relay/v1/message",
+      ]);
+      const postSynthetic = async () => {
+        const result = await bc.callTool({
+          name: "post_message",
+          arguments: {
+            table_id: tableId,
+            body: "SYNTHETIC BOUNDED RETRY",
+            request_id: crypto.randomUUID(),
+          },
+        });
+        expect(result.isError).not.toBe(true);
+      };
+      await postSynthetic();
+      const capEvent = (await rows()).outbox.find(
+        (r) => r.event_id !== original.event_id,
+      )!;
+      let capFirst: string | number | null = null;
+      for (let ordinal = 1; ordinal <= 8; ordinal++) {
+        const pending = (await rows()).outbox.find(
+          (r) => r.event_id === capEvent.event_id,
+        )!;
+        expect(pending.status).toBe("pending");
+        vi.spyOn(Date, "now").mockReturnValue(
+          Number(pending.next_attempt_at) + 1,
+        );
+        await alarm();
+        const current = (await rows()).outbox.find(
+          (r) => r.event_id === capEvent.event_id,
+        )!;
+        capFirst ??= current.first_attempt_at;
+        expect(current.first_attempt_at).toBe(capFirst);
+        expect(current.attempt_count).toBe(ordinal);
+        expect(current.status).toBe(ordinal === 8 ? "failed" : "pending");
+      }
+      const capped = await rows();
+      expect(
+        capped.attempts.filter((r) => r.event_id === capEvent.event_id),
+      ).toHaveLength(8);
+      expect(
+        capped.outbox.find((r) => r.event_id === capEvent.event_id),
+      ).toMatchObject({
+        status: "failed",
+        attempt_count: 8,
+        last_error_category: "retry-exhausted",
+        next_attempt_at: null,
+      });
+      const callbacksAtCap = (await control("/inspect")).completed;
+      expect(callbacksAtCap).toBe(10);
+      vi.spyOn(Date, "now").mockReturnValue(Date.now() + 60000);
+      await alarm();
+      await alarm();
+      expect((await control("/inspect")).completed).toBe(callbacksAtCap);
+      expect(
+        (await rows()).attempts.filter((r) => r.event_id === capEvent.event_id),
+      ).toHaveLength(8);
+
+      const refreshAccess = async (principal: typeof a) => {
+        const response = await dispatch(
+          new Request(`${ORIGIN}/oauth/token`, {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+            body: new URLSearchParams({
+              client_id: principal.clientId,
+              grant_type: "refresh_token",
+              refresh_token: principal.refreshToken,
+              resource: RESOURCE,
+            }),
+          }),
+          overlay,
+        );
+        expect(response.status).toBe(200);
+        const tokens = await json(response);
+        principal.refreshToken = String(tokens.refresh_token);
+        return String(tokens.access_token);
+      };
+      await bc.close();
+      bc = await clientFor(await refreshAccess(b), overlay);
+      await postSynthetic();
+      const horizonEvent = (await rows()).outbox.find(
+        (r) =>
+          r.event_id !== original.event_id && r.event_id !== capEvent.event_id,
+      )!;
+      vi.spyOn(Date, "now").mockReturnValue(
+        Number(horizonEvent.next_attempt_at) + 1,
+      );
+      await alarm();
+      const started = await rows();
+      const charged = started.outbox.find(
+        (r) => r.event_id === horizonEvent.event_id,
+      )!;
+      const horizonOriginal = started.attempts.find(
+        (r) => r.event_id === horizonEvent.event_id,
+      )!;
+      expect(charged).toMatchObject({ status: "pending", attempt_count: 1 });
+      const retryDeadline = Number(charged.first_attempt_at) + 3600000;
+      // Renew through the actual subscription API before expiry: lifecycle stays
+      // valid beyond the retry horizon while the original budget stays fixed.
+      vi.spyOn(Date, "now").mockReturnValue(
+        Number(charged.first_attempt_at) + 1800000,
+      );
+      await ac.close();
+      ac = await clientFor(await refreshAccess(a), overlay);
+      await callEvent(ac, "events/subscribe", subscriptionParams(tableId));
+      const refreshed = (await rows()).outbox.find(
+        (r) => r.event_id === horizonEvent.event_id,
+      )!;
+      expect(refreshed.first_attempt_at).toBe(charged.first_attempt_at);
+      expect(refreshed.attempt_count).toBe(1);
+      expect(Number(refreshed.expires_at)).toBeGreaterThan(retryDeadline);
+      expect(Number(refreshed.subscription_generation)).toBeGreaterThan(
+        Number(charged.subscription_generation),
+      );
+      // Finish refresh-credential rotation cleanup during a real outbound pause,
+      // independently of the subsequent retry-deadline cleanup.
+      overlay.ALLOW_OUTBOUND_NOTIFICATIONS = "false";
+      vi.spyOn(Date, "now").mockReturnValue(
+        Number(charged.first_attempt_at) + 2400000,
+      );
+      await alarm();
+      await alarm();
+      expect(
+        (await rows()).outbox.find((r) => r.event_id === horizonEvent.event_id),
+      ).toMatchObject({
+        status: "pending",
+        attempt_count: 1,
+        first_attempt_at: charged.first_attempt_at,
+      });
+      expect((await control("/inspect")).completed).toBe(11);
+      overlay.ALLOW_OUTBOUND_NOTIFICATIONS = "true";
+      vi.spyOn(Date, "now").mockReturnValue(retryDeadline + 1);
+      const beforeDeadlineCallbacks = (await control("/inspect")).completed;
+      expect(beforeDeadlineCallbacks).toBe(11);
+      await alarm();
+      await alarm();
+      const expired = await rows();
+      expect(
+        expired.outbox.find((r) => r.event_id === horizonEvent.event_id),
+      ).toMatchObject({
+        status: "failed",
+        attempt_count: 1,
+        last_error_category: "retry-exhausted",
+        next_attempt_at: null,
+        first_attempt_at: charged.first_attempt_at,
+      });
+      expect(
+        expired.attempts.find((r) => r.event_id === horizonEvent.event_id),
+      ).toEqual(horizonOriginal);
+      expect(
+        expired.attempts.find((r) => r.request_id === original.request_id),
+      ).toEqual(original);
+      expect((await control("/inspect")).completed).toBe(
+        beforeDeadlineCallbacks,
+      );
+    } finally {
+      await ac.close();
+      await bc.close();
+    }
+  },
+);

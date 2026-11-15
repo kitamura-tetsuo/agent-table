@@ -46,6 +46,8 @@ jobs:
         run: npm test
       - name: Worker integration tests
         run: npm run test:integration
+      - name: Relay operator real-producer recovery
+        run: npm run test:relay-operator
       - name: Restore runtime tests
         run: npm run test:restore-runtime
       - run: npm run probe:subscriptions:sdk
