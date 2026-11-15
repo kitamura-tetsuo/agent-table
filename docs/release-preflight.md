@@ -1,6 +1,6 @@
 # Release configuration preflight (Issue #22 / Issue #50)
 
-This script is a fail-closed **offline structural preflight**, not an independent proof of evidence or permission to expose private state. The separate protected-environment [authenticated release workflow](release-runbook.md) adds exact-main CI verification, fresh independently reviewed operator disclosures, live Cloudflare resource/secret/domain/version readback, approval and post-deploy verification. A signed-off PR or offline `PREFLIGHT_MANIFEST_VALID` cannot authorize a deployment. Production infrastructure, credentials, approvals and real-host evidence must still be supplied and executed separately; this document does not claim they exist. Issue #51's [verified fresh-start workflow](fresh-start-recovery.md) separately implements discard and clearance after the [policy approval](restore-recovery-decision.md). Actual destructive execution and clearance require their own exact authorization. Do not use this script's output alone to enable Events/autonomous functionality.
+This script is a fail-closed **offline structural preflight**, not an independent proof of evidence or permission to expose private state. The separate protected-environment [authenticated release workflow](release-runbook.md) adds exact-main CI verification, fresh independently reviewed operator disclosures, live Cloudflare resource/secret/domain/version readback, approval and post-deploy verification. A signed-off PR or offline `PREFLIGHT_MANIFEST_VALID` cannot authorize a deployment. The [Issue #50 acceptance](https://github.com/kitamura-tetsuo/agent-table/issues/50#issuecomment-6825493911) records actual protected staging and production paused-manual releases on 2026-11-12; every subsequent operation still requires fresh target-bound inputs and approval. Issue #51's [verified fresh-start workflow](fresh-start-recovery.md) separately implements discard and clearance after the [policy approval](restore-recovery-decision.md), with [isolated hosted acceptance](issue51-synthetic-clearance-evidence.md) completed on 2026-11-15. Actual destructive execution and clearance on another target require their own exact authorization. The [original-requirement acceptance map](issue22-acceptance.md) distinguishes these evidence scopes. Do not use this script's output alone to enable Events/autonomous functionality.
 
 The staging-only [`private-pilot-a-only` verification profile](compatibility/private-pilot-activation.md)
 uses the same protected release path with a separately reviewed finite policy.
@@ -104,7 +104,7 @@ The command requires the operator-supplied counterpart configuration and checks 
 
 **This offline preflight supplies no independent reconciliation authority.** The command does not know later revocations, deletions, expiries, Cloudflare namespace ownership, secret validity or the real deployed configuration. It still reports `deploymentApproved:false` and cannot convert a restored Worker to non-quarantined serving mode. The separate [fresh-start recovery workflow](fresh-start-recovery.md) owns exact-authority verification, discard and clearance; its [private synthetic exercise](issue51-synthetic-clearance-evidence.md) is scoped to one explicitly approved Worker. A snapshot's old successful tests, grants, session rows, or `RESTORE_QUARANTINE:false` cannot be accepted as clearance. This is a reproducible synthetic configuration transition, not Cloudflare restore/restart evidence or authenticated provenance. An operator must retain quarantine when independent post-snapshot authority is unavailable.
 
-## Authenticated Issue #50 release authorization and remaining operator blockers
+## Authenticated Issue #50 release authorization and recorded acceptance
 
 - Separate manual staging/production workflows require the exact main SHA and a selected GitHub Environment. GitHub API readback on 2026-11-11 UTC confirmed required owner reviewers and protected-branch restrictions for **both** Environments; this is historical configuration evidence, not an approval of a deployment. The [protected staging credential check #42969129958](https://github.com/kitamura-tetsuo/agent-table/actions/runs/42969129958) verified staging-only read access to settings, **not** full release resource ownership or promotion.
 - The protected workflow's **authenticated** `release-authorization.mjs` now emits a short-lived in-job `RELEASE_APPROVAL_VALID` only after exact-main CI provenance and live Cloudflare readback of both environments. `require-release-approval.mjs` must verify that manifest before publishing. Missing read tokens, production configuration, named secret inventory, selected domain, independently verified retention/usage disclosures, and required profile evidence remain **blocked**, rather than being replaced by fabricated metadata. See [release-runbook.md](release-runbook.md) for required Environment secret names, operator JSON schemas, current scope and the exact approval sequence.
@@ -118,11 +118,24 @@ The command requires the operator-supplied counterpart configuration and checks 
   The owner also completed synthetic browser Close/Delete
   [acceptance](https://github.com/kitamura-tetsuo/agent-table/issues/50#issuecomment-6820766589).
   Future paused-state claims must use the read-only
-  `scripts/release-pause-readback.mjs` verifier. **Different-schema rollback
-  and actual PITR restoration remain untested**; protected production
-  deployment and private current-account backup/log retention and billed
-  pricing/usage remain **not verified**. The checked-in constructor and
-  Workerd oracle are still synthetic and do not replace those operator gates.
+  `scripts/release-pause-readback.mjs` verifier. This #50 rehearsal covered
+  same-source/same-config code rollback, not a historical snapshot restore
+  or arbitrary older-schema compatibility.
+- The separately approved [production run #43229649298](https://github.com/kitamura-tetsuo/agent-table/actions/runs/43229649298)
+  succeeded at exact source `381c4e7378b2d95a3b8342f045a3e4d5521ada00`;
+  [independent provider and HTTPS readback](https://github.com/kitamura-tetsuo/agent-table/issues/50#issuecomment-6825493911)
+  confirmed retained namespaces and all five intake/capability flags false.
+  The owner accepted the documented [retention limits](https://github.com/kitamura-tetsuo/agent-table/issues/50#issuecomment-6824625669)
+  and [release without a final invoice](https://github.com/kitamura-tetsuo/agent-table/issues/50#issuecomment-6824960944).
+  Account charges remain unknown, account-wide retained copies are not
+  attested, and no universal erasure or automatic billing stop is claimed.
+- #51 separately completed actual isolated Cloudflare
+  [PITR, retained-namespace discard and newer-schema refusal](issue51-cloudflare-recovery-evidence.md),
+  followed by [approved private synthetic clearance](issue51-synthetic-clearance-evidence.md).
+  The original PITR report remains a dated pre-clearance checkpoint; the
+  later report records the successful clearance and retained restrictions.
+  Neither these synthetic receipts nor #50's no-restore production release
+  assert that protected recovery on existing staging/production data was run.
 
 Local validation: `node --test scripts/release-preflight.test.mjs`. CI runs this automatically via `node --test scripts/*.test.mjs` and checks the new sources with Biome. No deploy command belongs in PR CI.
 
@@ -140,8 +153,7 @@ be reported as bidirectional autonomy.
 The report checks correspondence and receipt integrity; independent review
 must establish origin. It is not release authorization or permission to enable
 production Events. The [2026-11-12 #50 acceptance](https://github.com/kitamura-tetsuo/agent-table/issues/50#issuecomment-6825493911)
-records the protected **paused manual** production release, superseding earlier
-production-not-verified wording above only for that scoped release. A separate
+records only the protected **paused manual** production release. A separate
 private staging activation and concrete approval are needed for this pilot.
 A no-restore restart is distinct from #51 historical restoration/quarantine
 clearance; the latter must not be invented as a mandatory prerequisite for the
