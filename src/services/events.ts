@@ -9,6 +9,7 @@ import {
   signWebhook,
   verifyCallbackControl,
 } from "../notifications/openai-events";
+import { selectProductionRelayAdapters } from "../notifications/production-relay-adapters";
 import { relayOperationDigest } from "../notifications/relay-operation";
 import { parseRelayChallengeOutcome } from "../notifications/relay-outcome";
 import type { RelayVerificationAdapter } from "../notifications/relay-verification";
@@ -72,6 +73,7 @@ export async function subscribeEvent(
     truncated: false;
   }>
 > {
+  relay ??= selectProductionRelayAdapters(env)?.verification ?? null;
   // An unavailable production relay is not permission to fall back to native fetch.
   if (env.RELEASE_PROFILE === "production-relay-events" && !relay)
     return { ok: false, reason: "unavailable" };

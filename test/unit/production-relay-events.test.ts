@@ -23,7 +23,7 @@ describe("production relay candidate cannot bypass activation prerequisites", ()
     expect(productionRelayReadiness(env)).toEqual({
       enabled: false,
       configured: true,
-      reason: "relay-integration-incomplete",
+      reason: "relay-key-unavailable",
     });
     expect(isRestoreQuarantined(env)).toBe(true);
     const context = eventDiagnosticContext(
@@ -32,7 +32,7 @@ describe("production relay candidate cannot bypass activation prerequisites", ()
       "synthetic",
     );
     expect(context.profile).toBe("production-relay-events");
-    expect(context.transportState).toBe("relay-integration-incomplete");
+    expect(context.transportState).toBe("relay-key-unavailable");
     expect(context.policyActive).toBe(false);
     expect(context.recipientMatched).toBe(false);
     expect(context.tableAllowed).toBe(false);

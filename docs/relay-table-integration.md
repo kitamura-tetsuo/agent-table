@@ -1,9 +1,11 @@
 # Relay TableDO integration checkpoint (#21 / #74)
 
-This checkpoint does not enable production Events. `relayOutboxTransport()` returns
-null; no configuration, key or relay endpoint is provisioned. Production readiness
-remains false. Tests replace a private in-object seam, not a public RPC or binding.
-Callback challenge activation is not implemented by this delivery checkpoint.
+The original checkpoint used an unconnected private test seam. The production
+selector now selects this implementation only from validated protected-deployment
+configuration and the matching operator-provisioned Ed25519 key. No live binding,
+key or endpoint is provisioned by this change. See
+`compatibility/production-relay-events.md` for the release trust boundary and
+`relay-candidate-verification.md` for challenge activation.
 
 ## Durable delivery
 

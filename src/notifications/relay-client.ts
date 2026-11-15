@@ -1,5 +1,5 @@
 /**
- * Unwired Worker-to-relay transport adapter. A release profile must select it
+ * Worker-to-relay transport adapter; production selection validates protected bindings. A release profile must select it
  * explicitly; this module never enables Events or creates secrets on import.
  */
 import {
@@ -8,6 +8,7 @@ import {
   type ReviewedCallbackTarget,
   validateReviewedCallbackDestination,
 } from "./egress";
+import { canonicalRelayHeaders } from "./relay-operation";
 
 export interface RelayClientConfiguration {
   origin: string;
@@ -94,7 +95,9 @@ export async function sendRelayHttps(
     )
       return { ok: false, reason: "destination-rejected" };
     const headers: Record<string, string> = {};
-    for (const [key, value] of Object.entries(request.headers ?? {})) {
+    for (const [key, value] of Object.entries(
+      canonicalRelayHeaders(request.headers ?? {}),
+    )) {
       if (
         !allowedHeaders.has(key) ||
         typeof value !== "string" ||

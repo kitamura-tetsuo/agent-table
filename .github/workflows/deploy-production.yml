@@ -3,6 +3,14 @@ name: Production deployment (manual, protected)
 on:
   workflow_dispatch:
     inputs:
+      release_profile:
+        description: Reviewed production profile (does not supply operator approval)
+        required: true
+        type: choice
+        default: manual
+        options:
+          - manual
+          - production-relay-events
       expected_sha:
         description: Exact reviewed main commit SHA (40 lowercase hex digits)
         required: true
@@ -17,5 +25,6 @@ jobs:
     uses: ./.github/workflows/_deploy-reviewed.yml
     with:
       target_environment: production
+      release_profile: ${{ inputs.release_profile }}
       expected_sha: ${{ inputs.expected_sha }}
     secrets: inherit

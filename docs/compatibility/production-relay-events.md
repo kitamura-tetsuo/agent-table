@@ -1,75 +1,54 @@
-# Production relay profile integration checkpoint (#74)
+# Production relay runtime and protected release boundary (#74)
 
-Status: **not deployable; no live Events activation**. This change adds a
-non-secret candidate-configuration parser and truthful diagnostics, not a new
-approved private-data processor. No relay URL, key, transport attestation,
-operator approval, or hosted acceptance is provisioned by this change.
+This source checkpoint wires the actual MCP → subscription service → TableDO
+challenge and durable outbox to the shared relay adapters. It does not provision
+an endpoint/key, apply configuration, deploy, or prove hosted receiver acceptance.
 
-## Implemented boundary
+## Runtime configuration and trust
 
-`production-relay-events` is recognized in diagnostic output. The independent
-Worker restore quarantine continues rejecting the profile. Offline preflight
-rejects it explicitly with `production-relay-integration-incomplete`. Existing
-protected approval/provider/post-deploy gates continue rejecting unsupported
-profiles; no allow-list was widened. MCP discovery, subscription challenge,
-TableDO registration and outbox transport are **not wired** to this candidate.
-The native test exception is neither inherited nor a production readiness proof.
+`EVENTS_RELAY_CONFIGURATION` is exact nonsecret JSON: `version:1`,
+`environment:"production"`, release-matching `buildSha`, canonical HTTPS `origin`,
+`callerId`, `audience:"production:<service-id>"`, and `signingPublicKeySha256`.
+The fingerprint is SHA256 of the Ed25519 public key's SPKI DER. The separate secret
+binding `EVENTS_RELAY_SIGNING_KEY_PKCS8` must be canonical base64 PKCS8 Ed25519 and
+its actual public fingerprint must match. Missing, malformed, mismatched or
+cross-environment inputs fail closed; test-native risk consent cannot enable it.
+Existing callback target policy and all restore authorization remain mandatory.
 
-`EVENTS_RELAY_CONFIGURATION` is optional non-secret JSON with exact keys:
-`version` (1), `environment` (production), `buildSha` (matching the release),
-`origin` (canonical reviewed HTTPS origin), `callerId` (16–128 safe characters),
-and `audience` (`production:<service-id>`). The parser rejects extra keys,
-credentials, malformed destinations, stale build/environment bindings and
-mixed pilot/test-native configurations. Existing callback origin/path policy
-remains required. Parsing an origin is syntax validation, not operator review
-or DNS/connected-peer evidence. No private signing key is part of this JSON.
+The synchronous Node crypto key validator is shared by readiness, diagnostics,
+restore quarantine, subscription selection, own-table availability and dispatcher.
+There is no config-shape-only green status when the real key is unavailable.
+Factories snapshot config/key/targets together, freeze exposed configuration,
+ignore replacement caller config, and recheck current bindings before and after
+fresh authority checks immediately before external fetch. Operational outbound
+pause forbids sends; metadata reads can retain current grant/key authority.
+No production failure falls back to the native callback transport.
 
-`productionRelayReadiness()` always returns `enabled: false`. Diagnostics expose
-only fixed `relay-configuration-invalid` / `relay-integration-incomplete`
-classifications, not the origin, caller ID, callback URL or secret. Outbound
-pause does not enable anything. These declarations do not clear quarantine.
+These bindings are trusted only as configuration installed by the existing
+protected release workflow. Runtime parsing is not independent transport evidence.
+Release preflight/authorization must bind exact build/config/callback targets/key
+fingerprint, concrete operator-reviewed transport identity/security/host evidence
+and data handling to the existing authenticated GitHub owner/environment approval.
+Provider readback proves deployed config and secret presence, not secret material
+or host behavior. Operator review and machine-observed facts remain distinct.
+No `trusted:true`, invented receipt, or recovery authorization reused as transport
+approval is introduced. Concrete live changes still need owner approval.
 
-## Why the Worker sender is not connected yet
+## Durable behavior and evidence limits
 
-The existing durable outbox can reclaim expired in-flight leases and produce a
-new lease token, bounded by its existing retry budget. The candidate relay's
-store prevents duplicate admission but does not yet expose an authenticated,
-durable result/readback protocol. The client currently maps non-200 responses
-to transport failure. Therefore:
+Challenge/result-only candidate records and message logical-attempt records keep
+original identity/digest/timestamps and lifecycle/grant/generation fences. Same
+attempt readback does not recompute or overwrite an old digest. Canonical HTTP
+header names are lowercased before new semantic commitments and relay envelopes;
+duplicate case aliases are rejected, not silently merged. Existing #21 bounded
+at-least-once retry charges a distinct ordinal and may redeliver the stable event.
+Unknown results are not success or proof of non-delivery.
 
-- Using a fresh lease token after unknown delivery could forward a duplicate.
-- Fixing one request ID to the entire event would incorrectly prevent legitimate
-  retries after known transient failure.
-- Marking unknown results terminal would silently weaken the existing retry
-  contract and would not prove non-delivery.
-- Subscription callback verification creates a challenge and candidate; it needs
-  the same durable identity/readback semantics, not a new verification request
-  after an uncertain result.
-
-REQ-001 and REQ-007 require retaining retry semantics **and** original unknown
-identities. Neither is replaced by local success. Next implementation needs:
-
-1. Persist a logical relay attempt identity and exact request commitment before
-   send; reuse identity for uncertain-result reads, not new sends.
-2. Define authenticated durable outcomes (known no-send, completed response,
-   unresolved) and reconciliation, expiry and restart behavior. Model response
-   retention explicitly: verification challenges/callback response bodies can
-   contain private data. Do not silently store arbitrary bodies in the existing
-   metadata-only replay database.
-3. Only after known outcome classification may a legitimate retry advance its
-   original attempt budget/identity. Preserve cancellation, generation fences,
-   revoked grants, close/delete and outbound pause across signing and readback.
-4. Integrate real MCP/service/DO paths and release config generation, live
-   protected approval, provider readback, postverify and pause/rollback together.
-5. Obtain separate transport/hosting/privacy review and concrete owner approval
-   for exact build/config/destinations/data handling before any live setting or
-   deployment, then prove actual committed event → host receipt/read/reply.
-
-## Tests and evidence limits
-
-Focused tests cover malformed/cross-environment/stale non-secret configuration,
-no readiness from complete configuration, diagnostic redaction, retained native
-staging rejection in production, explicit release preflight refusal, and actual
-Worker HTTP + two independent TableDO entry points staying quarantined with no
-candidate/outbox row or external fetch. These are negative activation tests,
-not successful all-table delivery or hosted TLS/DNS acceptance evidence.
+Actual OAuth/MCP/service/TableDO tests select the production factory without
+injecting a relay adapter. Controlled external fetch verifies relay signatures,
+receives the real signed challenge/message, returns typed receipts and checks
+activation, reconstruction, own-table status, pause and invalid-key refusal.
+Additional tests cover key format/fingerprint, immutable shared configuration,
+current grant/binding changes, domain-separated message/challenge/status paths and
+header canonicalization. They are not evidence of live DNS/TLS peer binding,
+public relay ownership, remote process operations or hosted ChatGPT behavior.

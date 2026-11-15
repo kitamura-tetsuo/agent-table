@@ -3,6 +3,7 @@ import {
   PRIVATE_PILOT_MAX_WINDOW_MS,
   PRIVATE_PILOT_PROFILE,
 } from "../src/shared/private-pilot.ts";
+import { PRODUCTION_RELAY_EVENTS_PROFILE } from "../src/shared/production-relay-events.ts";
 import {
   TEST_NATIVE_EVENTS_PROFILE,
   TEST_NATIVE_EVENTS_RISK,
@@ -27,6 +28,17 @@ try {
       manifest.configSha256 === configSha256 &&
       manifest.profile === profile &&
       (profile === "manual" ||
+        (profile === PRODUCTION_RELAY_EVENTS_PROFILE &&
+          environment === "production" &&
+          manifest.productionRelay?.reviewAuthority ===
+            "operator-reviewed-under-protected-environment" &&
+          manifest.productionRelay.machineVerifiedTransportEvidence === false &&
+          [
+            "configurationSha256",
+            "callbackTargetsSha256",
+            "signingPublicKeySha256",
+            "decisionSha256",
+          ].every((k) => /^[a-f0-9]{64}$/.test(manifest.productionRelay[k]))) ||
         (profile === TEST_NATIVE_EVENTS_PROFILE &&
           environment === "staging" &&
           manifest.testNativeEvents?.risk === TEST_NATIVE_EVENTS_RISK &&

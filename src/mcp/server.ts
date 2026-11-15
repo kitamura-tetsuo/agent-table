@@ -34,6 +34,7 @@ import {
   PRIVATE_PILOT_PROFILE,
   privatePilotDiscoveryAllowed,
 } from "../shared/private-pilot";
+import { productionRelayReadiness } from "../shared/production-relay-events";
 import { testNativeEventsAllowed } from "../shared/test-native-events";
 import { getOwnConnectionIdentity } from "./connection-identity";
 import type { EventDiagnosticTrace } from "./event-diagnostic-trace";
@@ -173,7 +174,8 @@ function newServer(
   const advertiseEvents =
     privateEvents &&
     (privatePilotDiscoveryAllowed(env, identity) ||
-      testNativeEventsAllowed(env));
+      testNativeEventsAllowed(env) ||
+      productionRelayReadiness(env).enabled);
   diagnostics?.record(
     diagnostics.methodHint,
     "capabilities",
@@ -599,7 +601,8 @@ export async function handleMcp(
     ).allowed;
   const privateEvents =
     (privatePilotDiscoveryAllowed(env, identity) ||
-      testNativeEventsAllowed(env)) &&
+      testNativeEventsAllowed(env) ||
+      productionRelayReadiness(env).enabled) &&
     identity.scopes.includes("events:subscribe") &&
     identity.tokenExpiresAtMs !== null &&
     identity.tokenExpiresAtMs > Date.now() &&

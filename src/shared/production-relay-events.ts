@@ -2,6 +2,7 @@ import {
   reviewedCallbackTargets,
   validateReviewedCallbackDestination,
 } from "../notifications/egress.ts";
+import { relaySigningPublicKeySha256 } from "../notifications/relay-signing-key.ts";
 
 export const PRODUCTION_RELAY_EVENTS_PROFILE = "production-relay-events";
 
@@ -15,6 +16,7 @@ export interface ProductionRelayBindings {
   ALLOW_OUTBOUND_NOTIFICATIONS?: string;
   EVENTS_REVIEWED_CALLBACK_TARGETS?: string;
   EVENTS_RELAY_CONFIGURATION?: string;
+  EVENTS_RELAY_SIGNING_KEY_PKCS8?: string;
   TEST_NATIVE_EVENTS_RISK_ACCEPTANCE?: string;
   PRIVATE_PILOT_POLICY?: string;
 }
@@ -27,6 +29,7 @@ export interface ProductionRelayConfiguration {
   origin: string;
   callerId: string;
   audience: string;
+  signingPublicKeySha256: string;
 }
 
 /**
@@ -60,10 +63,12 @@ export function productionRelayConfiguration(
     const config = value as Record<string, unknown>;
     if (
       Object.keys(config).sort().join(",") !==
-        "audience,buildSha,callerId,environment,origin,version" ||
+        "audience,buildSha,callerId,environment,origin,signingPublicKeySha256,version" ||
       config.version !== 1 ||
       config.environment !== "production" ||
       config.buildSha !== env.RELEASE_BUILD_SHA ||
+      typeof config.signingPublicKeySha256 !== "string" ||
+      !/^[a-f0-9]{64}$/.test(config.signingPublicKeySha256) ||
       typeof config.origin !== "string" ||
       typeof config.callerId !== "string" ||
       !/^[A-Za-z0-9_-]{16,128}$/.test(config.callerId) ||
@@ -85,22 +90,73 @@ export function productionRelayConfiguration(
   }
 }
 
+/** Active or fully/partly paused configuration; not capability permission. */
+export function productionRelayInspectableConfiguration(
+  env: ProductionRelayBindings,
+): ProductionRelayConfiguration | null {
+  if (
+    ![
+      "ENABLE_MCP_SUBSCRIPTIONS",
+      "ENABLE_OPENAI_EVENTS",
+      "ALLOW_OUTBOUND_NOTIFICATIONS",
+    ].every((name) =>
+      ["true", "false"].includes(
+        env[name as keyof ProductionRelayBindings] ?? "",
+      ),
+    )
+  )
+    return null;
+  return productionRelayConfiguration({
+    ...env,
+    ENABLE_MCP_SUBSCRIPTIONS: "true",
+    ENABLE_OPENAI_EVENTS: "true",
+  });
+}
+/** Preserve ordinary service access during an independently requested pause. */
+export function productionRelayAccessAllowed(
+  env: ProductionRelayBindings,
+): boolean {
+  const config = productionRelayInspectableConfiguration(env);
+  return (
+    !!config &&
+    relaySigningPublicKeySha256(env.EVENTS_RELAY_SIGNING_KEY_PKCS8) ===
+      config.signingPublicKeySha256
+  );
+}
 /**
- * Deliberately not enabled by any binding. Worker durable attempt readback,
- * callback-verification reconciliation and independent transport acceptance
- * are outstanding. Never substitute a truthy configuration for readiness.
+ * Runtime trusts configuration installed through the protected release workflow.
+ * This validates its exact key identity, not the truth of host acceptance evidence.
+ * Release authorization independently binds operator review and provider facts.
  */
 export function productionRelayReadiness(env: ProductionRelayBindings): {
-  enabled: false;
+  enabled: boolean;
   configured: boolean;
-  reason: "relay-configuration-invalid" | "relay-integration-incomplete";
+  reason:
+    | "relay-configuration-invalid"
+    | "relay-key-unavailable"
+    | "relay-ready"
+    | "relay-disabled";
 } {
-  const configured = productionRelayConfiguration(env) !== null;
+  const config = productionRelayInspectableConfiguration(env);
+  if (!config)
+    return {
+      enabled: false,
+      configured: false,
+      reason: "relay-configuration-invalid",
+    };
+  const key = relaySigningPublicKeySha256(env.EVENTS_RELAY_SIGNING_KEY_PKCS8);
+  if (key === null || key !== config.signingPublicKeySha256)
+    return {
+      enabled: false,
+      configured: true,
+      reason: "relay-key-unavailable",
+    };
+  const enabled =
+    env.ENABLE_MCP_SUBSCRIPTIONS === "true" &&
+    env.ENABLE_OPENAI_EVENTS === "true";
   return {
-    enabled: false,
-    configured,
-    reason: configured
-      ? "relay-integration-incomplete"
-      : "relay-configuration-invalid",
+    enabled,
+    configured: true,
+    reason: enabled ? "relay-ready" : "relay-disabled",
   };
 }

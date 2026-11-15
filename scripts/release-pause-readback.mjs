@@ -3,6 +3,7 @@ import { pathToFileURL } from "node:url";
 import {
   cloudflareReader,
   ProviderVerificationError,
+  productionRelayInspectable,
   readCloudflareDeployment,
   verifyDeployedConfiguration,
 } from "./release-provider.mjs";
@@ -35,7 +36,7 @@ export async function verifyNormalPause({
       config.name === `agent-table-${environment}` &&
       peer?.name ===
         `agent-table-${environment === "staging" ? "production" : "staging"}` &&
-      vars.RELEASE_PROFILE === "manual" &&
+      (vars.RELEASE_PROFILE === "manual" || productionRelayInspectable(vars)) &&
       vars.TEST_NATIVE_EVENTS_RISK_ACCEPTANCE === undefined &&
       /^[0-9a-f]{40}$/i.test(vars.RELEASE_BUILD_SHA) &&
       vars.RESTORE_QUARANTINE === "false",

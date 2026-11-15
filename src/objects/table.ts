@@ -43,6 +43,7 @@ import {
   reserveOutboxAttempt,
   settleOutboxAttempt,
 } from "../notifications/outbox";
+import { selectProductionRelayAdapters } from "../notifications/production-relay-adapters";
 import { latestRelayAttempt } from "../notifications/relay-attempt-ledger";
 import {
   dispatchRelayOutbox,
@@ -97,6 +98,7 @@ import {
   privatePilotRecipientAllowed,
   privatePilotRecipientMatches,
 } from "../shared/private-pilot";
+import { productionRelayReadiness } from "../shared/production-relay-events";
 import { digestSessionSecret, randomBase64Url } from "../shared/random";
 import {
   initializeRecoveryFence,
@@ -975,6 +977,7 @@ export class TableDO extends DurableObject<Env> {
           ? "expired"
           : "active";
     const available =
+      productionRelayReadiness(this.env).enabled ||
       testNativeEventsAllowed(this.env) ||
       privatePilotRecipientAllowed(
         this.env,
@@ -1031,9 +1034,11 @@ export class TableDO extends DurableObject<Env> {
     return {
       available,
       reason: available
-        ? testNativeEventsAllowed(this.env)
-          ? ("test_native_risk_accepted" as const)
-          : ("private_pilot_only" as const)
+        ? productionRelayReadiness(this.env).enabled
+          ? ("production_relay_ready" as const)
+          : testNativeEventsAllowed(this.env)
+            ? ("test_native_risk_accepted" as const)
+            : ("private_pilot_only" as const)
         : ("delivery_not_ready" as const),
       status,
       pendingCount: counts.pending_count,
@@ -1852,7 +1857,8 @@ export class TableDO extends DurableObject<Env> {
   ): Promise<boolean> {
     if (
       !allowOutboundNotifications(this.env) ||
-      (!callbackTransportReadiness().enabled &&
+      (!productionRelayReadiness(this.env).enabled &&
+        !callbackTransportReadiness().enabled &&
         !testNativeEventsAllowed(this.env) &&
         !privatePilotRecipientAllowed(
           this.env,
@@ -3449,14 +3455,14 @@ export class TableDO extends DurableObject<Env> {
       this.env.ENABLE_OPENAI_EVENTS === "true" &&
       allowOutboundNotifications(this.env) &&
       (callbackTransportReadiness().enabled ||
-        testNativeEventsAllowed(this.env))
+        testNativeEventsAllowed(this.env) ||
+        productionRelayReadiness(this.env).enabled)
     );
   }
 
-  /** Deliberately unconfigured until independent production/profile approval.
-   * Tests replace this private seam; no binding or public RPC can enable it. */
+  /** Selected only from strict protected-deployment bindings, not an RPC flag. */
   private relayOutboxTransport(): RelayOutboxAdapter | null {
-    return null;
+    return selectProductionRelayAdapters(this.env)?.outbox ?? null;
   }
 
   /** Native transport seam; synthetic tests replace it only inside Workerd. */
@@ -3466,6 +3472,11 @@ export class TableDO extends DurableObject<Env> {
     observer?: CallbackTransportObserver,
   ): Promise<CallbackTransportOutcome> {
     if (this.accessQuarantined())
+      return Promise.resolve({
+        ok: false,
+        reason: "connection-boundary-unverified",
+      });
+    if (this.env.RELEASE_PROFILE === "production-relay-events")
       return Promise.resolve({
         ok: false,
         reason: "connection-boundary-unverified",

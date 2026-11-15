@@ -19,6 +19,10 @@ import {
 import { allowOutboundNotifications } from "../../src/shared/admission";
 import { authorizeGuestConnection } from "../../src/shared/auth";
 import { openSecret } from "../../src/shared/secret-envelope";
+import {
+  relayBindings,
+  syntheticRelayKey,
+} from "../helpers/production-relay-fixture";
 
 const ORIGIN = "http://localhost:8787";
 const RESOURCE = `${ORIGIN}/mcp`;
@@ -3705,6 +3709,169 @@ describe("staging native Events exception", () => {
       await ac.close();
       await bc.close();
       await oc.close();
+    }
+  });
+});
+
+describe("protected production relay runtime selection", () => {
+  it("selects through real MCP/service/TableDO, survives reconstruction and pauses without native fallback", async () => {
+    const a = await newPrincipal(undefined, "192.0.2.51");
+    const b = await newPrincipal(undefined, "192.0.2.51");
+    const setupA = await clientFor(a.token),
+      setupB = await clientFor(b.token);
+    const tableId = await createTable(setupA);
+    const invite = toolOutput(
+      await setupA.callTool({
+        name: "create_invite",
+        arguments: { table_id: tableId, request_id: crypto.randomUUID() },
+      }),
+    );
+    expect(
+      (
+        await setupB.callTool({
+          name: "join_table",
+          arguments: {
+            invitation: invite.invitation,
+            request_id: crypto.randomUUID(),
+          },
+        })
+      ).isError,
+    ).not.toBe(true);
+    await setupA.close();
+    await setupB.close();
+    const overlay: Env = {
+      ...env,
+      ...relayBindings(),
+      EVENTS_RELAY_SIGNING_KEY_PKCS8: syntheticRelayKey,
+    };
+    const configure = async () => {
+      const stub = env.TABLES.get(env.TABLES.idFromName(tableId));
+      await evictDurableObject(stub);
+      await runInDurableObject(stub, (instance) => {
+        (instance as unknown as { env: Env }).env = overlay;
+      });
+      return stub;
+    };
+    await configure();
+    const paths: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      const path = new URL(String(url)).pathname;
+      expect(new URL(String(url)).origin).toBe("https://relay.example.org");
+      paths.push(path);
+      const raw = new Uint8Array(init?.body as ArrayBuffer);
+      const envelope = JSON.parse(new TextDecoder().decode(raw));
+      expect(envelope.audience).toBe("production:agent-table");
+      const publicKey = await crypto.subtle.importKey(
+        "spki",
+        Uint8Array.from(
+          Buffer.from(
+            "302a300506032b6570032100d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+            "hex",
+          ),
+        ),
+        { name: "Ed25519" },
+        false,
+        ["verify"],
+      );
+      const prefix = new TextEncoder().encode(
+        `POST\n${path}\nsynthetic_caller_123\n`,
+      );
+      const signed = new Uint8Array(prefix.length + raw.length);
+      signed.set(prefix);
+      signed.set(raw, prefix.length);
+      expect(
+        await crypto.subtle.verify(
+          "Ed25519",
+          publicKey,
+          Uint8Array.from(
+            atob(
+              new Headers(init?.headers).get("x-agent-table-signature") ?? "",
+            ),
+            (c) => c.charCodeAt(0),
+          ),
+          signed,
+        ),
+      ).toBe(true);
+      expect(envelope.destination).toBe(CALLBACK);
+      const body = new TextDecoder().decode(
+        Uint8Array.from(atob(envelope.payload), (c) => c.charCodeAt(0)),
+      );
+      new Webhook(SECRET).verify(body, envelope.headers);
+      return new Response(
+        JSON.stringify({
+          state: "completed",
+          outcome: path.endsWith("challenge")
+            ? { kind: "challenge", verification: "verified" }
+            : { kind: "http", status: 204, retryAfterState: "absent" },
+        }),
+      );
+    });
+    const ac = await clientFor(a.token, overlay),
+      bc = await clientFor(b.token, overlay);
+    try {
+      await callEvent(ac, "events/subscribe", subscriptionParams(tableId));
+      expect(paths).toEqual(["/relay/v1/challenge"]);
+      const post = () =>
+        bc.callTool({
+          name: "post_message",
+          arguments: {
+            table_id: tableId,
+            body: "SYNTHETIC RELAY",
+            request_id: crypto.randomUUID(),
+          },
+        });
+      expect((await post()).isError).not.toBe(true);
+      const alarm = async () => {
+        const stub = await configure();
+        await runInDurableObject(stub, async (instance, state) => {
+          state.storage.sql.exec(
+            "UPDATE table_event_outbox SET next_attempt_at=? WHERE status='pending'",
+            Date.now() - 1,
+          );
+          await instance.alarm();
+        });
+      };
+      await alarm();
+      expect(paths).toEqual(["/relay/v1/challenge", "/relay/v1/message"]);
+      const result = toolOutput(
+        await ac.callTool({
+          name: "get_table",
+          arguments: { table_id: tableId },
+        }),
+      );
+      expect(result.notifications).toMatchObject({
+        events: {
+          available: true,
+          reason: "production_relay_ready",
+          status: "active",
+        },
+      });
+      await post();
+      overlay.ALLOW_OUTBOUND_NOTIFICATIONS = "false";
+      await alarm();
+      expect(paths).toHaveLength(2);
+      overlay.ENABLE_MCP_SUBSCRIPTIONS = "false";
+      overlay.ENABLE_OPENAI_EVENTS = "false";
+      await configure();
+      expect(
+        (await dispatch(new Request(`${ORIGIN}/health`), overlay)).status,
+      ).toBe(200);
+      await expect(
+        callEvent(ac, "events/subscribe", subscriptionParams(tableId)),
+      ).rejects.toThrow();
+      expect(paths).toHaveLength(2);
+      overlay.ENABLE_MCP_SUBSCRIPTIONS = "true";
+      overlay.ENABLE_OPENAI_EVENTS = "true";
+      overlay.ALLOW_OUTBOUND_NOTIFICATIONS = "true";
+      overlay.EVENTS_RELAY_SIGNING_KEY_PKCS8 = "invalid";
+      await configure();
+      await expect(
+        callEvent(ac, "events/subscribe", subscriptionParams(tableId)),
+      ).rejects.toThrow();
+      expect(paths).toHaveLength(2);
+    } finally {
+      await ac.close();
+      await bc.close();
     }
   });
 });

@@ -149,7 +149,9 @@ export function validEventDiagnosticRecord(
 export type SafeEventRuntimeContext = {
   transportState?:
     | "relay-configuration-invalid"
-    | "relay-integration-incomplete";
+    | "relay-key-unavailable"
+    | "relay-ready"
+    | "relay-disabled";
   transportRisk?: "native-dns-peer-boundary-unverified";
   environment: "local" | "staging" | "production" | "unknown";
   profile:
@@ -221,19 +223,24 @@ export function eventDiagnosticContext(
         ? env.RELEASE_BUILD_SHA
         : null,
     policyConfigured:
-      privatePilotConfiguration(env) !== null || testNativeEventsAllowed(env),
+      privatePilotConfiguration(env) !== null ||
+      testNativeEventsAllowed(env) ||
+      productionRelayReadiness(env).configured,
     policyActive:
+      productionRelayReadiness(env).enabled ||
       testNativeEventsAllowed(env) ||
       activePrivatePilotDiscoveryPolicy(env, now) !== null ||
       activePrivatePilotPolicy(env, now) !== null,
     recipientMatched:
       !!actor &&
-      (testNativeEventsAllowed(env) ||
+      (productionRelayReadiness(env).enabled ||
+        testNativeEventsAllowed(env) ||
         (!!policy && privatePilotRecipientMatches(policy, actor))),
     tableAllowed:
       tableId === undefined
         ? null
-        : testNativeEventsAllowed(env) ||
+        : productionRelayReadiness(env).enabled ||
+          testNativeEventsAllowed(env) ||
           (!!policy && policy.tableIds.includes(tableId)),
     mode: policy?.mode ?? null,
     expiresAt: policy?.expiresAt ?? null,

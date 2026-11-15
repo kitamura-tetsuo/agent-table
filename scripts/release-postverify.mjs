@@ -6,6 +6,10 @@ import {
   privatePilotConfiguration,
 } from "../src/shared/private-pilot.ts";
 import {
+  PRODUCTION_RELAY_EVENTS_PROFILE,
+  productionRelayConfiguration,
+} from "../src/shared/production-relay-events.ts";
+import {
   TEST_NATIVE_EVENTS_PROFILE,
   TEST_NATIVE_EVENTS_RISK,
   testNativeEventsAllowed,
@@ -60,10 +64,32 @@ export async function verifyPublishedRelease({
       : null;
   requirePost(
     profile === "manual" ||
+      productionRelayConfiguration(config.vars) !== null ||
       privatePolicy ||
       testNativeEventsAllowed(config.vars),
     "post-deploy-profile-unverified",
   );
+  if (profile === PRODUCTION_RELAY_EVENTS_PROFILE) {
+    const relay = productionRelayConfiguration(config.vars);
+    requirePost(
+      relay &&
+        approval.productionRelay?.reviewAuthority ===
+          "operator-reviewed-under-protected-environment" &&
+        approval.productionRelay.machineVerifiedTransportEvidence === false &&
+        approval.productionRelay.configurationSha256 ===
+          createHash("sha256")
+            .update(config.vars.EVENTS_RELAY_CONFIGURATION)
+            .digest("hex") &&
+        approval.productionRelay.callbackTargetsSha256 ===
+          createHash("sha256")
+            .update(config.vars.EVENTS_REVIEWED_CALLBACK_TARGETS)
+            .digest("hex") &&
+        approval.productionRelay.signingPublicKeySha256 ===
+          relay.signingPublicKeySha256 &&
+        /^[a-f0-9]{64}$/.test(approval.productionRelay.decisionSha256),
+      "post-deploy-production-relay-approval-mismatch",
+    );
+  }
   if (profile === TEST_NATIVE_EVENTS_PROFILE) {
     requirePost(
       approval.testNativeEvents?.risk === TEST_NATIVE_EVENTS_RISK &&

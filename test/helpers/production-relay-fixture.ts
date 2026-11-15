@@ -1,3 +1,8 @@
+import { relaySigningPublicKeySha256 } from "../../src/notifications/relay-signing-key";
+export const syntheticRelayKey = Buffer.from(
+  "302e020100300506032b6570042204209d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+  "hex",
+).toString("base64");
 export const relayBindings = () => ({
   RELEASE_ENVIRONMENT: "production",
   RELEASE_PROFILE: "production-relay-events",
@@ -11,6 +16,7 @@ export const relayBindings = () => ({
   ]),
   EVENTS_RELAY_CONFIGURATION: JSON.stringify({
     version: 1,
+    signingPublicKeySha256: relaySigningPublicKeySha256(syntheticRelayKey),
     environment: "production",
     buildSha: "a".repeat(40),
     origin: "https://relay.example.org",

@@ -42,6 +42,7 @@ declare global {
       CALLBACK_CREDENTIAL_KEYRING?: string;
       EVENTS_REVIEWED_CALLBACK_TARGETS?: string;
       EVENTS_RELAY_CONFIGURATION?: string;
+      EVENTS_RELAY_SIGNING_KEY_PKCS8?: string;
       PRIVATE_PILOT_POLICY?: string;
       TEST_NATIVE_EVENTS_RISK_ACCEPTANCE?: string;
     }

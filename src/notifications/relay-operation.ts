@@ -24,8 +24,8 @@ export async function relayOperationDigest(
       requestId: snapshot.requestId,
       destination: snapshot.destination,
       headers: Object.fromEntries(
-        Object.entries(snapshot.headers).sort(([a], [b]) =>
-          a < b ? -1 : a > b ? 1 : 0,
+        Object.entries(canonicalRelayHeaders(snapshot.headers)).sort(
+          ([a], [b]) => (a < b ? -1 : a > b ? 1 : 0),
         ),
       ),
       payload: snapshot.payload,
@@ -33,4 +33,18 @@ export async function relayOperationDigest(
   );
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
   return Array.from(digest, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/** HTTP field names are case-insensitive; duplicate aliases fail closed. */
+export function canonicalRelayHeaders(
+  input: Record<string, string>,
+): Record<string, string> {
+  const output: Record<string, string> = {};
+  for (const [name, value] of Object.entries(input)) {
+    if (!/^[A-Za-z0-9-]+$/.test(name)) throw new Error("invalid relay header");
+    const key = name.toLowerCase();
+    if (Object.hasOwn(output, key)) throw new Error("duplicate relay header");
+    output[key] = value;
+  }
+  return output;
 }

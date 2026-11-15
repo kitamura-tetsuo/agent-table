@@ -1,5 +1,5 @@
 /**
- * Unwired CHALLENGE-ONLY result receipt adapter. HTTP status alone never proves callback control. A release profile must select it
+ * CHALLENGE-ONLY result receipt adapter. HTTP status alone never proves callback control. A release profile must select it
  * explicitly; this module never enables Events or creates secrets on import.
  */
 import {
@@ -8,6 +8,7 @@ import {
   validateReviewedCallbackDestination,
 } from "./egress";
 import type { RelayClientConfiguration, RelayOperation } from "./relay-client";
+import { canonicalRelayHeaders } from "./relay-operation";
 import {
   parseRelayChallengeOutcome,
   type RelayChallengeOutcome,
@@ -89,7 +90,9 @@ export async function sendRelayChallenge(
     )
       return { ok: false, reason: "destination-rejected" };
     const headers: Record<string, string> = {};
-    for (const [key, value] of Object.entries(request.headers ?? {})) {
+    for (const [key, value] of Object.entries(
+      canonicalRelayHeaders(request.headers ?? {}),
+    )) {
       if (
         !allowedHeaders.has(key) ||
         typeof value !== "string" ||

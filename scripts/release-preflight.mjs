@@ -6,7 +6,10 @@ import {
   PRIVATE_PILOT_PROFILE,
   privatePilotConfiguration,
 } from "../src/shared/private-pilot.ts";
-import { PRODUCTION_RELAY_EVENTS_PROFILE } from "../src/shared/production-relay-events.ts";
+import {
+  PRODUCTION_RELAY_EVENTS_PROFILE,
+  productionRelayConfiguration,
+} from "../src/shared/production-relay-events.ts";
 import {
   TEST_NATIVE_EVENTS_PROFILE,
   testNativeEventsAllowed,
@@ -91,6 +94,7 @@ const REQUIRED_SECRETS = [
 const ACCOUNT_ID = /^[a-f0-9]{32}$/i;
 const BUILD_SHA = /^[a-f0-9]{40}$/;
 const RELEASE_PROFILES = new Set([
+  PRODUCTION_RELAY_EVENTS_PROFILE,
   TEST_NATIVE_EVENTS_PROFILE,
   "manual",
   "live",
@@ -99,6 +103,15 @@ const RELEASE_PROFILES = new Set([
   PRIVATE_PILOT_PROFILE,
 ]);
 const EVIDENCE_CHECKS = {
+  [PRODUCTION_RELAY_EVENTS_PROFILE]: [
+    "application",
+    "security",
+    "browser",
+    "egress",
+    "provider",
+    "delivery",
+    "real_host",
+  ],
   // Staging evidence-collection activation: real-host outcomes are obtained
   // after deployment, never asserted as a precondition or production readiness.
   // Authenticated provider readback and protected owner approval remain mandatory.
@@ -368,10 +381,7 @@ export function validateRelease({
     ["staging", "production"].includes(environment),
     "invalid-environment",
   );
-  requireCondition(
-    profile !== PRODUCTION_RELAY_EVENTS_PROFILE,
-    "production-relay-integration-incomplete",
-  );
+
   requireCondition(Object.hasOwn(EVIDENCE_CHECKS, profile), "invalid-profile");
   requireCondition(/^[a-f0-9]{40}$/i.test(buildSha), "invalid-build-sha");
 
@@ -436,6 +446,17 @@ export function validateRelease({
   );
 
   validateSecretInventory(secrets, environment, config.name);
+  requireCondition(
+    profile !== PRODUCTION_RELAY_EVENTS_PROFILE ||
+      (environment === "production" &&
+        productionRelayConfiguration(vars) !== null &&
+        secrets.bindings.includes("EVENTS_RELAY_SIGNING_KEY_PKCS8")),
+    "production-relay-configuration-unverified",
+  );
+  requireCondition(
+    vars.EVENTS_RELAY_SIGNING_KEY_PKCS8 === undefined,
+    "relay-secret-in-plain-config",
+  );
   // A runtime switch cannot assert readiness for a profile lacking independent evidence.
   const enabledLive = vars.ENABLE_MCP_SUBSCRIPTIONS === "true";
   const enabledEvents =
@@ -464,9 +485,13 @@ export function validateRelease({
   }
   requireCondition(
     !enabledLive ||
-      ["live", "events", "autonomous", TEST_NATIVE_EVENTS_PROFILE].includes(
-        profile,
-      ),
+      [
+        "live",
+        "events",
+        "autonomous",
+        TEST_NATIVE_EVENTS_PROFILE,
+        PRODUCTION_RELAY_EVENTS_PROFILE,
+      ].includes(profile),
     "live-switch-without-live-evidence",
   );
   requireCondition(
@@ -476,6 +501,7 @@ export function validateRelease({
         "autonomous",
         PRIVATE_PILOT_PROFILE,
         TEST_NATIVE_EVENTS_PROFILE,
+        PRODUCTION_RELAY_EVENTS_PROFILE,
       ].includes(profile),
     "events-switch-without-events-evidence",
   );

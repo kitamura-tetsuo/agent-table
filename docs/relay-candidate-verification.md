@@ -1,8 +1,8 @@
 # Candidate-bound result-only verification (#20 / #74)
 
 This source-only candidate extends the integrated schema13 checkpoint with
-schema14. Production discovery/readiness and actual adapter selection remain
-unconnected. No live credential, hosting configuration, relay exposure or
+schema14. Production selection is now wired through strict protected-deployment configuration
+and matching key validation; this does not provision or approve live settings. No live credential, hosting configuration, relay exposure or
 application deployment is created.
 
 ## Exact operation before callback
@@ -50,8 +50,9 @@ this checkpoint does not claim production capacity evidence.
 ## Evidence limits
 
 Focused Workerd tests exercise actual GuestDO grants, table-creation service,
-subscription service and TableDO persistence/guards. Only the external relay
-outcome and unconfigured runtime transport seam are injected. They cover signed
+subscription service and TableDO persistence/guards. The original focused candidate tests inject the external relay
+outcome and transport seam. A separate production-selection integration exercises
+real MCP/service/DO selection with only external relay fetch controlled. They cover signed
 provider payload shape, one-shot send, reconstruction, unknown preservation,
 wrong operation/digest, failed/bare HTTP evidence, commit interruption, expiry,
 revocation, unsubscribe, competing candidate, actual close/browser-approved delete,

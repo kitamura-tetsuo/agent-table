@@ -1,5 +1,5 @@
 /**
- * Unwired MESSAGE-ONLY Worker-to-relay transport adapter. Never verifies a challenge. A release profile must select it
+ * MESSAGE-ONLY Worker-to-relay transport adapter. Never verifies a challenge. A release profile must select it
  * explicitly; this module never enables Events or creates secrets on import.
  */
 import {
@@ -8,6 +8,7 @@ import {
   validateReviewedCallbackDestination,
 } from "./egress";
 import type { RelayClientConfiguration, RelayOperation } from "./relay-client";
+import { canonicalRelayHeaders } from "./relay-operation";
 import { parseRelayHttpOutcome, type RelayHttpOutcome } from "./relay-outcome";
 
 const ID = /^[A-Za-z0-9_-]{16,128}$/;
@@ -86,7 +87,9 @@ export async function sendRelayMessage(
     )
       return { ok: false, reason: "destination-rejected" };
     const headers: Record<string, string> = {};
-    for (const [key, value] of Object.entries(request.headers ?? {})) {
+    for (const [key, value] of Object.entries(
+      canonicalRelayHeaders(request.headers ?? {}),
+    )) {
       if (
         !allowedHeaders.has(key) ||
         typeof value !== "string" ||
