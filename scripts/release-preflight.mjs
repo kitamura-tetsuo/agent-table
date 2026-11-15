@@ -98,14 +98,10 @@ const RELEASE_PROFILES = new Set([
   PRIVATE_PILOT_PROFILE,
 ]);
 const EVIDENCE_CHECKS = {
-  [TEST_NATIVE_EVENTS_PROFILE]: [
-    "application",
-    "security",
-    "browser",
-    "live_runtime",
-    "provider",
-    "delivery",
-  ],
+  // Staging evidence-collection activation: real-host outcomes are obtained
+  // after deployment, never asserted as a precondition or production readiness.
+  // Authenticated provider readback and protected owner approval remain mandatory.
+  [TEST_NATIVE_EVENTS_PROFILE]: ["application", "security", "browser"],
   manual: ["application", "security", "browser"],
   // This isolated verification profile gathers real-host evidence; it does not
   // advertise that the evidence already exists or authorize a public release.

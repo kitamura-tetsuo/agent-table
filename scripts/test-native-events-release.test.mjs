@@ -33,8 +33,6 @@ function fixture() {
   f.profile = config.vars.RELEASE_PROFILE;
   f.configText = JSON.stringify(config);
   f.evidence.configSha256 = hash(f.configText);
-  for (const check of ["live_runtime", "provider", "delivery"])
-    f.evidence.checks[check] = f.evidence.checks.application;
   Object.assign(f.operations, {
     profile: f.profile,
     configSha256: hash(f.configText),
@@ -211,5 +209,36 @@ test("emergency-paused native deployment remains readable for manual rollback an
   assert.throws(
     () => validateRelease({ ...invalid, secrets: invalid.inventory }),
     /invalid-test-native-events-configuration/,
+  );
+});
+
+test("initial staging evidence collection needs no invented hosted success", () => {
+  const f = fixture();
+  for (const name of ["live_runtime", "provider", "delivery", "real_host"]) {
+    assert.equal(f.evidence.checks[name], undefined);
+  }
+  assert.equal(
+    validateRelease({ ...f, secrets: f.inventory }).preflightValid,
+    true,
+  );
+  for (const name of ["application", "security", "browser"]) {
+    const missing = structuredClone(f);
+    delete missing.evidence.checks[name];
+    assert.throws(
+      () => validateRelease({ ...missing, secrets: missing.inventory }),
+      new RegExp(`missing-or-unverified-evidence:${name}`),
+    );
+  }
+  const wrongBuild = structuredClone(f);
+  wrongBuild.evidence.buildSha = "f".repeat(40);
+  assert.throws(
+    () => validateRelease({ ...wrongBuild, secrets: wrongBuild.inventory }),
+    /evidence-target-mismatch/,
+  );
+  const wrongConfig = structuredClone(f);
+  wrongConfig.evidence.configSha256 = "f".repeat(64);
+  assert.throws(
+    () => validateRelease({ ...wrongConfig, secrets: wrongConfig.inventory }),
+    /evidence-target-mismatch/,
   );
 });
