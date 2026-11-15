@@ -221,7 +221,7 @@ async function authorizeReset(fixture) {
     environment: "staging",
     buildSha: "a".repeat(40),
     configSha256: "b".repeat(64),
-    schemaVersion: 13,
+    schemaVersion: 14,
     namespaceIdentity: identity,
     planSha256: "c".repeat(64),
     evidenceSha256: null,
@@ -360,7 +360,7 @@ test("future-schema fixture refuses real reset and preserves SQL across construc
         requestNonce: "d".repeat(64),
       }),
     );
-    assert.equal(future.schemaVersion, 14);
+    assert.equal(future.schemaVersion, 15);
     assert.equal(future.constructorValidatorRefused, true);
     assert.equal(future.inspectionRefused, true);
     assert.equal(future.resetRefused, true);
@@ -377,7 +377,7 @@ test("future-schema fixture refuses real reset and preserves SQL across construc
         assert.equal(error.name, "UnsupportedApplicationSchemaError");
         assert.match(
           error.message,
-          /Application schema version 14 is newer than supported 13/,
+          /Application schema version 15 is newer than supported 14/,
         );
         return true;
       },
@@ -391,7 +391,7 @@ test("future-schema fixture refuses real reset and preserves SQL across construc
       objectId: prepared.table.objectId,
     });
     assert.equal(retained.objectId, future.objectId);
-    assert.equal(retained.schemaVersion, 14);
+    assert.equal(retained.schemaVersion, 15);
     assert.equal(retained.canonicalSha256, future.canonicalSha256);
     assert.deepEqual(retained.counts, future.counts);
     assert.equal(retained.kvEntries, future.kvEntries);

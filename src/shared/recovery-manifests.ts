@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { recoveryGenerationSchema } from "../../schema/012_recovery_generation.ts";
 import type { RecoveryDoBinding } from "./recovery.ts";
 
-const APPLICATION_SCHEMA_VERSION = 13;
+const APPLICATION_SCHEMA_VERSION = 14;
 
 export const RECOVERY_MARKER_SQL =
   recoveryGenerationSchema.statements[0].replace(
@@ -67,7 +67,7 @@ export const GUEST_RECOVERY_STORAGE: RecoveryStorageDescriptor = {
   binding: "GUESTS",
   schemaVersion: APPLICATION_SCHEMA_VERSION,
   applicationSchema: true,
-  // Applying migrations 1..13 to a virgin guest SQLite database produces this
+  // Applying migrations 1..14 to a virgin guest SQLite database produces this
   // catalog. Recovery tests verify the same catalog in the pinned Workerd.
   schemaSha256:
     "9586006bff9ab0daee6130c49eeede14bb4a78d88804717ff6aec4ee1975539a",
@@ -95,12 +95,18 @@ export const TABLE_RECOVERY_STORAGE: RecoveryStorageDescriptor = {
   schemaVersion: APPLICATION_SCHEMA_VERSION,
   applicationSchema: true,
   schemaSha256:
-    "9303d06f6b290492fb5d3eb8be0f496d1616a71e740bec5f528e0cb356ab082e",
+    "bc3817646623bedeffb46b0dace8b9c4507060d6263825712954f35494137bd2",
   triggers: [
     "table_event_relay_attempt_identity_immutable",
     "table_event_relay_attempt_outcome_immutable",
+    "table_event_relay_verification_identity_immutable",
+    "table_event_relay_verification_result_immutable",
   ],
   tables: [
+    table(
+      "table_event_relay_verifications",
+      "candidate_id,membership_id,subscription_id,guest_id,connection_id,fence,candidate_expires_at,request_id,issued_at,acceptance_expires_at,audience,caller_id,operation_digest,state",
+    ),
     table(
       "table_event_relay_attempts",
       "request_id,event_id,subscription_id,generation,ordinal,lease_token,first_attempt_at,lease_deadline,audience,caller_id,issued_at,acceptance_expires_at,operation_digest,transport_reserved,state,outcome_kind,http_status,outcome_json",
@@ -111,7 +117,7 @@ export const TABLE_RECOVERY_STORAGE: RecoveryStorageDescriptor = {
     ),
     table(
       "table_event_candidates",
-      "membership_id,candidate_id,subscription_id,guest_id,connection_id,callback_url,secret_envelope,requested_ttl_ms,fence,expires_at",
+      "membership_id,candidate_id,subscription_id,guest_id,connection_id,callback_url,secret_envelope,requested_ttl_ms,fence,expires_at,verification_mode",
     ),
     table(
       "table_event_subscriptions",

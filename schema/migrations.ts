@@ -10,8 +10,8 @@ import { deletionConfirmationSchema } from "./009_deletion_confirmation";
 import { eventSubscriptionsSchema } from "./010_event_subscriptions";
 import { durableEventOutboxSchema } from "./011_durable_event_outbox";
 import { recoveryGenerationSchema } from "./012_recovery_generation";
-
 import { relayAttemptLedgerSchema } from "./013_relay_attempt_ledger";
+import { relayVerificationSchema } from "./014_relay_verification";
 
 export const migrations = [
   initialSchema,
@@ -27,6 +27,7 @@ export const migrations = [
   durableEventOutboxSchema,
   recoveryGenerationSchema,
   relayAttemptLedgerSchema,
+  relayVerificationSchema,
 ] as const;
 
 export const APPLICATION_SCHEMA_VERSION = migrations.at(-1)?.version ?? 0;

@@ -154,7 +154,7 @@ function harness() {
     identity: async () => ({
       buildSha: plan.buildSha,
       environment: "staging",
-      schemaVersion: 13,
+      schemaVersion: 14,
       commitments: namespaceIdentity.commitments,
     }),
     inspect: async (request) => receipt(request),

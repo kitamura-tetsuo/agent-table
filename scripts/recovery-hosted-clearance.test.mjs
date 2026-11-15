@@ -4,9 +4,9 @@ import { test } from "node:test";
 import {
   ADMISSION_RECOVERY_STORAGE,
   GUEST_RECOVERY_STORAGE,
-  TABLE_RECOVERY_STORAGE,
   OAUTH_RECOVERY_STORAGE,
   recoveryStorageManifest,
+  TABLE_RECOVERY_STORAGE,
 } from "../src/shared/recovery-manifests.ts";
 import { recoveryDigest } from "./recovery-configuration.mjs";
 import {
@@ -284,9 +284,13 @@ function successorInspectionFixture() {
     structuredClone(canonicalInspection);
   // Fresh in-memory current-schema fixture; never rewrite the historical JSON
   // or represent its schema-12 inspection as evidence for schema 13.
-  expected.schemaVersion = 13;
-  const descriptors = { TABLES:TABLE_RECOVERY_STORAGE, GUESTS:GUEST_RECOVERY_STORAGE,
-    OAUTH_SERIALIZER:OAUTH_RECOVERY_STORAGE, ADMISSION:ADMISSION_RECOVERY_STORAGE };
+  expected.schemaVersion = 14;
+  const descriptors = {
+    TABLES: TABLE_RECOVERY_STORAGE,
+    GUESTS: GUEST_RECOVERY_STORAGE,
+    OAUTH_SERIALIZER: OAUTH_RECOVERY_STORAGE,
+    ADMISSION: ADMISSION_RECOVERY_STORAGE,
+  };
   for (const receipt of receipts) {
     const descriptor = descriptors[receipt.binding];
     receipt.schemaVersion = descriptor.schemaVersion;
@@ -506,8 +510,11 @@ test("a stalled platform proxy disposal cannot indefinitely postpone compensatio
   await assert.rejects(proxy.dispose(), /private-proxy-stop-timeout/);
 });
 
-test("historical schema-12 inspection is not current schema-13 serving evidence",()=>{
-  const {inventory,receipts,expected}=canonicalInspection;
-  assert.equal(expected.schemaVersion,12);
-  assert.throws(()=>verifyObjectInspectionReceipts(inventory,receipts,expected),/recovery-inspection-subject-invalid/);
+test("historical schema-12 inspection is not current schema-14 serving evidence", () => {
+  const { inventory, receipts, expected } = canonicalInspection;
+  assert.equal(expected.schemaVersion, 12);
+  assert.throws(
+    () => verifyObjectInspectionReceipts(inventory, receipts, expected),
+    /recovery-inspection-subject-invalid/,
+  );
 });

@@ -49,6 +49,11 @@ import {
   type RelayOutboxAdapter,
   recoverRelayOutbox,
 } from "../notifications/relay-outbox";
+import { parseRelayChallengeOutcome } from "../notifications/relay-outcome";
+import {
+  type RelayVerificationOperation,
+  validRelayVerificationOperation,
+} from "../notifications/relay-verification";
 import type { TableEventDiagnostics } from "../services/event-diagnostics";
 import { allowOutboundNotifications } from "../shared/admission";
 import {
@@ -217,6 +222,7 @@ type EventSubscriptionRow = {
 };
 
 type EventCandidateRow = {
+  verification_mode: "native" | "relay";
   membership_id: string;
   candidate_id: string;
   subscription_id: string;
@@ -742,6 +748,7 @@ export class TableDO extends DurableObject<Env> {
       );
     }
     this.privateSql.exec("DELETE FROM table_delete_confirmations");
+    this.privateSql.exec("DELETE FROM table_event_relay_verifications");
     this.privateSql.exec("DELETE FROM table_event_relay_attempts");
     this.privateSql.exec("DELETE FROM table_event_outbox");
     this.privateSql.exec("DELETE FROM table_event_candidates");
@@ -1360,6 +1367,11 @@ export class TableDO extends DurableObject<Env> {
             nextFence,
             deadline,
           );
+          if (this.env.RELEASE_PROFILE === "production-relay-events")
+            this.privateSql.exec(
+              "UPDATE table_event_candidates SET verification_mode='relay' WHERE candidate_id=?",
+              candidateId,
+            );
           return { ok: true, value: { candidateId, subscriptionId } } as const;
         }),
       );
@@ -1369,6 +1381,196 @@ export class TableDO extends DurableObject<Env> {
     } catch {
       return { ok: false, code: "TEMPORARILY_UNAVAILABLE" };
     }
+  }
+
+  /** Internal trusted service RPC. Bind exact challenge operation before I/O. */
+  async prepareRelayVerification(
+    actor: VerifiedConnectionActor,
+    candidateId: string,
+    operation: RelayVerificationOperation,
+  ): Promise<EventResult<{}>> {
+    if (!validRelayVerificationOperation(operation))
+      return { ok: false, code: "INVALID_REQUEST" };
+    const fresh = await this.freshEventActor(actor);
+    if (!fresh) return { ok: false, code: "TABLE_NOT_FOUND" };
+    return this.ctx.storage.transactionSync(() => {
+      const candidate = this.currentRelayVerificationCandidate(
+        fresh,
+        candidateId,
+      );
+      if (
+        !candidate ||
+        operation.issuedAt > Date.now() ||
+        operation.issuedAt >= candidate.expires_at ||
+        Date.now() >= operation.acceptanceExpiresAt
+      )
+        return { ok: false, code: "STALE" };
+      this.privateSql.exec(
+        "UPDATE table_event_candidates SET verification_mode='relay' WHERE candidate_id=?",
+        candidateId,
+      );
+      const old = this.privateSql
+        .exec<Record<string, SqlStorageValue>>(
+          "SELECT * FROM table_event_relay_verifications WHERE candidate_id=?",
+          candidateId,
+        )
+        .toArray()[0];
+      if (old)
+        return old.request_id === operation.requestId &&
+          old.operation_digest === operation.operationDigest &&
+          old.issued_at === operation.issuedAt &&
+          old.acceptance_expires_at === operation.acceptanceExpiresAt &&
+          old.caller_id === operation.callerId &&
+          old.audience === operation.audience
+          ? { ok: true, value: {} }
+          : { ok: false, code: "CONFLICT" };
+      this.privateSql.exec(
+        "INSERT INTO table_event_relay_verifications (candidate_id,membership_id,subscription_id,guest_id,connection_id,fence,candidate_expires_at,request_id,issued_at,acceptance_expires_at,audience,caller_id,operation_digest,state) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,'prepared')",
+        candidate.candidate_id,
+        candidate.membership_id,
+        candidate.subscription_id,
+        candidate.guest_id,
+        candidate.connection_id,
+        candidate.fence,
+        candidate.expires_at,
+        operation.requestId,
+        operation.issuedAt,
+        operation.acceptanceExpiresAt,
+        operation.audience,
+        operation.callerId,
+        operation.operationDigest,
+      );
+      return { ok: true, value: {} };
+    });
+  }
+
+  /** Rechecks local ownership/lifecycle/fence after fresh GuestDO authorization. */
+  private currentRelayVerificationCandidate(
+    actor: VerifiedConnectionActor,
+    candidateId: string,
+  ): EventCandidateRow | undefined {
+    const now = Date.now(),
+      member = this.memberFor(actor.guestId),
+      table = this.metadataRow();
+    if (
+      !member ||
+      !table ||
+      table.expires_at <= now ||
+      actor.expiresAt <= now ||
+      !["waiting", "open"].includes(table.state)
+    )
+      return;
+    const c = this.eventCandidate(member.membership_id),
+      subscription = this.eventSubscription(member.membership_id);
+    if (
+      !c ||
+      !subscription ||
+      c.candidate_id !== candidateId ||
+      c.guest_id !== actor.guestId ||
+      c.connection_id !== actor.connectionId ||
+      c.fence !== subscription.fence ||
+      c.expires_at <= now ||
+      !this.eventRegistrationAllowed(actor, table.table_id, c.callback_url, now)
+    )
+      return;
+    return c;
+  }
+
+  async authorizeRelayVerification(
+    actor: VerifiedConnectionActor,
+    candidateId: string,
+    operation: RelayVerificationOperation,
+    reserve: boolean,
+  ): Promise<boolean> {
+    if (
+      !validRelayVerificationOperation(operation) ||
+      typeof reserve !== "boolean"
+    )
+      return false;
+    const fresh = await this.freshEventActor(actor);
+    if (!fresh) return false;
+    return this.ctx.storage.transactionSync(() => {
+      if (
+        !this.currentRelayVerificationCandidate(fresh, candidateId) ||
+        !this.outboxDispatchEnabled()
+      )
+        return false;
+      const row = this.privateSql
+        .exec<Record<string, SqlStorageValue>>(
+          "SELECT * FROM table_event_relay_verifications WHERE candidate_id=?",
+          candidateId,
+        )
+        .toArray()[0];
+      if (
+        !row ||
+        row.request_id !== operation.requestId ||
+        row.operation_digest !== operation.operationDigest ||
+        row.issued_at !== operation.issuedAt ||
+        row.acceptance_expires_at !== operation.acceptanceExpiresAt ||
+        row.audience !== operation.audience ||
+        row.caller_id !== operation.callerId
+      )
+        return false;
+      if (!reserve) return true;
+      if (
+        row.state !== "prepared" ||
+        Date.now() >= operation.acceptanceExpiresAt
+      )
+        return false;
+      this.privateSql.exec(
+        "UPDATE table_event_relay_verifications SET state='dispatched' WHERE candidate_id=? AND state='prepared'",
+        candidateId,
+      );
+      return true;
+    });
+  }
+
+  async recordRelayVerification(
+    actor: VerifiedConnectionActor,
+    candidateId: string,
+    operation: RelayVerificationOperation,
+    result: unknown,
+  ): Promise<EventResult<{}>> {
+    if (!validRelayVerificationOperation(operation))
+      return { ok: false, code: "INVALID_REQUEST" };
+    const outcome = result === null ? null : parseRelayChallengeOutcome(result);
+    if (result !== null && !outcome)
+      return { ok: false, code: "INVALID_REQUEST" };
+    const fresh = await this.freshEventActor(actor);
+    if (!fresh) return { ok: false, code: "TABLE_NOT_FOUND" };
+    return this.ctx.storage.transactionSync(() => {
+      if (!this.currentRelayVerificationCandidate(fresh, candidateId))
+        return { ok: false, code: "STALE" };
+      const row = this.privateSql
+        .exec<Record<string, SqlStorageValue>>(
+          "SELECT * FROM table_event_relay_verifications WHERE candidate_id=?",
+          candidateId,
+        )
+        .toArray()[0];
+      if (
+        !row ||
+        row.request_id !== operation.requestId ||
+        row.operation_digest !== operation.operationDigest ||
+        row.issued_at !== operation.issuedAt ||
+        row.acceptance_expires_at !== operation.acceptanceExpiresAt ||
+        row.audience !== operation.audience ||
+        row.caller_id !== operation.callerId
+      )
+        return { ok: false, code: "STALE" };
+      const state = outcome?.verification ?? "unknown";
+      if (row.state === "verified" || row.state === "failed")
+        return row.state === state
+          ? { ok: true, value: {} }
+          : { ok: false, code: "CONFLICT" };
+      if (row.state !== "dispatched" && row.state !== "unknown")
+        return { ok: false, code: "STALE" };
+      this.privateSql.exec(
+        "UPDATE table_event_relay_verifications SET state=? WHERE candidate_id=?",
+        state,
+        candidateId,
+      );
+      return { ok: true, value: {} };
+    });
   }
 
   /**
@@ -1452,6 +1654,26 @@ export class TableDO extends DurableObject<Env> {
             )
           )
             return { ok: false, code: "TABLE_NOT_FOUND" } as const;
+          const relayProof = this.privateSql
+            .exec<Record<string, SqlStorageValue>>(
+              "SELECT * FROM table_event_relay_verifications WHERE candidate_id=?",
+              candidateId,
+            )
+            .toArray()[0];
+          if (
+            (relayProof ||
+              pending.verification_mode === "relay" ||
+              this.env.RELEASE_PROFILE === "production-relay-events") &&
+            (!relayProof ||
+              relayProof.state !== "verified" ||
+              relayProof.membership_id !== currentMember.membership_id ||
+              relayProof.subscription_id !== pending.subscription_id ||
+              relayProof.guest_id !== fresh.guestId ||
+              relayProof.connection_id !== fresh.connectionId ||
+              relayProof.fence !== pending.fence ||
+              relayProof.candidate_expires_at !== pending.expires_at)
+          )
+            return { ok: false, code: "STALE" } as const;
           // A pending refresh cannot resurrect an active subscription that expired
           // before the external verification returned, even before alarm cleanup.
           if (current.status === "active" && (current.expires_at ?? 0) <= now) {
