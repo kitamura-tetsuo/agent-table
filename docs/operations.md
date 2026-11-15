@@ -1,12 +1,22 @@
 # Development and operations
 
-Status: local foundation runbook plus staged verification plan. The Worker/DO scaffold, guest sessions, OAuth, table operations, private Durable Object authorities, test scripts, and purpose-separated encrypted-secret primitive exist. An operator reported a dedicated staging deployment on 2026-11-09; the hosted same-zone Worker ingress test found a rate-limit bypass, so staging has not met release acceptance. There is no approved production/public guest rollout, and callback/event delivery is not implemented.
+Status as of **2026-11-15 JST**: the owner-approved staging and production
+**manual paused releases** completed on 2026-11-12, including retained-state
+code rollback and browser Close/Delete checks. The independently approved
+isolated fresh-start PITR/discard and controlled clearance completed on
+2026-11-14–15. See the [Issue #22 acceptance map](issue22-acceptance.md),
+[#50 final receipt](https://github.com/kitamura-tetsuo/agent-table/issues/50#issuecomment-6825493911)
+and [#51 clearance report](issue51-synthetic-clearance-evidence.md).
+These dated receipts do not attest that current main is deployed or authorize
+public intake, Events, a new release or recovery on existing users' data.
+The issue-specific foundation notes below describe their original milestones;
+current release decisions use the [reviewed runbook](release-runbook.md).
 
 ## Implemented foundation (Issue #2)
 
 The committed `wrangler.jsonc` binds `TABLES` to `TableDO` and `GUESTS` to `GuestDO`, using the SQLite backend selected by Cloudflare class migration `v1`. It sets the local `PUBLIC_ORIGIN` and disables guest admission, MCP subscriptions, and OpenAI Events by default. `/` is a minimal HTML status page, `/health` is a JSON health check, and `/mcp` is a modern-only MCP handler with authenticated table tools. Live inbox resource subscriptions are advertised only with the explicit flag and current OAuth grant. Internal Durable Object methods are not public HTTP routes.
 
-The application schema has a separate per-object `__agent_table_schema` version row, initialized by the classes using a local SQLite transaction. `schema/001_initial.ts` is version 1. Object eviction preserves it; a newer version aborts reconstruction instead of resetting storage. Additional business tables will be future, numbered migrations.
+The application schema has a separate per-object `__agent_table_schema` version row, initialized by the classes using a local SQLite transaction. `schema/001_initial.ts` is version 1; current numbered migrations extend through `schema/012_recovery_generation.ts`. Object eviction preserves the schema version; a newer unsupported version aborts reconstruction instead of resetting storage.
 
 Exact direct dependency pins (also recorded in `package-lock.json`):
 
@@ -23,7 +33,7 @@ The pinned Agents release declares the MCP SDK `2.4.0` optional peer version. Te
 
 `src/shared/config.ts` validates the two independent encryption keyrings, and `src/shared/secret-envelope.ts` seals/opens authenticated v1 AES-256-GCM envelopes. `src/env.d.ts` declares their optional Worker secret bindings. They are deliberately **not** defined in `wrangler.jsonc` variables, nor used by a public endpoint. See [security.md](security.md) for the envelope and authorization boundaries.
 
-The workerd integration suite tests both purposes, authenticated metadata and record-ID binding, tampering, secret-safe errors, old-key overlap/deadline refusal, and ciphertext persisted through an actual SQLite-backed `TableDO` eviction and reconstruction. Run just that production-function suite using `npx vitest run test/integration/secret-envelope.test.ts`. Application consumers and credential records are future issues; these tests do not claim the service can already issue invites or deliver callbacks.
+The workerd integration suite tests both purposes, authenticated metadata and record-ID binding, tampering, secret-safe errors, old-key overlap/deadline refusal, and ciphertext persisted through an actual SQLite-backed `TableDO` eviction and reconstruction. Run just that production-function suite using `npx vitest run test/integration/secret-envelope.test.ts`. Invitation and callback consumers now exist, but these primitive tests alone do not establish hosted delivery, production key rotation or public profile readiness.
 
 ### Durable creation reservations (Issue #7)
 
@@ -43,7 +53,7 @@ Run `npx vitest run test/integration/table-authority.test.ts` for real binding/S
 
 GuestDO's alarm handles only physical cleanup of the existing session, connection and creation-reservation records. It schedules a separate 60-second recovery wakeup before processing and a one-second follow-up for already-due backlog; valid records keep their original deadlines and server-side authorization remains synchronous. TableDO now has lifecycle cleanup and a durable Events outbox alarm consumer. Its dispatch requires independently enabled outbound settings, current grant validation and transport readiness; restore quarantine parks the alarm before cleanup or any delivery attempt. Do not interpret a successful alarm as public Events readiness, actual callback delivery or backup reconciliation. See the separate recorded synthetic Cloudflare quarantine evidence in [pr46-cloudflare-quarantine-evidence.md](pr46-cloudflare-quarantine-evidence.md).
 
-## Future repository layout
+## Original repository layout proposal
 
 ```text
 src/
@@ -72,7 +82,12 @@ test/
 docs/
 ```
 
-The implemented subset has `src/index.ts`, `src/mcp/server.ts`, `src/auth/guest.ts`, `src/web/guest.ts`, `src/objects/{table,guest}.ts`, `src/shared/{schema,config,random,secret-envelope}.ts`, versioned `schema/001_initial.ts`, `schema/002_guest_sessions.ts` and `schema/003_connection_grants.ts`, `test/{unit,integration,e2e}/`, and `.github/workflows/ci.yml`. Guest browser identity and private grant authority/browser revocation are implemented; OAuth provider, webhook, and consent-issuance dependencies remain pending.
+The implementation now includes the Worker entry, MCP server/subscriptions,
+OAuth provider and token serializer, guest/table authorities, browser management,
+Events adapter/egress/outbox, versioned schema migrations and
+`test/{unit,integration,e2e}/`. The proposal above is an orientation aid;
+the checked-in source and profile-specific acceptance records determine what
+is implemented and eligible for a particular deployment.
 
 Tests should run in Cloudflare's workerd-based harness for storage, bindings, alarms, and streams. Browser tests cover consent and invitation handling. Pure Node unit tests alone are not an adequate production oracle. [CF-TEST]
 
@@ -89,7 +104,13 @@ validity, the live Cloudflare route or the absence of an implicit workers.dev
 endpoint. Independently reviewed authenticated deployment evidence remains
 mandatory, and this offline preflight never grants publication approval.
 
-Use separate staging and production Workers, DO namespaces, KV namespaces, secrets, and origins. A test environment must never deliver to production callbacks. Reserve one stable production HTTPS origin before configuring public OAuth clients; no domain has been selected or deployed by these documents.
+Use separate staging and production Workers, DO namespaces, KV namespaces,
+secrets, and origins. A test environment must never deliver to production
+callbacks. The accepted #50 releases verified
+`https://agent-table-test.outliner-online.com` for staging and
+`https://agent-table.outliner-online.com` for production. A later operation
+must independently verify the intended hostname and provider ownership again;
+the historical receipt is not authority to create or change a domain.
 
 Initial bindings:
 
@@ -97,8 +118,9 @@ Initial bindings:
 | --- | --- |
 | `TABLES` | SQLite-backed `TableDO` namespace |
 | `GUESTS` | SQLite-backed `GuestDO` namespace |
+| `OAUTH_SERIALIZER` | SQLite-backed `OAuthTokenDO` namespace |
+| `ADMISSION` | SQLite-backed `AdmissionDO` namespace |
 | `OAUTH_KV` | Selected OAuth library's protocol storage |
-| `ASSETS` | Optional Worker static-assets binding |
 | `INVITATION_RESPONSE_KEYRING` | Workers secret: invitation-response encryption keys |
 | `CALLBACK_CREDENTIAL_KEYRING` | Workers secret: callback-credential encryption keys |
 
@@ -141,11 +163,13 @@ reviewed config bytes can be deployed. The post-deploy gate verifies the active
 Worker version, four SQLite DO namespaces, OAuth KV ID, actual secret names,
 domain, release vars and HTTPS `/health` build/profile. PR CI never receives
 release credentials; approval from a repository collaborator or a Slack DM
-alone does not bypass the protected Environment. The restricted implementation
-supports the `manual` profile only. The first protected staging release was
-separately approved and executed on 2026-11-12. **No protected production
-release is authorized** without a new exact-main gate, operator evidence and
-independent GitHub Environment approval.
+alone does not bypass the protected Environment. The gate supports the
+`manual` profile and a separately approved staging-only private verification
+profile; public live/Events/autonomous profiles remain unavailable. Protected
+staging and production manual paused releases were separately approved and
+executed on 2026-11-12. Every later production release still requires a new
+exact-main gate, current operator evidence and independent GitHub Environment
+approval.
 
 The full operator inputs, separate read/write Cloudflare tokens, private
 environment-scoped secrets, evidence schemas, rollback and measured hosted
@@ -156,29 +180,65 @@ records the [protected staging deployment](https://github.com/kitamura-tetsuo/ag
 and [synthetic browser Close/Delete acceptance](https://github.com/kitamura-tetsuo/agent-table/issues/50#issuecomment-6820766589).
 For any rollback or emergency pause, run the read-only
 `scripts/release-pause-readback.mjs` verifier before claiming service settings
-and active-version text bindings agree. Production release, independently
-verified account backup/log retention and actual billed usage remain blocked.
+and active-version text bindings agree. The
+[production release receipt](https://github.com/kitamura-tetsuo/agent-table/issues/50#issuecomment-6825493911)
+records the successful exact-build publication and provider readback. The owner
+accepted the disclosed
+[retention limits](https://github.com/kitamura-tetsuo/agent-table/issues/50#issuecomment-6824625669)
+and [absence of a finalized invoice](https://github.com/kitamura-tetsuo/agent-table/issues/50#issuecomment-6824960944).
+Account-wide retained copies and actual billed charges remain unknown; no
+universal erasure, zero charge or automatic billing shutdown is established.
 
-## Deployment procedure after implementation
+## Environment-bound provisioning and secret changes
 
-After the guest/OAuth and later application stages have been implemented, separately approve staging publication, provision the OAuth KV binding if the selected library requires it, and set real staging origin/namespace configuration outside the committed local scaffold. Store encryption keyrings with `wrangler secret put`, not in committed configuration, shell history, deployment logs or test artifacts. Configure additional secrets from the chosen OAuth library's pinned documentation. The following commands are a future **interactive quarantined bootstrap** preparation workflow, **not** a release approval and **not** part of PR CI:
+Use the executable [provisioning and secrets runbook](provisioning-and-secrets.md)
+for the selected account, exact Worker, environment-specific configuration and
+reviewed source. The existing #50 environments are already provisioned; creating
+another namespace or Worker is a separate operation, not a prerequisite for
+accepting their release evidence.
 
-```sh
-npx wrangler login
-npx wrangler kv namespace create OAUTH_KV
-npx wrangler secret put INVITATION_RESPONSE_KEYRING
-npx wrangler secret put CALLBACK_CREDENTIAL_KEYRING
-npx wrangler deploy --dry-run
-```
+**`wrangler secret put` creates and immediately deploys a Worker version.**
+It is a credential-bearing write operation, not dry-run preparation. A later
+`wrangler deploy --dry-run` cannot undo that deployment. Cloudflare distinguishes
+this command from version-only preparation in its
+[secrets documentation](https://developers.cloudflare.com/workers/configuration/secrets/).
+Every write must select the reviewed config and account explicitly, verify the
+target Worker, and have its own applicable approval and provider readback.
+Never deploy the committed local scaffold, use a nested `--env` override, or
+accept implicit creation of an unknown Worker at a secret prompt.
 
-These commands do not publish the service. After the validation gates pass, use an explicit staging deployment, then separately approve production deployment. CI should typecheck, lint, test, and build on pull requests; production deployment should be restricted to the intended repository/branch and environment. Use a narrowly scoped Cloudflare credential.
+The [new-environment procedure](provisioning-and-secrets.md#new-quarantined-environment)
+ends with independently verified, non-public quarantined resources. The
+[existing-worker procedure](provisioning-and-secrets.md#existing-paused-worker-secret-change)
+checks the exact active version and both service/version settings before and
+after each secret change. Its normal-pause verifier cannot validate a missing
+Worker, missing initial keyrings, or a domainless quarantined bootstrap.
+Public activation and quarantine clearance retain their separate release and
+[recovery gates](fresh-start-recovery.md); provisioning never supplies either
+authorization by itself.
 
-Provision and rotate the purpose-specific keyrings as follows:
+## Bounded key rotation
 
-1. Generate independent 32-byte random AES key material per purpose in a trusted operator environment; encode each key as unpadded base64url. Protect it in your secret manager; do not paste it into commands, tickets, chat, or CI. Choose non-secret, unique version IDs for the `current` entries. Keep `previous` empty until rotation. Each keyring is a JSON object, entered through the interactive Wrangler secret prompt, not a committed file.
-2. To rotate, create fresh independent key material for the purpose being rotated; make it `current`. Move the former current key to `previous` with exact UTC `.sssZ` `retiredAt` (rotation start) and `acceptUntil` (no more than seven days later). Existing ciphertext remains encrypted under its recorded `keyId`; new writes use the new current ID. Deploy the new secret before relying on it, and check in staging that old reads and new writes work. Keep different environments' keyrings separate.
-3. Plan to retire/revoke or otherwise safely complete any still-needed old invitation responses and callback credentials before `acceptUntil`. At the deadline, opening a record under the former key fails with `key-expired`; remove the old key entry from the Worker secret promptly. Removing it earlier causes `key-unavailable`. Neither failure authorizes reissuance, access restoration, a plaintext fallback or silent resealing.
-4. If a keyring is absent, corrupt, lost or wrong for its purpose, the helper fails closed with a safe error. Recover only from an authorized protected key backup or rotate affected credentials through their future ownership flows. Do not log inputs to diagnose the failure. Never extend the overlap beyond seven days as a shortcut.
+Follow the [bounded rotation procedure](provisioning-and-secrets.md#bounded-key-rotation).
+Each purpose uses independent 32-byte AES material and a unique non-secret key
+ID. Old-key overlap requires the actual former key from an authorized secure
+source, exact UTC `retiredAt`/`acceptUntil` values, no more than **seven days**
+overlap and at most **two** previous keys. Test old reads and new writes in the
+approved isolated staging scope before applying a production change.
+
+The accepted [production K3 policy](https://github.com/kitamura-tetsuo/agent-table/issues/50#issuecomment-6794647999)
+generated keys in memory and retained no recoverable local/offline copy.
+It does not authorize replacing an unavailable old key or losing dependent
+ciphertext. If the former key is unavailable, retain the deployed secret and
+stop overlap rotation pending a concrete, separately reviewed retirement or
+reissue decision. An intake pause does not prove all ciphertext writers are
+stopped or all records have expired. No automatic ciphertext inventory,
+re-encryption or production rotation rehearsal is claimed.
+
+At the accepted deadline, old ciphertext fails with `key-expired`; removing its
+key earlier produces `key-unavailable`. Neither condition permits plaintext
+fallback, reauthorization or silent resealing. Keep secrets out of committed
+configuration, command arguments, shell history, logs and test artifacts.
 
 The envelope contains only ciphertext and non-secret format/key metadata; the owning record retains its own stable ID. Restrict decryption to the owning consumer after separate authorization and expiry checks. Encryption does not protect table transcripts end-to-end; Worker operators and connected agent hosts may process their content.
 
@@ -251,9 +311,9 @@ Action: **Block**. This also blocks legitimate same-zone Worker clients on that 
 Use the narrowly scoped, idempotent WAF management script, with a zone-scoped API token that has WAF/Rulesets read and write access. Do not pass the token on the command line or commit it. Replace `<ZONE_ID>` with the verified `outliner-online.com` zone ID. Each command is explicitly scoped to the staging hostname:
 
 ```sh
-node scripts/manage-ingress-waf.mjs --mode=plan --hostname=agent-table-test.outliner-online.com --zone-name=outliner-online.com --zone-id=<ZONE_ID>
-node scripts/manage-ingress-waf.mjs --mode=check --hostname=agent-table-test.outliner-online.com --zone-name=outliner-online.com --zone-id=<ZONE_ID>
-node scripts/manage-ingress-waf.mjs --mode=apply --hostname=agent-table-test.outliner-online.com --zone-name=outliner-online.com --zone-id=<ZONE_ID> --confirm-hostname=agent-table-test.outliner-online.com
+node scripts/manage-ingress-waf.mjs --mode=plan --hostname=agent-table-test.outliner-online.com --zone-name=outliner-online.com --zone-id='<ZONE_ID>'
+node scripts/manage-ingress-waf.mjs --mode=check --hostname=agent-table-test.outliner-online.com --zone-name=outliner-online.com --zone-id='<ZONE_ID>'
+node scripts/manage-ingress-waf.mjs --mode=apply --hostname=agent-table-test.outliner-online.com --zone-name=outliner-online.com --zone-id='<ZONE_ID>' --confirm-hostname=agent-table-test.outliner-online.com
 ```
 
 The script only adds the exact rule if absent, places it before existing zone-level custom rules, and refuses to replace a matching but altered rule. It never rewrites unrelated rulesets. A missing `CLOUDFLARE_API_TOKEN` or HTTP 403 is an explicit stop condition, not a reason to change unrelated Cloudflare permissions or bypass account controls. The read-only `check` command returns a nonzero code while the guard is missing; `plan` makes no API calls.

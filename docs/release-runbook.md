@@ -10,16 +10,27 @@ version state **before** permitting `wrangler deploy`. It reads the deployed
 resources and public `/health` build receipt again after publication. A local
 preflight success or a PR merge is never deployment authorization.
 
-**Hosted evidence as of 2026-11-12:** owner-approved protected staging bootstrap,
-same-config live update and pinned code rollback, and the existing-guest
-browser Close/Delete rehearsal have succeeded against synthetic retained state.
-The later staging temporary-admission experiment exposed a Wrangler
-service-settings/active-version text-binding mismatch; an independently
-verified canonical paused-config redeploy repaired it. Production HTTPS and
-identity have been read back, but a **separately approved protected production
-release has not run**. Account-specific backup/log retention, billed storage
-and pricing/usage acceptance are still unresolved. These are distinct gates;
-the checked-in `wrangler.jsonc` is not a hosted release candidate.
+**Recorded acceptance reviewed on 2026-11-15 JST:** the owner-approved
+protected staging and production **paused manual** releases passed on
+2026-11-12. The [final Issue #50 receipt](https://github.com/kitamura-tetsuo/agent-table/issues/50#issuecomment-6825493911)
+includes independent provider identity/configuration readback, HTTPS health,
+staging retained-state code update/rollback and existing-guest browser
+Close/Delete. The staging service-settings/active-version text-binding
+mismatch was repaired and independently checked. The separately approved
+[production run #43229649298](https://github.com/kitamura-tetsuo/agent-table/actions/runs/43229649298)
+deployed source `381c4e7378b2d95a3b8342f045a3e4d5521ada00` as version
+`ce3f4589-57f1-467c-88fa-a9adbfa3628d`, with original namespaces retained,
+all five intake/capability flags false and no restoration. These are dated
+receipts for those exact targets, not proof that the latest `main` is deployed.
+
+The owner accepted the disclosed [retention limits](https://github.com/kitamura-tetsuo/agent-table/issues/50#issuecomment-6824625669)
+and [proceeding without a finalized invoice](https://github.com/kitamura-tetsuo/agent-table/issues/50#issuecomment-6824960944).
+Actual account charges and account-wide retained copies remain unverified;
+neither zero spend, universal erasure nor automatic billing shutdown is claimed.
+New operations still need fresh target-bound inputs and approvals. The
+checked-in `wrangler.jsonc` is not a hosted release candidate. The
+[Issue #22 acceptance map](issue22-acceptance.md) joins these release receipts
+to the separate recovery evidence and original requirements.
 
 The authenticated gate supports **`manual`** in staging and production, with
 subscriptions, Events and outbound notifications all explicitly `false`.
@@ -56,8 +67,9 @@ generation before this ordinary deployment flow can accept it.
 
 This flow assumes a **preexisting** target and peer Worker with known DO/KV
 ownership. It deliberately rejects first-time bootstrapping of an unknown
-Worker. Initial provisioning of an unknown Worker still needs a separate
-approved **quarantined and non-public** workflow, with all intake and
+Worker. Initial provisioning of an unknown Worker follows the separately
+approved [environment-bound provisioning procedure](operations.md#environment-bound-provisioning-and-secret-changes),
+with quarantine enabled, no public entry surfaces, and all intake and
 outbound disabled. Do not copy a live Worker configuration, recycle namespace
 IDs, rename a namespace, or publish an unreviewed candidate.
 
@@ -92,7 +104,9 @@ again just before writing and performs normal strict post-deploy verification.
    name (`*-staging`, `*-production`), domain, KV and four DO namespace IDs.
    Never reuse an existing legacy KV-backed OAuth serializer as a new SQLite
    class; review the deployed migration tags before any change.
-2. Create independent Workers and domain bindings with `workers_dev: false`
+2. For initial provisioning, use the reviewed
+   [environment-bound procedure](operations.md#environment-bound-provisioning-and-secret-changes)
+   before establishing the approved domain binding. Keep `workers_dev: false`
    and `preview_urls: false`. Confirm these **live** settings and the paginated
    account namespace owner list, not just JSON. The release gate checks the
    active Worker version, named class handlers, migration tag, version-bound
@@ -103,16 +117,23 @@ again just before writing and performs normal strict post-deploy verification.
    namespace proofs exist. A valid custom domain must already resolve over
    HTTPS with a certificate for the intended host. Verify Host/Origin behavior
    and public security controls on that actual domain.
-3. Inject secrets **interactively** and separately for each Worker. Each needs
+3. Inject secrets **interactively** and separately for each explicitly targeted
+   Worker using the [secret-change procedure](operations.md#environment-bound-provisioning-and-secret-changes).
+   `wrangler secret put` immediately deploys a new Worker version; it is a
+   reviewed mutation, not offline preparation. Verify the approved target
+   configuration before each change and the active version/bindings after it.
+   Each Worker needs
    independent `INVITATION_RESPONSE_KEYRING` and
    `CALLBACK_CREDENTIAL_KEYRING`; admission with `GUEST_CHALLENGE_MODE=required`
    additionally needs `TURNSTILE_SECRET` and the selected public site key.
    Obtain actual secret-name inventory by authenticated Cloudflare readback;
    the gate never reads, saves, or logs their values. Follow
-   [key rotation](operations.md#deployment-procedure-after-implementation),
+   [bounded key rotation](operations.md#bounded-key-rotation),
    respecting the seven-day maximum overlap and the grace-period expiry of
-   old ciphertext readers. Rotate provider/OAuth client credentials through
-   their own independent authorization flows.
+   old ciphertext readers. The approved production K3 policy retained no
+   recoverable offline key copy; follow the unavailable-old-key branch instead
+   of assuming seamless overlap rotation is possible. Rotate provider/OAuth
+   client credentials through their own independent authorization flows.
 4. Configure protected GitHub `staging` and `production` Environments with
    deployment branches restricted to `main` and a human reviewer
    (the owner), requiring an explicit review after workflow dispatch. The
@@ -430,19 +451,24 @@ at operation time. Publish the account's **actual** backup recovery window,
 log retention, query accessibility and safe deletion policy; vendor defaults
 can change, and privacy data cannot be guaranteed erased by rollback.
 
-## 5. Evidence register (fill with actual provider receipts)
+## 5. Recorded evidence and operation-time gates
+
+These dated receipts establish the scope actually exercised. Recheck the
+current provider state before another operation; historical approvals do not
+authorize a new deployment, key change, public profile or recovery incident.
 
 | Acceptance item | Current proof | State |
 | --- | --- | --- |
 | Structural preflight, fail-closed checks and generated-restore local oracle | Local and CI tests, PR #46 | Implemented code; not hosted approval |
 | Staging secret/config access | [protected config readback #43115024418](https://github.com/kitamura-tetsuo/agent-table/actions/runs/43115024418), commit `70cfe1c`, SHA-256 `22b619dd3af71bce1688a7f3ec2e451654cea0a28ac6e166f70bfa98513bb867` | Verified no-publish only; stale after new `main` commit |
 | Separate configured protected Environments | Human reviewer and `main` branch protection readback 2026-11-11; staging and production Cloudflare GET access [#43104683889](https://github.com/kitamura-tetsuo/agent-table/actions/runs/43104683889), [#43104688167](https://github.com/kitamura-tetsuo/agent-table/actions/runs/43104688167) | Verified read-only; each deployment still needs a separate approval |
-| Both true Cloudflare Worker/DO/KV identities, origins, inventories | Independent authenticated metadata checks and [protected staging deploy #43151011535](https://github.com/kitamura-tetsuo/agent-table/actions/runs/43151011535); [provider receipt](https://github.com/kitamura-tetsuo/agent-table/issues/50#issuecomment-6814836152) | **Verified** for the recorded 2026-11-12 source and staging state; recheck before next release |
-| Staging protected deploy, host smoke, retained-state update/rollback | [Staging bootstrap](https://github.com/kitamura-tetsuo/agent-table/issues/50#issuecomment-6814836152), [same-config update + pinned rollback](https://github.com/kitamura-tetsuo/agent-table/issues/50#issuecomment-6815095095), [binding-drift finding and canonical repair](https://github.com/kitamura-tetsuo/agent-table/issues/50#issuecomment-6818264043) | **Passed** for same-source/same-config retained synthetic data; older-schema rollback and real PITR untested |
+| Both true Cloudflare Worker/DO/KV identities, origins, inventories | [Staging provider receipt](https://github.com/kitamura-tetsuo/agent-table/issues/50#issuecomment-6814836152) and independent staging/production readback in the [final acceptance](https://github.com/kitamura-tetsuo/agent-table/issues/50#issuecomment-6825493911) | **Verified** for the recorded 2026-11-12 builds and configurations; recheck before next release |
+| Staging protected deploy, host smoke, retained-state update/rollback | [Staging bootstrap](https://github.com/kitamura-tetsuo/agent-table/issues/50#issuecomment-6814836152), [same-config update + pinned rollback](https://github.com/kitamura-tetsuo/agent-table/issues/50#issuecomment-6815095095), [binding-drift finding and canonical repair](https://github.com/kitamura-tetsuo/agent-table/issues/50#issuecomment-6818264043) | **Passed** for same-source/same-config retained synthetic data; this #50 rehearsal did not restore a snapshot or establish arbitrary older-schema compatibility. #51 separately exercised PITR and newer-schema refusal below |
 | Normal pause and existing-guest browser Close/Delete | [7-day synthetic fixture and settings repair](https://github.com/kitamura-tetsuo/agent-table/issues/50#issuecomment-6818264043), [browser Close/Delete and independent `TABLE_NOT_FOUND` postconditions](https://github.com/kitamura-tetsuo/agent-table/issues/50#issuecomment-6820766589) | **Passed** on staging; prior browser POST refresh showed CSRF rejection and stale response label, but a fresh GET confirmed closed |
 | Staging pause after text-binding change | Independent provider check rejected a Wrangler rollback with settings/version divergence; fully canonical redeploy yielded active version `f0701beb-db3a-4c6a-b224-7e988d438bc4` and matching disabled intake [receipt](https://github.com/kitamura-tetsuo/agent-table/issues/50#issuecomment-6818264043) | **Repaired and verified**; perform new readback before subsequent changes |
-| Production origin, scoped tokens, protected deploy and host smoke | `agent-table.outliner-online.com` HTTPS `/health` and current Worker identity verified; recorded production active version `8e099f35-8fa7-4e16-878c-43daa89fa218` | **Protected #50 production deploy not run**; new exact-main, owner and Environment approvals required |
-| Measured hosted CPU/requests/DO/KV/logs plus current pricing | Cloudflare GraphQL for 2026-11-04–11 UTC: staging Worker 5,293 requests/0 errors, production Worker 271/0, temporary PR46 Worker 33/0, DO invocation group 2,090 requests; account billing usage GET returned 403 (`insufficient_permissions`), DO storage groups returned no records; Workers Logs `logpush=false` and settings `observability=null` | **Partial measurement; billed usage, retention and actual DO/KV storage unresolved** |
+| Production origin, scoped tokens, protected deploy and host smoke | [Approved production run #43229649298](https://github.com/kitamura-tetsuo/agent-table/actions/runs/43229649298) and [independent readback](https://github.com/kitamura-tetsuo/agent-table/issues/50#issuecomment-6825493911): `agent-table.outliner-online.com`, build `381c4e7378b2d95a3b8342f045a3e4d5521ada00`, version `ce3f4589-57f1-467c-88fa-a9adbfa3628d` | **Passed** for the separately approved paused manual release; no restore, public Events or autonomous support claim. Another release needs new exact-target approval |
+| Backup/log retention disclosures | [Owner-accepted limits](https://github.com/kitamura-tetsuo/agent-table/issues/50#issuecomment-6824625669): production dashboard Logs/Traces disabled, earlier Logpush off; published SQLite PITR policy disclosed separately from actual production recoverability | **Accepted with explicit limits** for #50. Production PITR was not drilled; account-wide retained diagnostics/backups and third-party copies are not independently attested or universally erasable |
+| Measured hosted usage and deployment-time pricing | [Provider/dashboard measurement scope](https://github.com/kitamura-tetsuo/agent-table/issues/50#issuecomment-6824625669) and [invoice waiver](https://github.com/kitamura-tetsuo/agent-table/issues/50#issuecomment-6824960944); account billing API returned 403 | **Accepted with actual charges UNKNOWN**, not zero. Selected zero-valued metrics are not account-wide storage/cost proof; no automatic cost-stop mechanism was configured or tested |
 | Post-snapshot recovery and controlled clearance, #51 | [Real hosted PITR/discard/schema-refusal evidence](issue51-cloudflare-recovery-evidence.md) and [approved private synthetic clearance](issue51-synthetic-clearance-evidence.md), 2026-11-15 | **Verified for the isolated synthetic recovery Worker only**; existing staging/production recovery and public exposure require their own exact approvals |
 
 Record each actual deployment in a separate staging/production issue comment
