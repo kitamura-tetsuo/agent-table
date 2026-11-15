@@ -3,6 +3,10 @@ import {
   PRIVATE_PILOT_MAX_WINDOW_MS,
   PRIVATE_PILOT_PROFILE,
 } from "../src/shared/private-pilot.ts";
+import {
+  TEST_NATIVE_EVENTS_PROFILE,
+  TEST_NATIVE_EVENTS_RISK,
+} from "../src/shared/test-native-events.ts";
 
 // A successful offline preflight is not an independently approved deployment.
 // This gate consumes only the output of the live verifier in the protected job.
@@ -23,6 +27,10 @@ try {
       manifest.configSha256 === configSha256 &&
       manifest.profile === profile &&
       (profile === "manual" ||
+        (profile === TEST_NATIVE_EVENTS_PROFILE &&
+          environment === "staging" &&
+          manifest.testNativeEvents?.risk === TEST_NATIVE_EVENTS_RISK &&
+          /^[a-f0-9]{64}$/.test(manifest.testNativeEvents.targetsSha256)) ||
         (profile === PRIVATE_PILOT_PROFILE &&
           environment === "staging" &&
           ["a-only", "a-only-discovery"].includes(

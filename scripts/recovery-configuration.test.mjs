@@ -47,7 +47,7 @@ function configurationFixture(phase = "serve") {
     environment: "staging",
     buildSha: config.vars.RELEASE_BUILD_SHA,
     configSha256: "0".repeat(64),
-    schemaVersion: 12,
+    schemaVersion: 13,
     namespaceIdentity: identity,
     planSha256: "e".repeat(64),
     evidenceSha256: phase === "serve" ? "f".repeat(64) : null,

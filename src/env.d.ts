@@ -41,7 +41,9 @@ declare global {
       INVITATION_RESPONSE_KEYRING?: string;
       CALLBACK_CREDENTIAL_KEYRING?: string;
       EVENTS_REVIEWED_CALLBACK_TARGETS?: string;
+      EVENTS_RELAY_CONFIGURATION?: string;
       PRIVATE_PILOT_POLICY?: string;
+      TEST_NATIVE_EVENTS_RISK_ACCEPTANCE?: string;
     }
     interface GlobalProps {
       mainModule: typeof import("./index");

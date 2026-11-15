@@ -11,6 +11,8 @@ import { eventSubscriptionsSchema } from "./010_event_subscriptions";
 import { durableEventOutboxSchema } from "./011_durable_event_outbox";
 import { recoveryGenerationSchema } from "./012_recovery_generation";
 
+import { relayAttemptLedgerSchema } from "./013_relay_attempt_ledger";
+
 export const migrations = [
   initialSchema,
   guestSessionsSchema,
@@ -24,6 +26,7 @@ export const migrations = [
   eventSubscriptionsSchema,
   durableEventOutboxSchema,
   recoveryGenerationSchema,
+  relayAttemptLedgerSchema,
 ] as const;
 
 export const APPLICATION_SCHEMA_VERSION = migrations.at(-1)?.version ?? 0;

@@ -1,13 +1,16 @@
+import {
+  parseRelayHttpOutcome,
+  type RelayHttpOutcome,
+} from "./relay-outcome.ts";
 /**
- * Offline SQL-only candidate. No network, scheduler, production migration or
- * outbox transition. Call mutations within the caller's storage transaction.
+ * SQL-only relay attempt evidence. No network or readiness authorization.
+ * Call mutations within the caller's storage transaction.
  * SQL/receipt producers are trusted adapters; remote JSON is NOT a receipt.
  */
 export interface RelayAttemptSql {
-  exec<T = Record<string, unknown>>(
-    query: string,
-    ...bindings: (string | number | null)[]
-  ): { toArray(): T[] };
+  exec<
+    T extends Record<string, SqlStorageValue> = Record<string, SqlStorageValue>,
+  >(query: string, ...bindings: (string | number | null)[]): { toArray(): T[] };
 }
 export interface RelayAttemptIdentity {
   requestId: string;
@@ -24,9 +27,7 @@ export interface RelayAttemptIdentity {
   acceptanceExpiresAt: number;
   operationDigest: string;
 }
-export type RelayReceipt =
-  | { kind: "http"; status: number }
-  | { kind: "not-sent" };
+export type RelayReceipt = RelayHttpOutcome | { kind: "not-sent" };
 type Row = {
   request_id: string;
   event_id: string;
@@ -45,6 +46,7 @@ type Row = {
   state: "prepared" | "dispatched" | "unknown" | "completed";
   outcome_kind: "http" | "not-sent" | null;
   http_status: number | null;
+  outcome_json: string | null;
 };
 const columns = [
   "request_id",
@@ -140,7 +142,12 @@ export function prepareRelayAttempt(
       i.eventId,
     )
     .toArray();
-  if (prior.some((p) => p.state !== "completed"))
+  // #21 is at-least-once: preserve the uncertain predecessor unchanged while
+  // allowing a new charged ordinal only after its recovery deadline.
+  // This is not reuse of the old request ID, nor proof it was never delivered.
+  if (
+    prior.some((p) => p.state !== "completed" && i.issuedAt < p.lease_deadline)
+  )
     return failure("unresolved-predecessor");
   if (
     prior.some(
@@ -210,28 +217,32 @@ export function recordRelayReceipt(
     !receipt ||
     typeof receipt !== "object" ||
     (receipt.kind !== "not-sent" && receipt.kind !== "http") ||
-    Object.keys(receipt).sort().join(",") !==
-      (receipt.kind === "http" ? "kind,status" : "kind") ||
-    (receipt.kind === "http" &&
-      (!Number.isInteger(receipt.status) ||
-        receipt.status < 100 ||
-        receipt.status > 599))
+    (receipt.kind === "not-sent"
+      ? Object.keys(receipt).join(",") !== "kind"
+      : !parseRelayHttpOutcome(receipt))
   )
     return failure("invalid");
   const row = read(sql, i);
   if (!row || !matches(row, i)) return failure("identity-conflict");
+  const normalized =
+    receipt.kind === "http"
+      ? parseRelayHttpOutcome(receipt)
+      : { kind: "not-sent" as const };
+  if (!normalized) return failure("invalid");
+  receipt = normalized;
   const status = receipt.kind === "http" ? receipt.status : null;
   if (row.state === "completed")
-    return row.outcome_kind === receipt.kind && row.http_status === status
+    return row.outcome_json === JSON.stringify(receipt)
       ? success()
       : failure("outcome-conflict");
   // prepared means transport was never marked started; only proof of no-send fits.
   if (row.transport_reserved !== 1 && receipt.kind !== "not-sent")
     return failure("not-dispatched");
   sql.exec(
-    "UPDATE table_event_relay_attempts SET state = 'completed', outcome_kind = ?, http_status = ? WHERE request_id = ?",
+    "UPDATE table_event_relay_attempts SET state = 'completed', outcome_kind = ?, http_status = ?, outcome_json = ? WHERE request_id = ?",
     receipt.kind,
     status,
+    JSON.stringify(receipt),
     i.requestId,
   );
   return success();
@@ -282,9 +293,37 @@ export function readRelayDisposition(
     ok: true as const,
     state: "completed" as const,
     executionLeaseExpired: now >= row.lease_deadline,
-    receipt:
-      row.outcome_kind === "http"
-        ? { kind: "http" as const, status: row.http_status as number }
-        : { kind: "not-sent" as const },
+    receipt: JSON.parse(row.outcome_json as string) as RelayReceipt,
   };
+}
+
+/** SQL-only readback for the latest charged attempt; never reconstruct identity
+ * from fresh credentials or a new timestamp. Private TableDO integration only. */
+export function latestRelayAttempt(
+  sql: RelayAttemptSql,
+  eventId: string,
+): RelayAttemptIdentity | null {
+  const row = sql
+    .exec<Row>(
+      "SELECT * FROM table_event_relay_attempts WHERE event_id = ? ORDER BY ordinal DESC LIMIT 1",
+      eventId,
+    )
+    .toArray()[0];
+  return row
+    ? {
+        requestId: row.request_id,
+        eventId: row.event_id,
+        subscriptionId: row.subscription_id,
+        generation: row.generation,
+        ordinal: row.ordinal,
+        leaseToken: row.lease_token,
+        firstAttemptAt: row.first_attempt_at,
+        leaseDeadline: row.lease_deadline,
+        audience: row.audience,
+        callerId: row.caller_id,
+        issuedAt: row.issued_at,
+        acceptanceExpiresAt: row.acceptance_expires_at,
+        operationDigest: row.operation_digest,
+      }
+    : null;
 }

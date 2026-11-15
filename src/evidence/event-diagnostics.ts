@@ -7,6 +7,15 @@ import {
   privatePilotConfiguration,
   privatePilotRecipientMatches,
 } from "../shared/private-pilot";
+import {
+  PRODUCTION_RELAY_EVENTS_PROFILE,
+  type ProductionRelayBindings,
+  productionRelayReadiness,
+} from "../shared/production-relay-events";
+import {
+  type TestNativeBindings,
+  testNativeEventsAllowed,
+} from "../shared/test-native-events";
 
 export const EVENT_DIAGNOSTIC_RECORD_LIMIT = 64;
 export const EVENT_DIAGNOSTIC_BATCH_LIMIT = 16;
@@ -138,6 +147,10 @@ export function validEventDiagnosticRecord(
 }
 
 export type SafeEventRuntimeContext = {
+  transportState?:
+    | "relay-configuration-invalid"
+    | "relay-integration-incomplete";
+  transportRisk?: "native-dns-peer-boundary-unverified";
   environment: "local" | "staging" | "production" | "unknown";
   profile:
     | "manual"
@@ -145,6 +158,8 @@ export type SafeEventRuntimeContext = {
     | "events"
     | "autonomous"
     | "private-pilot-a-only"
+    | "test-native-events"
+    | "production-relay-events"
     | "unknown";
   buildSha: string | null;
   policyConfigured: boolean;
@@ -165,7 +180,7 @@ export type EventDiagnosticSnapshot = {
 
 /** Return classifications only, never raw bindings, recipients or targets. */
 export function eventDiagnosticContext(
-  env: PrivatePilotBindings,
+  env: PrivatePilotBindings & TestNativeBindings & ProductionRelayBindings,
   actor?: { guestId: string; connectionId: string },
   tableId?: string,
   now = Date.now(),
@@ -178,7 +193,15 @@ export function eventDiagnosticContext(
     ? env.RELEASE_ENVIRONMENT
     : "unknown";
   const profile = member(
-    ["manual", "live", "events", "autonomous", "private-pilot-a-only"] as const,
+    [
+      "manual",
+      "live",
+      "events",
+      "autonomous",
+      "private-pilot-a-only",
+      "test-native-events",
+      "production-relay-events",
+    ] as const,
     env.RELEASE_PROFILE,
   )
     ? env.RELEASE_PROFILE
@@ -186,21 +209,32 @@ export function eventDiagnosticContext(
   return {
     environment,
     profile,
+    ...(profile === PRODUCTION_RELAY_EVENTS_PROFILE
+      ? { transportState: productionRelayReadiness(env).reason }
+      : {}),
+    ...(testNativeEventsAllowed(env)
+      ? { transportRisk: "native-dns-peer-boundary-unverified" as const }
+      : {}),
     buildSha:
       typeof env.RELEASE_BUILD_SHA === "string" &&
       /^[a-f0-9]{40}$/.test(env.RELEASE_BUILD_SHA)
         ? env.RELEASE_BUILD_SHA
         : null,
-    policyConfigured: privatePilotConfiguration(env) !== null,
+    policyConfigured:
+      privatePilotConfiguration(env) !== null || testNativeEventsAllowed(env),
     policyActive:
+      testNativeEventsAllowed(env) ||
       activePrivatePilotDiscoveryPolicy(env, now) !== null ||
       activePrivatePilotPolicy(env, now) !== null,
     recipientMatched:
-      !!policy && !!actor && privatePilotRecipientMatches(policy, actor),
+      !!actor &&
+      (testNativeEventsAllowed(env) ||
+        (!!policy && privatePilotRecipientMatches(policy, actor))),
     tableAllowed:
       tableId === undefined
         ? null
-        : !!policy && policy.tableIds.includes(tableId),
+        : testNativeEventsAllowed(env) ||
+          (!!policy && policy.tableIds.includes(tableId)),
     mode: policy?.mode ?? null,
     expiresAt: policy?.expiresAt ?? null,
   };

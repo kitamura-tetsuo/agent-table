@@ -141,7 +141,7 @@ export function reserveOutboxAttempt(
     `UPDATE table_event_outbox
      SET status = 'in_flight', attempt_count = attempt_count + 1,
          first_attempt_at = COALESCE(first_attempt_at, ?),
-         lease_token = ?, lease_deadline = ?, next_attempt_at = NULL
+         lease_token = ?, lease_deadline = ?, next_attempt_at = NULL, relay_reconcile_after = NULL
      WHERE event_id = ? AND subscription_generation = ?
        AND attempt_count = ? AND status = ?
        AND ((status = 'pending' AND next_attempt_at <= ?)
@@ -206,6 +206,31 @@ export function settleOutboxAttempt(
   now: number,
   outcome: AttemptOutcome,
 ): "accepted" | "pending" | "failed" | null {
+  return settleMatchingOutboxAttempt(sql, lease, now, outcome, false);
+}
+
+/**
+ * Recovery-only transition. Caller must prove the same persisted relay attempt
+ * and obtain fresh grant/lifecycle authority. This never makes an expired lease
+ * live, and is not permission to send: any retry requires a new charged lease.
+ * Unknown transport recovery uses transient transport-error, not an HTTP receipt.
+ */
+export function reconcileRelayOutboxAttempt(
+  sql: OutboxSql,
+  lease: OutboxLease,
+  now: number,
+  outcome: AttemptOutcome,
+): "accepted" | "pending" | "failed" | null {
+  if (now < lease.leaseDeadline) return null;
+  return settleMatchingOutboxAttempt(sql, lease, now, outcome, true);
+}
+function settleMatchingOutboxAttempt(
+  sql: OutboxSql,
+  lease: OutboxLease,
+  now: number,
+  outcome: AttemptOutcome,
+  recovery: boolean,
+): "accepted" | "pending" | "failed" | null {
   if (!Number.isSafeInteger(now) || now <= 0) return null;
   const row = sql
     .exec<OutboxRow>(
@@ -220,7 +245,7 @@ export function settleOutboxAttempt(
     row.attempt_count !== lease.attemptCount ||
     row.first_attempt_at !== lease.firstAttemptAt ||
     row.lease_deadline !== lease.leaseDeadline ||
-    now >= lease.leaseDeadline ||
+    (!recovery && now >= lease.leaseDeadline) ||
     now >= lease.firstAttemptAt + OUTBOX_RETRY_HORIZON_MS
   )
     return null;
@@ -256,7 +281,7 @@ export function settleOutboxAttempt(
 
   sql.exec(
     `UPDATE table_event_outbox SET
-        status = ?, last_error_category = ?, next_attempt_at = ?,
+        status = ?, last_error_category = ?, next_attempt_at = ?, relay_reconcile_after = NULL,
         lease_token = NULL, lease_deadline = NULL
      WHERE event_id = ? AND subscription_generation = ?
        AND status = 'in_flight' AND lease_token = ?
@@ -312,7 +337,14 @@ export function expireOutboxWork(
           (first_attempt_at IS NOT NULL AND
            first_attempt_at + ? <= ?) OR
           (status = 'in_flight' AND attempt_count >= 8
-           AND lease_deadline <= ?))
+           AND lease_deadline <= ? AND NOT EXISTS (
+             SELECT 1 FROM table_event_relay_attempts AS r
+             WHERE r.event_id=table_event_outbox.event_id
+               AND r.generation=table_event_outbox.subscription_generation
+               AND r.lease_token=table_event_outbox.lease_token
+               AND r.ordinal=table_event_outbox.attempt_count
+               AND r.state='completed'
+           )))
        ORDER BY expires_at LIMIT ?
      )`,
     now,

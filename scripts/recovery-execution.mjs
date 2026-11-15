@@ -141,7 +141,7 @@ function verifyIdentityObservation(actual, plan) {
   requireRecovery(
     actual?.buildSha === plan.buildSha &&
       actual.environment === plan.environment &&
-      actual.schemaVersion === 12 &&
+      actual.schemaVersion === 13 &&
       canonicalJson(actual.commitments) ===
         canonicalJson(plan.namespaceIdentity.commitments),
     "recovery-runtime-identity-unverified",
@@ -172,7 +172,7 @@ function claimsFor(
     environment: plan.environment,
     buildSha: plan.buildSha,
     configSha256: EMPTY,
-    schemaVersion: 12,
+    schemaVersion: 13,
     namespaceIdentity: plan.namespaceIdentity,
     planSha256,
     evidenceSha256,
@@ -252,7 +252,7 @@ export async function runFreshStartRecovery({
         previous?.operationId === plan.operationId
           ? previous.configSha256
           : resetConfig.vars.RECOVERY_CONFIG_SHA256,
-      schemaVersion: 12,
+      schemaVersion: 13,
       namespaceIdentity: plan.namespaceIdentity,
       planSha256,
       inventorySha256:

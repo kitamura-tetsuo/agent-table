@@ -36,6 +36,7 @@ export async function verifyNormalPause({
       peer?.name ===
         `agent-table-${environment === "staging" ? "production" : "staging"}` &&
       vars.RELEASE_PROFILE === "manual" &&
+      vars.TEST_NATIVE_EVENTS_RISK_ACCEPTANCE === undefined &&
       /^[0-9a-f]{40}$/i.test(vars.RELEASE_BUILD_SHA) &&
       vars.RESTORE_QUARANTINE === "false",
     "pause-release-state-unverified",

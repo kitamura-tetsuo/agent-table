@@ -120,7 +120,7 @@ async function inspected() {
     configSha256: "c".repeat(64),
     operationId: "11111111-1111-4111-8111-111111111111",
     generation: "d".repeat(64),
-    schemaVersion: 12,
+    schemaVersion: 13,
     namespaceIdentity: identity,
     requestNonce: "e".repeat(64),
   };
@@ -352,7 +352,7 @@ test("requires one canonical schema receipt for every object including objects w
       values[0].generation = "f".repeat(64);
     },
     (values) => {
-      values[0].schemaVersion = 13;
+      values[0].schemaVersion = 12;
     },
     (values) => {
       values[0].manifest.push({ name: "unknown", columns: [] });

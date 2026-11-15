@@ -124,14 +124,14 @@ export function rehearsalPlan(sourceSha, runId) {
         {
           workerName,
           kvTitle: `${workerName}-oauth-${runId}`,
-          schemaVersion: 12,
+          schemaVersion: 13,
         },
       ]),
     ),
     publicRoutes: false,
     certificatePhase: "reset",
     finalState: "verified-quarantine",
-    retainedFutureSchemaVersion: 13,
+    retainedFutureSchemaVersion: 14,
     productionJournal: false,
     permitsClearance: false,
   };
@@ -523,7 +523,7 @@ function assertIdentity(state, target, current) {
   ensure(
     current?.buildSha === state.sourceSha &&
       current.environment === "staging" &&
-      current.schemaVersion === 12 &&
+      current.schemaVersion === 13 &&
       Object.keys(current.commitments ?? {})
         .sort()
         .join(",") === [...RECOVERY_DO_BINDINGS].sort().join(",") &&
@@ -693,7 +693,7 @@ async function configuration(state, target, main, signed = false) {
       environment: "staging",
       buildSha: state.sourceSha,
       configSha256: "0".repeat(64),
-      schemaVersion: 12,
+      schemaVersion: 13,
       namespaceIdentity: target.identity,
       planSha256: recoveryDigest({
         plan: state.plan,
@@ -1275,7 +1275,7 @@ async function schemaRefused(call) {
   } catch (error) {
     ensure(
       error?.name === "UnsupportedApplicationSchemaError" ||
-        /Application schema version 13 is newer than supported 12/.test(
+        /Application schema version 14 is newer than supported 13/.test(
           String(error?.message ?? ""),
         ),
       "future-schema-refusal-cause-unverified",
@@ -1306,7 +1306,7 @@ async function future(path, state, client) {
       }),
     );
     ensure(
-      target.future?.schemaVersion === 13 &&
+      target.future?.schemaVersion === 14 &&
         target.future.constructorValidatorRefused &&
         target.future.inspectionRefused &&
         target.future.resetRefused &&
@@ -1349,7 +1349,7 @@ async function future(path, state, client) {
         target,
         plainRecoveryMetadata(await CONTROL.identity()),
       );
-      return { inspection, reset, schemaVersion: 13 };
+      return { inspection, reset, schemaVersion: 14 };
     },
   );
   await saveState(path, state);
@@ -1361,7 +1361,7 @@ async function future(path, state, client) {
     }),
   );
   ensure(
-    target.forensic?.schemaVersion === 13 &&
+    target.forensic?.schemaVersion === 14 &&
       target.forensic.objectId === target.future.objectId &&
       target.forensic.canonicalSha256 === target.future.canonicalSha256 &&
       canonicalJson(target.forensic.counts) ===
@@ -1375,7 +1375,7 @@ async function future(path, state, client) {
   record(state, "future-schema-retained-quarantined", {
     workerName: target.workerName,
     objectId: target.future.objectId,
-    schemaVersion: 13,
+    schemaVersion: 14,
     canonicalSha256: target.forensic.canonicalSha256,
     constructorRefused: true,
     inspectionRefused: true,

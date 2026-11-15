@@ -3502,3 +3502,209 @@ describe("protected private A-only staging pilot", () => {
     }
   });
 });
+
+describe("staging native Events exception", () => {
+  it("uses real MCP membership on multiple tables, dispatches after reconstruction, and stops on pause", async () => {
+    const a = await newPrincipal(undefined, "192.0.2.27");
+    const b = await newPrincipal(undefined, "192.0.2.27");
+    const outsider = await newPrincipal(undefined, "192.0.2.27");
+    const setupA = await clientFor(a.token);
+    const setupB = await clientFor(b.token);
+    const tables: string[] = [];
+    for (let n = 0; n < 2; n++) {
+      const tableId = await createTable(setupA);
+      tables.push(tableId);
+      const invite = toolOutput(
+        await setupA.callTool({
+          name: "create_invite",
+          arguments: { table_id: tableId, request_id: crypto.randomUUID() },
+        }),
+      );
+      expect(
+        (
+          await setupB.callTool({
+            name: "join_table",
+            arguments: {
+              invitation: invite.invitation,
+              request_id: crypto.randomUUID(),
+            },
+          })
+        ).isError,
+      ).not.toBe(true);
+    }
+    await setupA.close();
+    await setupB.close();
+    const overlay: Env = {
+      ...env,
+      RELEASE_ENVIRONMENT: "staging",
+      RELEASE_PROFILE: "test-native-events",
+      RELEASE_BUILD_SHA: "a".repeat(40),
+      RESTORE_QUARANTINE: "false",
+      ENABLE_MCP_SUBSCRIPTIONS: "true",
+      ENABLE_OPENAI_EVENTS: "true",
+      ALLOW_OUTBOUND_NOTIFICATIONS: "true",
+      TEST_NATIVE_EVENTS_RISK_ACCEPTANCE: "accept-unverified-dns-peer-boundary",
+      EVENTS_REVIEWED_CALLBACK_TARGETS: REVIEWED,
+    };
+    const configure = async (id: string) => {
+      const stub = env.TABLES.get(env.TABLES.idFromName(id));
+      await evictDurableObject(stub);
+      await runInDurableObject(stub, (instance) => {
+        const harness = instance as unknown as { env: Env };
+        harness.env = { ...harness.env, ...overlay };
+      });
+      return stub;
+    };
+    for (const id of tables) await configure(id);
+    const deliveries: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      expect(String(url)).toBe(CALLBACK);
+      const text = new TextDecoder().decode(init?.body as ArrayBuffer);
+      const body = JSON.parse(text);
+      if (body.type === "verification")
+        return new Response(JSON.stringify({ challenge: body.challenge }));
+      const signed = new Webhook(SECRET).verify(
+        text,
+        Object.fromEntries(new Headers(init?.headers)),
+      ) as { eventId: string };
+      deliveries.push(signed.eventId);
+      return new Response(null, { status: 204 });
+    });
+    const deniedProduction = await dispatch(
+      new Request(RESOURCE, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${a.token}`,
+          "Content-Type": "application/json",
+          Accept: "application/json, text/event-stream",
+        },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "initialize",
+          params: {
+            protocolVersion: "2026-07-28",
+            capabilities: {},
+            clientInfo: { name: "synthetic", version: "1" },
+          },
+        }),
+      }),
+      { ...overlay, RELEASE_ENVIRONMENT: "production" },
+    );
+    expect(deniedProduction.status).toBe(503);
+    const ac = await clientFor(a.token, overlay);
+    const bc = await clientFor(b.token, overlay);
+    const oc = await clientFor(outsider.token, overlay);
+    try {
+      for (const tableId of tables) {
+        await expect(
+          callEvent(oc, "events/subscribe", subscriptionParams(tableId)),
+        ).rejects.toThrow();
+        await callEvent(ac, "events/subscribe", subscriptionParams(tableId));
+        expect(
+          (
+            await bc.callTool({
+              name: "post_message",
+              arguments: {
+                table_id: tableId,
+                body: "SYNTHETIC TEST PROFILE",
+                request_id: crypto.randomUUID(),
+              },
+            })
+          ).isError,
+        ).not.toBe(true);
+        const stub = await configure(tableId);
+        await runInDurableObject(stub, async (instance, state) => {
+          state.storage.sql.exec(
+            "UPDATE table_event_outbox SET next_attempt_at = ? WHERE status = 'pending'",
+            Date.now() - 1,
+          );
+          await instance.alarm();
+        });
+        const result = toolOutput(
+          await ac.callTool({
+            name: "get_table",
+            arguments: { table_id: tableId },
+          }),
+        );
+        expect(result.notifications).toMatchObject({
+          available: true,
+          transport: "mcp_subscriptions_listen",
+          events: {
+            available: true,
+            reason: "test_native_risk_accepted",
+          },
+        });
+      }
+      expect(deliveries).toHaveLength(2);
+      expect(new Set(deliveries).size).toBe(2);
+      for (const tableId of tables) {
+        await bc.callTool({
+          name: "post_message",
+          arguments: {
+            table_id: tableId,
+            body: "PENDING BEFORE PAUSE",
+            request_id: crypto.randomUUID(),
+          },
+        });
+      }
+      overlay.ALLOW_OUTBOUND_NOTIFICATIONS = "false";
+      for (const tableId of tables) {
+        const stub = await configure(tableId);
+        await runInDurableObject(stub, async (instance, state) => {
+          state.storage.sql.exec(
+            "UPDATE table_event_outbox SET next_attempt_at = ? WHERE status = 'pending'",
+            Date.now() - 1,
+          );
+          await instance.alarm();
+        });
+      }
+      expect(deliveries).toHaveLength(2);
+      overlay.ALLOW_OUTBOUND_NOTIFICATIONS = "true";
+      for (const id of tables) await configure(id);
+      expect(
+        (
+          await ac.callTool({
+            name: "close_table",
+            arguments: { table_id: tables[1], request_id: crypto.randomUUID() },
+          })
+        ).isError,
+      ).not.toBe(true);
+      // Prove closure alone before changing the recipient's grant.
+      const closedStub = await configure(tables[1]);
+      await runInDurableObject(closedStub, async (instance, state) => {
+        state.storage.sql.exec(
+          "UPDATE table_event_outbox SET next_attempt_at = ? WHERE status = 'pending'",
+          Date.now() - 1,
+        );
+        await instance.alarm();
+      });
+      expect(deliveries).toHaveLength(2);
+      const parts = a.cookie.split("=")[1]?.split(".") ?? [];
+      expect(
+        (
+          await a.guest.revokeConnection(
+            parts[2] ?? "",
+            parts[3] ?? "",
+            a.connectionId,
+          )
+        ).status,
+      ).toBe("revoked");
+      for (const id of tables) {
+        const stub = await configure(id);
+        await runInDurableObject(stub, async (instance, state) => {
+          state.storage.sql.exec(
+            "UPDATE table_event_outbox SET next_attempt_at = ? WHERE status = 'pending'",
+            Date.now() - 1,
+          );
+          await instance.alarm();
+        });
+      }
+      expect(deliveries).toHaveLength(2);
+    } finally {
+      await ac.close();
+      await bc.close();
+      await oc.close();
+    }
+  });
+});

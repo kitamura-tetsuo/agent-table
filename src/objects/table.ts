@@ -43,6 +43,12 @@ import {
   reserveOutboxAttempt,
   settleOutboxAttempt,
 } from "../notifications/outbox";
+import { latestRelayAttempt } from "../notifications/relay-attempt-ledger";
+import {
+  dispatchRelayOutbox,
+  type RelayOutboxAdapter,
+  recoverRelayOutbox,
+} from "../notifications/relay-outbox";
 import type { TableEventDiagnostics } from "../services/event-diagnostics";
 import { allowOutboundNotifications } from "../shared/admission";
 import {
@@ -114,6 +120,7 @@ import {
   type TableState,
 } from "../shared/table";
 import { emitOperationalEvent, recordFutureMetric } from "../shared/telemetry";
+import { testNativeEventsAllowed } from "../shared/test-native-events";
 import {
   MAX_POSTS_PER_MINUTE,
   POST_WINDOW_MS,
@@ -663,7 +670,7 @@ export class TableDO extends DurableObject<Env> {
         ? this.privateSql
             .exec<{ deadline: number | null }>(
               `SELECT MIN(CASE WHEN status = 'pending' THEN next_attempt_at
-                         ELSE lease_deadline END) AS deadline
+                         ELSE MAX(lease_deadline,COALESCE(relay_reconcile_after,0)) END) AS deadline
              FROM table_event_outbox WHERE status IN ('pending', 'in_flight')`,
             )
             .one().deadline
@@ -683,6 +690,14 @@ export class TableDO extends DurableObject<Env> {
             FROM table_event_outbox
             WHERE status = 'in_flight' AND attempt_count >= 8
               AND lease_deadline IS NOT NULL
+              AND NOT EXISTS (
+                SELECT 1 FROM table_event_relay_attempts AS r
+                WHERE r.event_id=table_event_outbox.event_id
+                  AND r.generation=table_event_outbox.subscription_generation
+                  AND r.lease_token=table_event_outbox.lease_token
+                  AND r.ordinal=table_event_outbox.attempt_count
+                  AND r.state='completed'
+              )
           )`,
           OUTBOX_RETRY_HORIZON_MS,
         )
@@ -727,6 +742,7 @@ export class TableDO extends DurableObject<Env> {
       );
     }
     this.privateSql.exec("DELETE FROM table_delete_confirmations");
+    this.privateSql.exec("DELETE FROM table_event_relay_attempts");
     this.privateSql.exec("DELETE FROM table_event_outbox");
     this.privateSql.exec("DELETE FROM table_event_candidates");
     this.privateSql.exec("DELETE FROM table_event_subscriptions");
@@ -951,14 +967,16 @@ export class TableDO extends DurableObject<Env> {
         : row.status === "expired" || (row.expires_at ?? 0) <= Date.now()
           ? "expired"
           : "active";
-    const available = privatePilotRecipientAllowed(
-      this.env,
-      {
-        guestId: member.guest_id,
-        connectionId,
-      },
-      member.table_id,
-    );
+    const available =
+      testNativeEventsAllowed(this.env) ||
+      privatePilotRecipientAllowed(
+        this.env,
+        {
+          guestId: member.guest_id,
+          connectionId,
+        },
+        member.table_id,
+      );
     // A second connection belonging to the same guest must not observe this
     // subscription's queue or outcome. Never query callback/secret columns.
     if (!owned || !row?.subscription_id || status !== "active") {
@@ -1006,7 +1024,9 @@ export class TableDO extends DurableObject<Env> {
     return {
       available,
       reason: available
-        ? ("private_pilot_only" as const)
+        ? testNativeEventsAllowed(this.env)
+          ? ("test_native_risk_accepted" as const)
+          : ("private_pilot_only" as const)
         : ("delivery_not_ready" as const),
       status,
       pendingCount: counts.pending_count,
@@ -1611,6 +1631,7 @@ export class TableDO extends DurableObject<Env> {
     if (
       !allowOutboundNotifications(this.env) ||
       (!callbackTransportReadiness().enabled &&
+        !testNativeEventsAllowed(this.env) &&
         !privatePilotRecipientAllowed(
           this.env,
           actor,
@@ -3205,8 +3226,15 @@ export class TableDO extends DurableObject<Env> {
     return (
       this.env.ENABLE_OPENAI_EVENTS === "true" &&
       allowOutboundNotifications(this.env) &&
-      callbackTransportReadiness().enabled
+      (callbackTransportReadiness().enabled ||
+        testNativeEventsAllowed(this.env))
     );
+  }
+
+  /** Deliberately unconfigured until independent production/profile approval.
+   * Tests replace this private seam; no binding or public RPC can enable it. */
+  private relayOutboxTransport(): RelayOutboxAdapter | null {
+    return null;
   }
 
   /** Native transport seam; synthetic tests replace it only inside Workerd. */
@@ -3303,8 +3331,9 @@ export class TableDO extends DurableObject<Env> {
       .exec<{ event_id: string }>(
         `SELECT event_id FROM table_event_outbox
        WHERE (status = 'pending' AND next_attempt_at <= ?)
-          OR (status = 'in_flight' AND lease_deadline <= ?)
+          OR (status = 'in_flight' AND lease_deadline <= ? AND COALESCE(relay_reconcile_after,0) <= ?)
        ORDER BY COALESCE(next_attempt_at, lease_deadline), event_id LIMIT ?`,
+        started,
         started,
         started,
         OUTBOX_DISPATCH_BATCH,
@@ -3374,6 +3403,36 @@ export class TableDO extends DurableObject<Env> {
         !this.dispatchWork(row.event_id, Date.now())
       )
         continue;
+      const relay = this.relayOutboxTransport();
+      if (
+        relay &&
+        (await recoverRelayOutbox(
+          this.privateSql,
+          (fn) => this.ctx.storage.transactionSync(fn),
+          relay,
+          work.event_id,
+          async () => {
+            const fresh = await authorizeGuestConnection(
+              this.env,
+              work.guest_id as string,
+              work.connection_id as string,
+              "events:subscribe",
+            );
+            const current = this.dispatchWork(work.event_id, Date.now());
+            return (
+              fresh.allowed &&
+              fresh.actor.expiresAt > Date.now() &&
+              this.outboxDispatchEnabled() &&
+              !!current &&
+              current.generation === work.generation &&
+              current.subscription_id === work.subscription_id
+            );
+          },
+        ))
+      ) {
+        processed++;
+        continue;
+      }
       // Alarm and reservation commit together, before the next external await.
       const { value: lease } = await this.deadlines.commitWithWakeup(
         Date.now() + OUTBOX_LEASE_MS,
@@ -3457,13 +3516,59 @@ export class TableDO extends DurableObject<Env> {
         );
         recordFutureMetric({ name: "outbox.attempt", value: 1 });
         try {
-          outcome = await this.sendOutboxWebhook(
-            work.callback_url as string,
-            { method: "POST", ...signed },
-            observation,
-          );
+          if (relay) {
+            const result = await dispatchRelayOutbox(
+              this.privateSql,
+              (fn) => this.ctx.storage.transactionSync(fn),
+              relay,
+              lease,
+              work.subscription_id as string,
+              work.callback_url as string,
+              { method: "POST", ...signed },
+              async () => {
+                const fresh = await authorizeGuestConnection(
+                  this.env,
+                  work.guest_id as string,
+                  work.connection_id as string,
+                  "events:subscribe",
+                );
+                const current = this.dispatchWork(work.event_id, Date.now());
+                return (
+                  fresh.allowed &&
+                  fresh.actor.expiresAt > Date.now() &&
+                  this.outboxDispatchEnabled() &&
+                  !!current &&
+                  current.generation === work.generation &&
+                  current.lease_token === lease.leaseToken &&
+                  current.callback_url === work.callback_url &&
+                  current.secret_envelope === work.secret_envelope &&
+                  current.previous_secret_envelope ===
+                    work.previous_secret_envelope &&
+                  (!work.previous_secret_envelope ||
+                    (work.rotation_until ?? 0) > Date.now()) &&
+                  Date.now() < lease.leaseDeadline
+                );
+              },
+            );
+            if (!result) {
+              processed++;
+              continue;
+            }
+            outcome = result;
+          } else {
+            outcome = await this.sendOutboxWebhook(
+              work.callback_url as string,
+              { method: "POST", ...signed },
+              observation,
+            );
+          }
         } catch {
-          // Ambiguous transport failures keep their persisted attempt charge.
+          // Relay uncertainty retains its original ledger and execution lease.
+          if (relay) {
+            processed++;
+            continue;
+          }
+          // Ambiguous native failures keep their persisted attempt charge.
           outcome = { ok: false, reason: "transport-error" };
         }
       } catch {
@@ -3504,6 +3609,25 @@ export class TableDO extends DurableObject<Env> {
   }
 
   private deferOutboxWork(work: DispatchWork, cancelled: boolean): void {
+    // Operational unavailability must not erase a relay lease's definitive or
+    // uncertain evidence before reconciliation. Revocation still cancels it.
+    const retained = work.lease_token
+      ? latestRelayAttempt(this.privateSql, work.event_id)
+      : null;
+    if (
+      !cancelled &&
+      retained?.leaseToken === work.lease_token &&
+      work.lease_token
+    ) {
+      this.privateSql.exec(
+        "UPDATE table_event_outbox SET relay_reconcile_after=? WHERE event_id=? AND status='in_flight' AND lease_token=? AND subscription_generation=?",
+        Date.now() + OUTBOX_AUTHORITY_RETRY_MS,
+        work.event_id,
+        work.lease_token,
+        work.generation,
+      );
+      return;
+    }
     this.privateSql.exec(
       `UPDATE table_event_outbox SET status = ?, next_attempt_at = ?,
          lease_token = NULL, lease_deadline = NULL, last_error_category = ?

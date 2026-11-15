@@ -4,7 +4,7 @@ import { DatabaseSync } from "node:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { relayAttemptLedgerSchema } from "../schema/candidates/013_relay_attempt_ledger.ts";
+import { relayAttemptLedgerSchema } from "../schema/013_relay_attempt_ledger.ts";
 import { prepareRelayAttempt, markRelayDispatched, markRelayUnknown, recordRelayReceipt, readRelayDisposition } from "../src/notifications/relay-attempt-ledger.ts";
 
 const identity = () => ({
@@ -18,6 +18,7 @@ const current = (i) => ({ status:"in_flight", eventId:i.eventId,subscriptionId:i
 function adapter(db) { return { exec: (query,...bindings) => { const rows=db.prepare(query).all(...bindings); return {toArray:()=>rows}; } }; }
 function setup() {
   const db = new DatabaseSync(":memory:");
+  db.exec("CREATE TABLE table_event_outbox(event_id TEXT)");
   for(const statement of relayAttemptLedgerSchema.componentStatements.table) db.exec(statement);
   return {db,sql:adapter(db)};
 }
@@ -31,7 +32,7 @@ test("exact identity is idempotent but cannot extend timestamp, expiry, digest o
     assert.equal(markRelayDispatched(sql,i,200000).reason,"expired");
   }finally{db.close();}
 });
-test("dispatch reservation is one-time, unknown never resumes or permits next attempt",()=>{
+test("same operation is one-time; unknown evidence survives a later bounded ordinal",()=>{
   const {db,sql}=setup();try {
     const i=identity();prepareRelayAttempt(sql,i,100000);
     assert.equal(markRelayDispatched(sql,i,100001).ok,true);
@@ -40,29 +41,30 @@ test("dispatch reservation is one-time, unknown never resumes or permits next at
     assert.equal(markRelayDispatched(sql,i,100003).ok,false);
     const next={...i,requestId:"synthetic-request-2",leaseToken:"synthetic-lease-02",ordinal:2,
       issuedAt:300000,leaseDeadline:330000,acceptanceExpiresAt:360000};
-    assert.equal(prepareRelayAttempt(sql,next,300000).reason,"unresolved-predecessor");
+    assert.equal(prepareRelayAttempt(sql,{...next,issuedAt:110000,leaseDeadline:140000,acceptanceExpiresAt:170000},110000).reason,"unresolved-predecessor");
+    assert.equal(prepareRelayAttempt(sql,next,300000).ok,true);
     assert.equal(readRelayDisposition(sql,i,current(i),4000000).state,"unknown");
   }finally{db.close();}
 });
-test("finite resume requires exact definitive receipt; no clock/lease heuristic",()=>{
+test("definitive receipt is exact and immutable; next ordinal preserves budget",()=>{
   const {db,sql}=setup();try {
     const i=identity();prepareRelayAttempt(sql,i,100000);markRelayDispatched(sql,i,100001);markRelayUnknown(sql,i);
-    assert.equal(recordRelayReceipt(sql,{...i,operationDigest:"b".repeat(64)},{kind:"http",status:503}).ok,false);
-    assert.equal(recordRelayReceipt(sql,i,{kind:"http",status:503}).ok,true);
+    assert.equal(recordRelayReceipt(sql,{...i,operationDigest:"b".repeat(64)},{kind:"http",status:503,retryAfterState:"absent"}).ok,false);
+    assert.equal(recordRelayReceipt(sql,i,{kind:"http",status:503,retryAfterState:"absent"}).ok,true);
     assert.deepEqual(readRelayDisposition(sql,i,current(i),140000),{
-      ok:true,state:"completed",executionLeaseExpired:true,receipt:{kind:"http",status:503}});
+      ok:true,state:"completed",executionLeaseExpired:true,receipt:{kind:"http",status:503,retryAfterState:"absent"}});
     const next={...i,requestId:"synthetic-request-2",leaseToken:"synthetic-lease-02",ordinal:2,
       issuedAt:150000,leaseDeadline:180000,acceptanceExpiresAt:210000};
     assert.equal(prepareRelayAttempt(sql,next,150000).ok,true);
     assert.equal(next.firstAttemptAt,i.firstAttemptAt);
-    assert.equal(recordRelayReceipt(sql,i,{kind:"http",status:204}).reason,"outcome-conflict");
-    assert.equal(recordRelayReceipt(sql,i,{kind:"http",status:503}).ok,true);
+    assert.equal(recordRelayReceipt(sql,i,{kind:"http",status:204,retryAfterState:"absent"}).reason,"outcome-conflict");
+    assert.equal(recordRelayReceipt(sql,i,{kind:"http",status:503,retryAfterState:"absent"}).ok,true);
   }finally{db.close();}
 });
 test("old generation receipt never applies to refreshed or superseding outbox attempt",()=>{
   const {db,sql}=setup();try{
     const i=identity();prepareRelayAttempt(sql,i,100000);markRelayDispatched(sql,i,100001);
-    recordRelayReceipt(sql,i,{kind:"http",status:204});
+    recordRelayReceipt(sql,i,{kind:"http",status:204,retryAfterState:"absent"});
     for(const changed of [{status:"cancelled"},{status:"accepted"},{generation:2},{leaseToken:"synthetic-lease-02"},{ordinal:2},
       {eventId:"synthetic-event-02"},{subscriptionId:"synthetic-subscribe-2"},{firstAttemptAt:100001}])
       assert.equal(readRelayDisposition(sql,i,{...current(i),...changed},110000).reason,"stale-target");
@@ -72,7 +74,7 @@ test("old generation receipt never applies to refreshed or superseding outbox at
 test("prepared is not success; only explicit no-send proof can complete it",()=>{
   const {db,sql}=setup();try{
     const i=identity();prepareRelayAttempt(sql,i,100000);
-    assert.equal(recordRelayReceipt(sql,i,{kind:"http",status:204}).reason,"not-dispatched");
+    assert.equal(recordRelayReceipt(sql,i,{kind:"http",status:204,retryAfterState:"absent"}).reason,"not-dispatched");
     assert.equal(recordRelayReceipt(sql,i,{kind:"not-sent"}).ok,true);
     assert.equal(markRelayUnknown(sql,i).reason,"already-completed");
     assert.equal(recordRelayReceipt(sql,i,{kind:"not-sent",payload:"private"}).ok,false);
@@ -92,17 +94,17 @@ test("SQL guards immutable identity and outcome; global first-attempt budget ret
 test("retained SQLite unknown survives process-like close/reopen with exact original identity",()=>{
   const dir=mkdtempSync(join(tmpdir(),"relay-attempt-ledger-"));let db;
   try{
-    const path=join(dir,"ledger.sqlite");db=new DatabaseSync(path);
+    const path=join(dir,"ledger.sqlite");db=new DatabaseSync(path);db.exec("CREATE TABLE table_event_outbox(event_id TEXT)");
     for(const s of relayAttemptLedgerSchema.componentStatements.table) db.exec(s);
     const i=identity();prepareRelayAttempt(adapter(db),i,100000);markRelayDispatched(adapter(db),i,100001);db.close();
     db=new DatabaseSync(path);const sql=adapter(db);
     assert.equal(readRelayDisposition(sql,i,current(i),200000).state,"unknown");
     assert.equal(markRelayDispatched(sql,i,200000).reason,"already-reserved");
-    assert.equal(recordRelayReceipt(sql,i,{kind:"http",status:204}).ok,true);
+    assert.equal(recordRelayReceipt(sql,i,{kind:"http",status:204,retryAfterState:"absent"}).ok,true);
     assert.equal(readRelayDisposition(sql,i,current(i),200000).receipt.status,204);
   }finally{db?.close();rmSync(dir,{recursive:true,force:true});}
 });
-test("candidate migration leaves runtime version untouched and rollback preserves existing rows",()=>{
+test("standalone SQL statements roll back without erasing existing rows",()=>{
   const {db,sql}=setup();try{
     db.exec("CREATE TABLE prior_data(value TEXT); INSERT INTO prior_data VALUES ('retain')");
     db.exec("BEGIN");
@@ -117,7 +119,7 @@ test("candidate migration leaves runtime version untouched and rollback preserve
 test("unknown before dispatch cannot be upgraded into an HTTP success",()=>{
   const {db,sql}=setup();try{
     const i=identity();prepareRelayAttempt(sql,i,100000);markRelayUnknown(sql,i);
-    assert.equal(recordRelayReceipt(sql,i,{kind:"http",status:204}).reason,"not-dispatched");
+    assert.equal(recordRelayReceipt(sql,i,{kind:"http",status:204,retryAfterState:"absent"}).reason,"not-dispatched");
     assert.equal(readRelayDisposition(sql,i,current(i),110000).state,"unknown");
   }finally{db.close();}
 });

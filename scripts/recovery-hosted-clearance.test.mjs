@@ -3,6 +3,9 @@ import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import {
   ADMISSION_RECOVERY_STORAGE,
+  GUEST_RECOVERY_STORAGE,
+  TABLE_RECOVERY_STORAGE,
+  OAUTH_RECOVERY_STORAGE,
   recoveryStorageManifest,
 } from "../src/shared/recovery-manifests.ts";
 import { recoveryDigest } from "./recovery-configuration.mjs";
@@ -279,6 +282,17 @@ test("transient read failures recover within the bounded observation attempts", 
 function successorInspectionFixture() {
   const { inventory, receipts, expected } =
     structuredClone(canonicalInspection);
+  // Fresh in-memory current-schema fixture; never rewrite the historical JSON
+  // or represent its schema-12 inspection as evidence for schema 13.
+  expected.schemaVersion = 13;
+  const descriptors = { TABLES:TABLE_RECOVERY_STORAGE, GUESTS:GUEST_RECOVERY_STORAGE,
+    OAUTH_SERIALIZER:OAUTH_RECOVERY_STORAGE, ADMISSION:ADMISSION_RECOVERY_STORAGE };
+  for (const receipt of receipts) {
+    const descriptor = descriptors[receipt.binding];
+    receipt.schemaVersion = descriptor.schemaVersion;
+    receipt.manifest = structuredClone(recoveryStorageManifest(descriptor));
+    for (const table of descriptor.tables) receipt.counts[table.name] ??= 0;
+  }
   const objectId = "a".repeat(64);
   inventory.objects.ADMISSION = [{ id: objectId, hasStoredData: true }];
   inventory.counts.ADMISSION = 1;
@@ -490,4 +504,10 @@ test("a stalled platform proxy disposal cannot indefinitely postpone compensatio
   );
   assert.equal(proxy.env, env);
   await assert.rejects(proxy.dispose(), /private-proxy-stop-timeout/);
+});
+
+test("historical schema-12 inspection is not current schema-13 serving evidence",()=>{
+  const {inventory,receipts,expected}=canonicalInspection;
+  assert.equal(expected.schemaVersion,12);
+  assert.throws(()=>verifyObjectInspectionReceipts(inventory,receipts,expected),/recovery-inspection-subject-invalid/);
 });
