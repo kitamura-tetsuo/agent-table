@@ -222,9 +222,28 @@ recovery metadata, old generations, pending recovery and quarantined targets.
 
 The completed [Issue #51 isolated Cloudflare rehearsal](issue51-cloudflare-recovery-evidence.md)
 and its [public metadata record](issue51-cloudflare-recovery-evidence.json)
-are actual synthetic PITR/reset evidence. They leave both Workers quarantined.
-The separate [controlled-clearance proposal](issue51-synthetic-clearance-proposal.json)
-is unsigned and unapproved; neither those files nor a code merge activates it.
+are actual synthetic PITR/reset evidence. They left both Workers quarantined
+on 2026-11-14 and remain immutable historical records.
+
+The owner separately approved the corrected
+[v2 clearance proposal](issue51-synthetic-clearance-proposal-v2.json) for only
+`agent-table-pr51-recovery-staging`. The
+[clearance report](issue51-synthetic-clearance-evidence.md) and
+[final metadata](issue51-synthetic-clearance-evidence.json) record successful
+completion at **2026-11-15 09:59:29.548 JST**, following a retained failed attempt
+and verified quarantine compensation. Fresh inspection covered every discovered
+object, preserved the historical private-state reset and retained current
+Admission rate metadata. Six private application checks and exact final
+provider readback passed under the approved serving configuration. All five
+intake/capability flags and public exposure remain disabled; the separate
+schema-13 Worker remains quarantined. No further reset, PITR or namespace
+change occurred during clearance.
+
+This manual synthetic continuation uses its own independently retained record,
+not the protected staging/production recovery journal. It does not establish a
+protected Environment approval or authorize existing-resource recovery, public
+release or production deployment. The applicable protected procedures above
+still require their own exact approval and fresh provider/journal verification.
 
 Authenticated inventory is not a globally atomic snapshot. Unknown or omitted
 historical objects remain denied by their missing/mismatched generation even

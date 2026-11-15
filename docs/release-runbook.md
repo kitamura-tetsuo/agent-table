@@ -39,8 +39,12 @@ capture completeness and the separate transition to reviewed delivery targets.
 Public `live`, `events` and `autonomous` profiles are not reachable by
 editing a flag or inventing a successful test URL: they need separately
 implemented provider/host evidence verification. Restored snapshots with
-unknown post-snapshot revocations/deletions/expiries remain quarantined until
-the separate reconciliation work in Issue #51 is complete.
+unknown post-snapshot revocations/deletions/expiries require a separately
+approved recovery decision for that exact incident. Issue #51 implements the
+[fresh-start procedure](fresh-start-recovery.md), with retained-namespace PITR,
+discard and [controlled private synthetic clearance](issue51-synthetic-clearance-evidence.md)
+exercised on 2026-11-14–15. That approval does not transfer to existing staging,
+production or public intake.
 
 The [approved recovery policy](restore-recovery-decision.md) selects a verified
 fresh start in the retained namespaces. The [separate recovery workflow](fresh-start-recovery.md)
@@ -396,8 +400,9 @@ action; it is not permission to delete or reset private namespaces.
   public routes, including browser deletion. It preserves SQL and prevents
   alarm cleanup/dispatch; route operators to independent recovery, not to
   normal close/delete. **Never** clear this mode from a copied Worker
-  snapshot or the manual release workflow; Issue #51 must reconcile later
-  revocations, expiry and deletions from an independent authority.
+  snapshot or the manual release workflow. Use independently verified later
+  authority, or the separately approved [fresh-start discard procedure](fresh-start-recovery.md),
+  before an exact, independently approved clearance decision.
 - **Compatible Worker rollback:** identify the prior actually deployed
   version ID and current schema version. Verify the old version understands
   all persisted schema versions (currently `12`), secret formats, and
@@ -438,7 +443,7 @@ can change, and privacy data cannot be guaranteed erased by rollback.
 | Staging pause after text-binding change | Independent provider check rejected a Wrangler rollback with settings/version divergence; fully canonical redeploy yielded active version `f0701beb-db3a-4c6a-b224-7e988d438bc4` and matching disabled intake [receipt](https://github.com/kitamura-tetsuo/agent-table/issues/50#issuecomment-6818264043) | **Repaired and verified**; perform new readback before subsequent changes |
 | Production origin, scoped tokens, protected deploy and host smoke | `agent-table.outliner-online.com` HTTPS `/health` and current Worker identity verified; recorded production active version `8e099f35-8fa7-4e16-878c-43daa89fa218` | **Protected #50 production deploy not run**; new exact-main, owner and Environment approvals required |
 | Measured hosted CPU/requests/DO/KV/logs plus current pricing | Cloudflare GraphQL for 2026-11-04–11 UTC: staging Worker 5,293 requests/0 errors, production Worker 271/0, temporary PR46 Worker 33/0, DO invocation group 2,090 requests; account billing usage GET returned 403 (`insufficient_permissions`), DO storage groups returned no records; Workers Logs `logpush=false` and settings `observability=null` | **Partial measurement; billed usage, retention and actual DO/KV storage unresolved** |
-| Post-snapshot independent authority reconciliation | [Issue #51](https://github.com/kitamura-tetsuo/agent-table/issues/51) | **Out of scope; quarantined** |
+| Post-snapshot recovery and controlled clearance, #51 | [Real hosted PITR/discard/schema-refusal evidence](issue51-cloudflare-recovery-evidence.md) and [approved private synthetic clearance](issue51-synthetic-clearance-evidence.md), 2026-11-15 | **Verified for the isolated synthetic recovery Worker only**; existing staging/production recovery and public exposure require their own exact approvals |
 
 Record each actual deployment in a separate staging/production issue comment
 or retained operator log with UTC timestamp, GitHub run ID/attempt, source

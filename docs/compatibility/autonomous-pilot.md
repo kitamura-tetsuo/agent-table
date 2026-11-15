@@ -61,7 +61,7 @@ bidirectional pass or generalized to another host/account/profile.
 | Boundary | Known state | Needed for this pilot |
 | --- | --- | --- |
 | Durable delivery, #21 | Server implementation and controlled-receiver regressions exist | Exact deployed candidate, A's active subscription and actual receiver receipts |
-| Operations, #22 / #51 | Independent restore reconciliation remains open | Approved isolation, current authoritative state and applicable operational gates; no unapproved quarantine clearance |
+| Operations, #22 / #51 | Fresh-start recovery and [controlled private synthetic clearance](../issue51-synthetic-clearance-evidence.md) are implemented and exercised for one isolated Worker | Approved isolation, current authoritative state and applicable operational gates for this pilot; the separate recovery exercise grants no pilot or public-release approval |
 | Protected release, #50 | [Paused manual production release accepted](https://github.com/kitamura-tetsuo/agent-table/issues/50#issuecomment-6825493911) on 2026-11-12 | Separate private pilot activation; the manual release does not authorize Events or autonomy |
 | Host OAuth, #23 | One scoped actual-host tools record accepted | Two independently controlled tools-eligible accounts, each owner's approval and current host tools evidence |
 | Host execution | Two native event/read/reply traces retained under the approved bounded scope; pre-event idle unverified | Independent source/association review; see the observed-results document |
@@ -78,8 +78,9 @@ Public Events advertisement and production's manual behavior remain unchanged.
 
 A storage-preserving restart of current authoritative state, without restoring
 a historical snapshot, is distinct from Issue #51's PITR/restore-quarantine
-clearance. Do not require completing #51 merely to observe such a no-restore
-restart. Reconcile Issue #24's outstanding #22 dependency scope explicitly
+clearance. The [completed isolated recovery exercise](../issue51-synthetic-clearance-evidence.md)
+does not authorize this pilot's restart or activation. Reconcile Issue #24's
+outstanding #22 dependency scope explicitly
 while satisfying its actual isolation and restart requirements. Neither this
 procedure nor an earlier manual approval authorizes the private pilot or a
 public autonomous profile.
@@ -289,8 +290,9 @@ event acceptance→new A run→authenticated read→committed reply trace. Also 
 the cancelled scenario's terminal table/subscription as a control and verify
 that the same recovery path does not revive it. A browser-confirmed deletion
 needs that owner's explicit action if selected. This no-restore restart grants
-no historical snapshot-restoration or quarantine-clearance authority; Issue
-#51 remains responsible for independently missing post-snapshot authority.
+no historical snapshot-restoration or quarantine-clearance authority. Any
+actual historical restore must follow the separately approved
+[fresh-start recovery procedure](../fresh-start-recovery.md) for its exact scope.
 
 ### Third-guest isolation and synthetic disclosure
 

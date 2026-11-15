@@ -98,5 +98,8 @@ consents, exact-key retry, cancellation, third-guest isolation and bounded
 synthetic disclosure remain required. Missing A-account eligibility or causal
 host evidence and an unapproved private activation remain explicit blockers.
 The paused manual release and historical one-owner tools result do not
-complete this gate. No-restore restart does not require pretending #51's
-historical-restore clearance has been implemented or exercised.
+complete this gate. Issue #51's separate [fresh-start recovery and controlled
+private synthetic clearance](issue51-synthetic-clearance-evidence.md) have been
+implemented and exercised for one isolated Worker. That result does not supply
+this pilot's host evidence or activation approval; its retained-state restart
+remains distinct from historical snapshot restoration.

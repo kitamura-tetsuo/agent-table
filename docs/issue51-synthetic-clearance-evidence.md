@@ -1,16 +1,18 @@
 # Issue #51: controlled synthetic clearance
 
-**Current recorded outcome: the first clearance attempt failed its private
-verification and automatically returned the target to quarantine. A corrected
-verification transport and retry are pending under the same approved v2 scope.
-This record does not yet establish completed clearance.**
+**Outcome: the separately approved v2 clearance completed for
+`agent-table-pr51-recovery-staging` at 2026-11-15 00:59:29.548 UTC /
+09:59:29.548 JST. All six private application checks passed. Public exposure and
+all five intake/capability flags remain disabled. The schema-13 Worker remains
+quarantined.**
 
-The [first-attempt metadata](issue51-synthetic-clearance-attempt1.json) ends in
-`rolled-back`, with nine private ingress paths returning 503 and
-`Cache-Control: no-store` at **2026-11-15 00:41:52.685 UTC / 09:41:52.685 JST**.
-The evidence and execution helpers are being retained in
-[PR #72](https://github.com/kitamura-tetsuo/agent-table/pull/72). Earlier attempts
-and their evidence are retained separately from any subsequent retry.
+The [final metadata](issue51-synthetic-clearance-evidence.json) records
+`cleared-private-synthetic`. The [first-attempt metadata](issue51-synthetic-clearance-attempt1.json)
+is preserved separately: that attempt failed verification and automatically
+returned to quarantine, with nine private paths returning 503 and no-store.
+The successful successor continues its hash chain and retains its exact parent
+checkpoint, evidence and helper commitments. The evidence and helpers are
+retained in [PR #72](https://github.com/kitamura-tetsuo/agent-table/pull/72).
 
 ## Approval and exact subject
 
@@ -45,9 +47,10 @@ and custom domains remain disabled or absent. Verification uses authenticated
 private Service bindings.
 
 The schema-13 Worker, `agent-table-pr51-schema-staging`, existing staging and
-production resources are excluded. Its preflight deployment remained
-`847f5f75-1679-4fb9-880f-b479d832710f`, with matching configuration and disabled
-public exposure. This metadata observation is not a new canonical SQL
+production resources are excluded. The schema Worker's final metadata readback
+at 00:59:29.547 UTC / 09:59:29.547 JST retained version
+`847f5f75-1679-4fb9-880f-b479d832710f`, matching quarantined configuration and
+disabled public exposure. This metadata observation is not a new canonical SQL
 inspection of that Worker. Cloudflare's `serviceEnvironment: "production"` in
 provider receipts names the default internal service slot of these synthetic
 Workers; the application environment is `staging`.
@@ -56,7 +59,7 @@ This manual approval is separate from a protected GitHub Environment approval
 and the production `recovery-records` journal. It authorizes no new destructive
 reset, PITR, public release, new guest/table intake or Events activation.
 
-## Retained recovery proof and current inspection
+## Retained recovery proof and first-attempt inspection
 
 The [original hosted recovery report](issue51-cloudflare-recovery-evidence.md),
 [metadata](issue51-cloudflare-recovery-evidence.json) and
@@ -66,7 +69,7 @@ revocation/deletion/expiry, PITR, continued quarantine, actual canonical discard
 and preserved newer-schema refusal. Those artifacts and the original private
 checkpoint remain unchanged.
 
-The continuation first reverified the exact original deployed configuration and
+The first continuation reverified the exact original deployed configuration and
 version, namespace ownership/inventory, runtime identity and nine denied private
 paths. It then renewed only the same-operation, same-generation quarantined
 inspection authorization. Fresh challenged `RecoveryControl.inspect` receipts
@@ -116,20 +119,44 @@ where the check could reject the request before the target Worker received it.
 That reproduction diagnoses a verification-transport problem; its numeric
 response is not retrospectively attributed to the recorded live failure.
 
-The pending fix constructs the same-origin form request inside a local Worker
-before forwarding through the private Service binding. It changes the local
-verification transport, preserving the target application's CSRF check, runtime
-source, exact v2 configuration, namespaces, operation and generation. Successful
-retry must be recorded separately and cannot erase the first failed attempt.
+The correction constructs the same-origin form request inside a local Worker
+before forwarding through the private Service binding. It preserves the target
+application's CSRF check, runtime source, exact v2 configuration, namespaces,
+operation and generation. Before the successor created any record, signature or
+deployment, a further transport preflight identified that explicit `local:true`
+disabled remote bindings in the pinned Wrangler. Omitting that option uses
+Wrangler's local default while allowing the authenticated remote binding; it
+does not publish the relay. The successful preflight at 00:57:51.679 UTC /
+09:57:51.679 JST received the exact application's 503/no-store quarantine
+response to the relayed same-origin POST.
 
-## Required private verification after retry
+## Successful successor and actual private checks
 
-All six checks must pass through the corrected private transport, with bounded
-request/body processing, `no-store`, no new session cookie and no credential
-reflection. They are requirements for a retry, not completed results in this
-first-attempt record.
+The executed [controller](https://github.com/kitamura-tetsuo/agent-table/blob/7333bd89c5947292239cf1e553f61ca9bdff62b4/scripts/recovery-hosted-clearance.mjs),
+[transport](https://github.com/kitamura-tetsuo/agent-table/blob/7333bd89c5947292239cf1e553f61ca9bdff62b4/scripts/recovery-hosted-clearance-transport.mjs)
+and [private checks](https://github.com/kitamura-tetsuo/agent-table/blob/7333bd89c5947292239cf1e553f61ca9bdff62b4/scripts/recovery-hosted-clearance-checks.mjs)
+are preserved at immutable revision `7333bd89c5947292239cf1e553f61ca9bdff62b4`.
+The successor preflight recorded their byte hashes and the exact first-attempt
+parent. It independently observed the parent's rollback version before
+proceeding under the unchanged v2 approval.
 
-| Check | Required result |
+Fresh quarantine renewal deployed version
+`83654bef-0081-434b-b5b2-1248080c855e` and again verified nine denied paths.
+Canonical inspection at 00:58:48.144 UTC and again immediately before signing at
+00:59:15.767 UTC covered every inventoried object with fresh request nonces:
+one TableDO, one GuestDO and one AdmissionDO. The historical private components
+retained their verified empty state; OAuth serializer and OAuth KV inventories
+remained empty. The AdmissionDO held three rate-limit rows created during the
+first attempt's normal HTTP handling. Its schema, generation marker, manifest
+and zero DO KV count were verified, and those operational rows were retained.
+No Admission reset was performed or claimed. The report distinguishes complete
+inspection coverage from the historical private-state reset summary.
+
+All six private application checks passed at **00:59:26.678 UTC /
+09:59:26.678 JST**, with bounded request/body processing, `no-store`, no new
+session cookie and no credential reflection:
+
+| Check | Observed result |
 | --- | --- |
 | `GET /health` | 200; exact source, staging environment and manual profile |
 | Old session at `GET /guest/me` | 401; `no-valid-guest-session` |
@@ -138,10 +165,21 @@ first-attempt record.
 | Same-origin `POST /guest/session`, choice `new` | 503; `New guest admission is disabled` |
 | Same-origin `POST /guest/session`, choice `reuse`, old session | 401; `No valid guest session` |
 
-A retry must also repeat fresh canonical inspection under quarantine and final
-exact provider/configuration readback. The excluded schema Worker's metadata
-must remain unchanged. A conflicting later deployment must be preserved rather
-than overwritten by compensation.
+Final provider readback at **00:59:29.136 UTC / 09:59:29.136 JST** confirmed
+version `2a456ec5-44ef-47ae-8b26-91390b98d0a1`, exact serving commitment
+`58aaf16f7cacf06c3b0b568b4e3858c9c399d86b826348630c99a99f0a2330fa`
+and complete signed-configuration hash
+`1a61c4d5b9965bcab6c715c2d254f0c2292b64cdb6340d876e54796cd5b22d52`.
+Workers.dev and previews were disabled; actual service routes and custom domains
+were zero. Post-serving inventory retained the same TableDO and GuestDO, one
+AdmissionDO, no OAuth serializer objects and no OAuth KV keys. The excluded
+schema Worker's version and complete configuration were unchanged.
+
+The successor ended successfully without compensation. Across both attempts,
+there was no additional destructive reset, PITR, namespace change, private
+guest/table creation or OAuth credential issuance. Normal HTTP checks can update
+Admission rate metadata. A later conflicting deployment would be preserved
+rather than overwritten by compensation.
 
 ## Audit links and limits
 
@@ -152,12 +190,18 @@ than overwritten by compensation.
 | First attempt, canonical JSON | `16d15e1ccacb2f7786787fa81b8d6d54d4d3ba9ae05d3bd59180ceda92f2be1f` |
 | First attempt, file bytes | `6165aecf0d71d7e5b632e67279922a74652634a608f61941b73f2bca5e662540` |
 | First attempt, final continuation record | `7a142579d74b589b7abf611116ec9701b457b1221642ed66767669aa1fd60fe0` |
+| Successful successor, canonical JSON | `63c25052d8c6c18699db02f521982fe86866b03625e3a0ccaf8fdb4d28926d27` |
+| Successful successor, file bytes | `00d200e9bb49465d28320be067877abd46f14357b9b39f80a7b2fd02331ce20f` |
+| Successful successor, final continuation record | `3f8c734d4620e1736df2f902b822e55fc9275d782f580f87b70fffdc51f5bdab` |
 
 The continuation is independently retained outside restored application DO/KV.
 Its public metadata contains manifests, counts, claims, timestamps and hashes,
 without private keys, synthetic session secrets, snapshot bookmarks, row bodies
-or authorization signatures. `verifyObjectResetReceipts` can reproduce the
-canonical-inspection summaries from the published receipts and expected claims.
+or authorization signatures. `verifySuccessorInspection` reproduces the final
+summaries from the published inventory, receipts and expected claims. It checks
+all objects with `verifyObjectInspectionReceipts`, verifies historical private
+components with `verifyObjectResetReceipts`, and separately validates the
+retained Admission metadata.
 
 The old hosted session was originally time-limited and is now expired as well.
 An HTTP 401 alone cannot distinguish expiry, earlier revocation and canonical
