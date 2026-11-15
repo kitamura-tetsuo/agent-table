@@ -39,8 +39,14 @@ private-pilot-specific detailed trace records are not enabled by it.
 ## Release gates and rollback
 
 The standard protected-main release flow now accepts this profile only for staging.
-Preflight requires application, security, browser, live_runtime, provider and delivery
-evidence for the exact build/config. Authorization also requires the independent
+This staging-only profile collects hosted evidence; initial activation must not
+require successful delivery from the configuration that has not yet been deployed.
+Preflight requires application, security and browser evidence for the exact
+build/config. Authenticated provider ownership/readback remains a separate
+mandatory predeployment gate. Hosted live_runtime, provider delivery and actual
+host receipt/read/reply are postdeployment acceptance outcomes, initially pending;
+activation or HTTP acceptance is not proof of those outcomes. Production profiles
+retain their existing evidence requirements. Authorization also requires the independent
 protected Environment reviewer and a fresh operator record containing
 `testNativeEvents.risk`, the SHA256 of exact callback-target JSON, and true
 `allAuthorizedTablesReviewed`, `callbackDataDisclosureReviewed` and
