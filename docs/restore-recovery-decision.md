@@ -1,15 +1,21 @@
 # Restore recovery policy decision (Issue #51)
 
-**Status: Option A / `FRESH_START_POLICY` approved for implementation and an
-isolated synthetic staging rehearsal. Actual user-data destruction, production
-deployment and quarantine clearance are not authorized by this policy decision.**
+**Status: Option A / `FRESH_START_POLICY` is implemented. The isolated synthetic
+PITR/reset rehearsal and a separately approved controlled clearance are complete.
+The clearance applies only to `agent-table-pr51-recovery-staging`; public
+exposure, intake and Events remain disabled. Existing-user data destruction and
+production recovery require their own exact approvals.**
 
-**2026-11-15 continuation:** the owner approved continuing the original exact
-synthetic-clearance proposal, but pre-activation review found its missing manual
-release profile. No certificate renewal or deployment occurred. The
-[corrected proposal](issue51-synthetic-clearance-proposal-v2.json) requires approval
-of its replacement configuration commitment; see the
-[correction and read-only observation](issue51-synthetic-clearance-correction.md).
+**2026-11-15 continuation:** after the original proposal's missing manual profile
+was [corrected](issue51-synthetic-clearance-correction.md), the owner explicitly
+approved the [v2 proposal](issue51-synthetic-clearance-proposal-v2.json) with
+`#51 SYNTHETIC_CLEARANCE`, recorded in
+[comment 6886616675](https://github.com/kitamura-tetsuo/agent-table/issues/51#issuecomment-6886616675).
+The [controlled-clearance report](issue51-synthetic-clearance-evidence.md) records
+a failed first attempt, verified quarantine compensation and a successful
+same-scope retry completed at **2026-11-15 09:59:29.548 JST**. The schema-13
+synthetic Worker remains quarantined. This manual synthetic approval is separate
+from protected Environment and production approvals.
 
 ## Recorded decision
 
@@ -28,9 +34,9 @@ invitations and tables must be created again after a separately authorized
 release permits new intake. The namespaces are neither deleted nor renamed,
 and bindings are not replaced by empty resources.
 
-The approval covers implementation of the verified discard procedure, an
-independently enforced recovery-generation boundary and a separately prepared
-synthetic-only staging rehearsal. It does not authorize destruction of existing
+The original policy approval covers implementation of the verified discard
+procedure, an independently enforced recovery-generation boundary and a
+separately prepared synthetic-only staging rehearsal. It does not authorize destruction of existing
 users' data, production deployment, public admission, Events or quarantine
 clearance. A protected Environment approval, when applicable, is an additional
 actual gate; this policy record does not impersonate one.
@@ -97,12 +103,26 @@ production approvals remain distinct.
 The [isolated Issue #51 Cloudflare rehearsal](issue51-cloudflare-recovery-evidence.md)
 completed on 2026-11-14 at 10:55 JST. It verified real PITR, later-event rollback,
 private denial, canonical discard in retained namespaces and unchanged
-future-schema refusal. Both synthetic Workers remain quarantined and private.
-The [unsigned controlled-clearance proposal](issue51-synthetic-clearance-proposal.json)
-targets only the reset synthetic recovery Worker, keeps all five intake and
-capability flags false, and still requires a separate explicit approval. It
-does not authorize clearance of the retained future-schema fixture or any
-existing staging/production resources. Issue #51 remains open for this gate.
+future-schema refusal, leaving both synthetic Workers quarantined at that time.
+Its evidence and the superseded unsigned proposal remain immutable historical
+records.
+
+The separately approved [controlled clearance](issue51-synthetic-clearance-evidence.md)
+completed on 2026-11-15 at 09:59 JST for only
+`agent-table-pr51-recovery-staging`. Fresh canonical inspection verified the
+historical private-state reset while retaining the observed Admission rate
+metadata. The exact approved configuration then passed six private application
+checks and final provider readback. Both attempts retained the operation,
+generation and namespaces; neither repeated destructive reset or PITR. The
+first attempt's verification failure and successful quarantine rollback are
+preserved alongside the final successful successor.
+
+All five intake/capability flags and public exposure remain disabled. The
+retained future-schema fixture is still quarantined; existing staging and
+production resources were excluded. This synthetic completion does not supply
+an actual protected workflow attestation, a production journal revision, or
+approval to destroy existing users' data, expose recovered content, reopen
+intake or enable Events.
 
 No independent post-snapshot authorization source for selective content
 recovery was identified. Option B therefore remains unselected and unavailable.
