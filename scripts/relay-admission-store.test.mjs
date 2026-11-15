@@ -494,7 +494,7 @@ test("v1 migration preserves active/finished records as unknown rather than infe
     store.close();
     db = new DatabaseSync(f.path);
     db.exec(
-      "CREATE TABLE old_admissions AS SELECT id,caller_hash,request_hash,admitted_ms,replay_expires_ms,lease_expires_ms,state FROM relay_admissions; DROP TABLE relay_admissions; ALTER TABLE old_admissions RENAME TO relay_admissions; PRAGMA user_version=1",
+      "CREATE TABLE old_admissions AS SELECT id,caller_hash,request_hash,admitted_ms,replay_expires_ms,lease_expires_ms,state FROM relay_admissions; DROP TABLE relay_admissions; ALTER TABLE old_admissions RENAME TO relay_admissions; DROP TABLE relay_operator_receipts; DROP TABLE relay_operator_identity; PRAGMA user_version=1",
     );
     db.close();
     db = undefined;
@@ -519,7 +519,7 @@ test("v1 migration preserves active/finished records as unknown rather than infe
       });
     }
     db = new DatabaseSync(f.path);
-    assert.equal(db.prepare("PRAGMA user_version").get().user_version, 4);
+    assert.equal(db.prepare("PRAGMA user_version").get().user_version, 5);
     assert.equal(
       db.prepare("SELECT COUNT(*) n FROM relay_admissions").get().n,
       2,
@@ -696,7 +696,7 @@ test("schema2 HTTP migration keeps delay unknown rather than assuming absent", (
     store.close();
     db = new DatabaseSync(f.path);
     db.exec(
-      "CREATE TABLE old_admissions AS SELECT id,caller_hash,request_hash,admitted_ms,replay_expires_ms,lease_expires_ms,state,operation_digest,outcome_kind,http_status FROM relay_admissions; DROP TABLE relay_admissions; ALTER TABLE old_admissions RENAME TO relay_admissions; PRAGMA user_version=2",
+      "CREATE TABLE old_admissions AS SELECT id,caller_hash,request_hash,admitted_ms,replay_expires_ms,lease_expires_ms,state,operation_digest,outcome_kind,http_status FROM relay_admissions; DROP TABLE relay_admissions; ALTER TABLE old_admissions RENAME TO relay_admissions; DROP TABLE relay_operator_receipts; DROP TABLE relay_operator_identity; PRAGMA user_version=2",
     );
     db.close();
     db = undefined;
@@ -805,7 +805,7 @@ test("schema3 upgrade preserves old HTTP, unknown leases and non-reused sequence
   store.finish(a.leaseId,{kind:"http",status:429,retryAfterState:"known",retryAfterSeconds:9,retryAfterObservedAt:100000});
   const b=store.acquire(request("synthetic-request-2"));store.close();store=null;
   const db=new DatabaseSync(f.path);
-  db.exec("CREATE TABLE old_admissions AS SELECT id,caller_hash,request_hash,admitted_ms,replay_expires_ms,lease_expires_ms,state,operation_digest,outcome_kind,http_status,retry_after_state,retry_after_seconds,retry_after_observed_ms FROM relay_admissions; DROP TABLE relay_admissions; ALTER TABLE old_admissions RENAME TO relay_admissions; PRAGMA user_version=3");db.close();
+  db.exec("CREATE TABLE old_admissions AS SELECT id,caller_hash,request_hash,admitted_ms,replay_expires_ms,lease_expires_ms,state,operation_digest,outcome_kind,http_status,retry_after_state,retry_after_seconds,retry_after_observed_ms FROM relay_admissions; DROP TABLE relay_admissions; ALTER TABLE old_admissions RENAME TO relay_admissions; DROP TABLE relay_operator_receipts; DROP TABLE relay_operator_identity; PRAGMA user_version=3");db.close();
   store=openRelayAdmissionStore(f.path,options);
   assert.equal(store.acquire(request()).reason,"duplicate");
   assert.equal(store.acquire(request("synthetic-request-2")).reason,"duplicate");

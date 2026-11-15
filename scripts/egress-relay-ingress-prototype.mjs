@@ -454,6 +454,12 @@ export function createRelayIngress({
         if (!http || http.retryAfterState === "unknown")
           return result(502, "delivery-failed");
         completion = http;
+        // A successful network response is not a durable receipt. Commit once,
+        // and never implicitly repeat a store operation with an unknown result.
+        const committingLease = leaseId;
+        leaseId = undefined;
+        const saved = await admissionStore.finish(committingLease, completion);
+        if (saved?.ok !== true) return result(503, "unavailable");
         return { status: 200, body: { state: "completed", outcome: http } };
       }
       const delivered = await send(
