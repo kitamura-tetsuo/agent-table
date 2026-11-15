@@ -44,7 +44,10 @@ export function createRelayHttpsServer({ key, cert, handler }) {
         fixed(response, 503, "unavailable");
         return;
       }
-      if (request.method !== "POST" || request.url !== "/relay/v1") {
+      if (
+        request.method !== "POST" ||
+        !["/relay/v1", "/relay/v1/status"].includes(request.url)
+      ) {
         fixed(response, 404, "unavailable");
         return;
       }
@@ -72,10 +75,11 @@ export function createRelayHttpsServer({ key, cert, handler }) {
         fixed(response, 401, "unauthorized");
         return;
       }
+      const maxBody = request.url === "/relay/v1/status" ? 1024 : MAX_BODY;
       const length = request.headers["content-length"];
       if (
         length !== undefined &&
-        (!/^(0|[1-9][0-9]*)$/.test(length) || Number(length) > MAX_BODY)
+        (!/^(0|[1-9][0-9]*)$/.test(length) || Number(length) > maxBody)
       ) {
         fixed(response, 413, "invalid-request");
         return;
@@ -95,7 +99,7 @@ export function createRelayHttpsServer({ key, cert, handler }) {
       request.on("data", (chunk) => {
         if (ended) return;
         bytes += chunk.length;
-        if (bytes > MAX_BODY) {
+        if (bytes > maxBody) {
           stop();
           fixed(response, 413, "invalid-request");
           return;
@@ -111,7 +115,7 @@ export function createRelayHttpsServer({ key, cert, handler }) {
           try {
             const output = await handler({
               method: "POST",
-              path: "/relay/v1",
+              path: request.url,
               callerId,
               signature,
               bytes: body,

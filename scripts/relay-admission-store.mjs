@@ -9,7 +9,8 @@ import { isAbsolute } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 const APPLICATION_ID = 0x4154524c;
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
+const COMMITMENT = /^[a-f0-9]{64}$/;
 const WINDOW_MS = 60000;
 const IDENTIFIER = /^[A-Za-z0-9_-]{16,128}$/;
 const digest = (value) => createHash("sha256").update(value).digest("hex");
@@ -110,6 +111,9 @@ export function openRelayAdmissionStore(path, options = {}) {
             replay_expires_ms INTEGER NOT NULL,
             lease_expires_ms INTEGER NOT NULL,
             state TEXT NOT NULL CHECK(state IN ('active', 'finished')),
+            operation_digest TEXT,
+            outcome_kind TEXT CHECK(outcome_kind IN ('http', 'not-sent', 'unknown')),
+            http_status INTEGER CHECK(http_status BETWEEN 100 AND 599),
             UNIQUE(caller_hash, request_hash)
           ) STRICT;
           CREATE INDEX relay_admissions_time ON relay_admissions(admitted_ms);
@@ -120,7 +124,10 @@ export function openRelayAdmissionStore(path, options = {}) {
         db.prepare("INSERT INTO relay_configuration VALUES (1, ?, 0)").run(
           configuration,
         );
-      } else if (application !== APPLICATION_ID || version !== SCHEMA_VERSION) {
+      } else if (
+        application !== APPLICATION_ID ||
+        ![1, SCHEMA_VERSION].includes(version)
+      ) {
         throw new Error("unsupported-admission-schema");
       }
       const current = db
@@ -130,9 +137,19 @@ export function openRelayAdmissionStore(path, options = {}) {
         .get();
       if (!current || current.configuration !== configuration)
         throw new Error("admission-configuration-mismatch");
+      // The only supported migration preserves all reservations and identity.
+      // Legacy finished rows carry no delivery evidence and remain unknown.
+      if (version === 1) {
+        db.exec(`
+          ALTER TABLE relay_admissions ADD COLUMN operation_digest TEXT;
+          ALTER TABLE relay_admissions ADD COLUMN outcome_kind TEXT CHECK(outcome_kind IN ('http', 'not-sent', 'unknown'));
+          ALTER TABLE relay_admissions ADD COLUMN http_status INTEGER CHECK(http_status BETWEEN 100 AND 599);
+          PRAGMA user_version = ${SCHEMA_VERSION};
+        `);
+      }
       // Validate schema shape even when an externally edited version matches.
       db.prepare(
-        "SELECT id,caller_hash,request_hash,admitted_ms,replay_expires_ms,lease_expires_ms,state FROM relay_admissions LIMIT 0",
+        "SELECT id,caller_hash,request_hash,admitted_ms,replay_expires_ms,lease_expires_ms,state,operation_digest,outcome_kind,http_status FROM relay_admissions LIMIT 0",
       ).all();
     });
   } catch {
@@ -149,7 +166,14 @@ export function openRelayAdmissionStore(path, options = {}) {
         "SELECT last_observed_ms FROM relay_configuration WHERE singleton = 1",
       )
       .get().last_observed_ms;
-    if (!integer(now, 0, Number.MAX_SAFE_INTEGER - Math.max(maxReplayMs, leaseMs)) || now < last)
+    if (
+      !integer(
+        now,
+        0,
+        Number.MAX_SAFE_INTEGER - Math.max(maxReplayMs, leaseMs),
+      ) ||
+      now < last
+    )
       throw new Error("untrusted-admission-clock");
     db.prepare(
       "UPDATE relay_configuration SET last_observed_ms = ? WHERE singleton = 1",
@@ -158,14 +182,17 @@ export function openRelayAdmissionStore(path, options = {}) {
   };
   const unavailable = () => ({ ok: false, reason: "unavailable" });
   return {
-    acquire({ callerId, requestId, expiresAt } = {}) {
+    acquire({ callerId, requestId, expiresAt, operationDigest } = {}) {
       if (
         closed ||
         typeof callerId !== "string" ||
         !IDENTIFIER.test(callerId) ||
         typeof requestId !== "string" ||
         !IDENTIFIER.test(requestId) ||
-        !Number.isSafeInteger(expiresAt)
+        !Number.isSafeInteger(expiresAt) ||
+        (operationDigest !== undefined &&
+          (typeof operationDigest !== "string" ||
+            !COMMITMENT.test(operationDigest)))
       )
         return { ok: false, reason: "invalid" };
       try {
@@ -212,10 +239,17 @@ export function openRelayAdmissionStore(path, options = {}) {
           const inserted = db
             .prepare(`
             INSERT INTO relay_admissions
-              (caller_hash,request_hash,admitted_ms,replay_expires_ms,lease_expires_ms,state)
-            VALUES (?,?,?,?,?,'active')
+              (caller_hash,request_hash,admitted_ms,replay_expires_ms,lease_expires_ms,state,operation_digest)
+            VALUES (?,?,?,?,?,'active',?)
           `)
-            .run(caller, request, now, expiresAt, leaseExpiresAt);
+            .run(
+              caller,
+              request,
+              now,
+              expiresAt,
+              leaseExpiresAt,
+              operationDigest ?? null,
+            );
           return {
             ok: true,
             leaseId: Number(inserted.lastInsertRowid),
@@ -231,20 +265,92 @@ export function openRelayAdmissionStore(path, options = {}) {
      * Deadline expiry alone does not prove a live/hung process stopped sending.
      * Never release a recovered lease using a new generation's receipt.
      */
-    finish(leaseId) {
+    finish(leaseId, outcome) {
+      const kind = outcome === undefined ? "unknown" : outcome?.kind;
+      const status = kind === "http" ? outcome.status : null;
+      if (
+        outcome !== undefined &&
+        (!outcome ||
+          typeof outcome !== "object" ||
+          Array.isArray(outcome) ||
+          !["http", "not-sent"].includes(kind) ||
+          Object.keys(outcome).sort().join(",") !==
+            (kind === "http" ? "kind,status" : "kind") ||
+          (kind === "http" && !integer(status, 100, 599)))
+      )
+        return { ok: false, reason: "invalid" };
       if (closed || !integer(leaseId, 1, Number.MAX_SAFE_INTEGER))
         return { ok: false, reason: "invalid" };
       try {
         return transaction(() => {
           observeClock();
           const row = db
-            .prepare("SELECT state FROM relay_admissions WHERE id = ?")
+            .prepare(
+              "SELECT state,outcome_kind,http_status FROM relay_admissions WHERE id = ?",
+            )
             .get(leaseId);
           if (!row) return { ok: false, reason: "unknown" };
+          if (row.state === "finished") {
+            return (row.outcome_kind ?? "unknown") === kind &&
+              row.http_status === status
+              ? { ok: true }
+              : { ok: false, reason: "conflict" };
+          }
           db.prepare(
-            "UPDATE relay_admissions SET state = 'finished' WHERE id = ? AND state = 'active'",
-          ).run(leaseId);
+            "UPDATE relay_admissions SET state = 'finished',outcome_kind = ?,http_status = ? WHERE id = ? AND state = 'active'",
+          ).run(kind, status, leaseId);
           return { ok: true };
+        });
+      } catch {
+        return unavailable();
+      }
+    },
+    /**
+     * Caller identity MUST come from authenticated ingress, never a query field.
+     * This only reads status: it never authorizes forwarding/retry or releases
+     * an uncertain lease. Missing/pruned/legacy evidence is UNKNOWN, not no-send.
+     */
+    readOutcome({ callerId, requestId, operationDigest } = {}) {
+      if (
+        closed ||
+        typeof callerId !== "string" ||
+        !IDENTIFIER.test(callerId) ||
+        typeof requestId !== "string" ||
+        !IDENTIFIER.test(requestId) ||
+        typeof operationDigest !== "string" ||
+        !COMMITMENT.test(operationDigest)
+      )
+        return { ok: false, reason: "invalid" };
+      try {
+        return transaction(() => {
+          const now = observeClock();
+          const row = db
+            .prepare(
+              "SELECT state,operation_digest,outcome_kind,http_status,lease_expires_ms FROM relay_admissions WHERE caller_hash = ? AND request_hash = ?",
+            )
+            .get(digest(callerId), digest(requestId));
+          if (!row || row.operation_digest === null)
+            return { ok: true, state: "unknown" };
+          if (row.operation_digest !== operationDigest)
+            return { ok: false, reason: "conflict" };
+          if (row.state === "active")
+            return {
+              ok: true,
+              state: row.lease_expires_ms > now ? "pending" : "unknown",
+            };
+          if (row.outcome_kind === "not-sent")
+            return {
+              ok: true,
+              state: "completed",
+              outcome: { kind: "not-sent" },
+            };
+          if (row.outcome_kind === "http" && integer(row.http_status, 100, 599))
+            return {
+              ok: true,
+              state: "completed",
+              outcome: { kind: "http", status: row.http_status },
+            };
+          return { ok: true, state: "unknown" };
         });
       } catch {
         return unavailable();

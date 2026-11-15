@@ -203,3 +203,28 @@ it("bounds a response stream that ignores abort instead of hanging past the oper
     vi.useRealTimers();
   }
 });
+
+it("freezes validated relay origin before asynchronous authorization", async () => {
+  const mutable = structuredClone(config);
+  const op = operation();
+  const transport = vi.fn(async (url) => {
+    expect(url).toBe("https://relay.example.org/relay/v1");
+    return Response.json({ status: 204, payload: "" });
+  });
+  expect(
+    (
+      await sendRelayHttps(
+        mutable,
+        op,
+        destination,
+        request(),
+        async () => {
+          mutable.origin = "https://evil.example.org";
+          op.timestamp = 0;
+          return true;
+        },
+        transport,
+      )
+    ).ok,
+  ).toBe(true);
+});

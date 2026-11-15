@@ -35,9 +35,10 @@ export function createRelayApplication({
   try {
     const handler = createRelayIngress({
       callers,
-      audience: environment + ":" + serviceId,
+      audience: `${environment}:${serviceId}`,
       admissionStore: store,
       enabled: () => enabled && !closing,
+      readEnabled: () => !closing,
       send: sendPinnedPrototype,
     });
     const listener = createRelayHttpsServer({ key, cert, handler });

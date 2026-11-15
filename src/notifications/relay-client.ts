@@ -45,8 +45,8 @@ const decode = (s: string): Uint8Array<ArrayBuffer> =>
  * checks and return false on unavailable evidence. No retries occur here.
  */
 export async function sendRelayHttps(
-  config: RelayClientConfiguration,
-  operation: RelayOperation,
+  configuration: RelayClientConfiguration,
+  operationInput: RelayOperation,
   destination: string,
   request: CallbackRequest,
   authorizeBeforeSend: () => Promise<boolean>,
@@ -55,6 +55,8 @@ export async function sendRelayHttps(
   let controller: AbortController | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
+    const config = structuredClone(configuration);
+    const operation = structuredClone(operationInput);
     controller = new AbortController();
     const signal = controller.signal;
     timer = setTimeout(() => controller?.abort(), 15000);

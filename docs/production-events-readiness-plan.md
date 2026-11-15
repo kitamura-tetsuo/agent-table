@@ -92,9 +92,11 @@ production readiness predicate.
 
 ### Remaining integration blocker, not an accepted limitation
 
-The relay currently consumes replay identities but does not persist/retrieve
-delivery outcomes. If the callback succeeds and only the relay response is lost,
-a repeat is refused with 409 and the Worker cannot recover the challenge/result.
+The initial relay revision consumed replay identities without retrieving outcomes.
+The current status-only additions persist and authenticate readback of numeric
+HTTP outcomes and unknown/pending state, without saving response bytes. If the callback succeeds and only the relay response is lost,
+a repeated forward is refused with 409; status can now be queried separately,
+but the Worker still cannot recover the challenge body.
 The existing outbox has legitimate bounded retries and lease renewal, so simply
 using a new identity risks duplicate delivery, while permanently terminalizing
 the operation would weaken that contract. Production integration MUST remain
@@ -110,3 +112,29 @@ success, real callback delivery, full MCP/outbox integration or host idle-agent
 wake-up evidence. Production architecture, credentials, public endpoint, storage
 and monitoring ownership, exact release/rollback and concrete activation approval
 remain separate unperformed steps.
+
+## Status-only readback checkpoint
+
+Schema v2 preserves old admissions during transactional migration. Legacy results
+and missing/pruned evidence return unknown, never proof of no-send. Exact caller,
+request and semantic commitment are bound; completion is immutable. The separate
+signed POST /relay/v1/status route may operate during a send pause, but not after
+caller removal/key rotation or service shutdown. Read quotas are per process,
+not a claimed global distributed quota. It never creates a delivery reservation.
+
+The Worker status client validates exact metadata response shapes and bounded
+time/body size, signs a distinct path domain and rechecks authority after signing.
+Both clients snapshot validated configuration before asynchronous work; mutation
+of the original object cannot redirect a signed request. A Worker semantic digest
+matches the Node ingress with a fixed cross-runtime test vector.
+
+Unknown finished admissions can age out of the relay ledger. The producer MUST
+persist the original attempt timestamp/expiry and never extend or replace an
+unknown attempt. Current outbox lease renewal/retry code has not yet been connected
+to this contract. An independent immutable attempt ledger and receipt reconciliation
+are required before activation. Non-2xx transport outcomes and bounded Retry-After
+also need explicit typed integration; a generic exception remains unknown.
+
+Current local checks: typecheck, 11 Worker helper tests and 39 Node tests passed.
+These do not certify hosted delivery, outbox integration, challenge recovery or
+production activation.

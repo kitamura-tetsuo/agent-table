@@ -365,3 +365,258 @@ test("per-caller quota does not masquerade as a global quota", () => {
     f.cleanup();
   }
 });
+
+test("durable status readback binds caller, request and semantic commitment without response bytes", () => {
+  const f = fixture();
+  let store;
+  let now = 100000;
+  const op = { ...request(), operationDigest: "a".repeat(64) };
+  try {
+    store = openRelayAdmissionStore(f.path, { ...identity, clock: () => now });
+    assert.deepEqual(store.readOutcome(op), { ok: true, state: "unknown" });
+    const lease = store.acquire(op);
+    assert.equal(lease.ok, true);
+    assert.deepEqual(store.readOutcome(op), { ok: true, state: "pending" });
+    assert.deepEqual(
+      store.readOutcome({ ...op, operationDigest: "b".repeat(64) }),
+      { ok: false, reason: "conflict" },
+    );
+    assert.deepEqual(
+      store.readOutcome({ ...op, callerId: "synthetic-caller-2" }),
+      { ok: true, state: "unknown" },
+    );
+    assert.deepEqual(
+      store.finish(lease.leaseId, {
+        kind: "http",
+        status: 204,
+        payload: "PRIVATE_RESPONSE_SENTINEL",
+      }),
+      { ok: false, reason: "invalid" },
+    );
+    assert.deepEqual(
+      store.finish(lease.leaseId, { kind: "http", status: 204 }),
+      { ok: true },
+    );
+    assert.deepEqual(
+      store.finish(lease.leaseId, { kind: "http", status: 204 }),
+      { ok: true },
+    );
+    assert.deepEqual(
+      store.finish(lease.leaseId, { kind: "http", status: 503 }),
+      { ok: false, reason: "conflict" },
+    );
+    store.close();
+    now++;
+    store = openRelayAdmissionStore(f.path, { ...identity, clock: () => now });
+    assert.deepEqual(store.readOutcome(op), {
+      ok: true,
+      state: "completed",
+      outcome: { kind: "http", status: 204 },
+    });
+    assert.deepEqual(store.acquire(op), { ok: false, reason: "duplicate" });
+    const bytes = readFileSync(f.path).toString("utf8");
+    assert.ok(!bytes.includes("PRIVATE_RESPONSE_SENTINEL"));
+    assert.ok(!bytes.includes(op.callerId));
+    assert.ok(!bytes.includes(op.requestId));
+  } finally {
+    store?.close();
+    f.cleanup();
+  }
+});
+
+test("unknown and no-send are distinct, expired unfinished lease stays reserved", () => {
+  const f = fixture();
+  let now = 100000;
+  let store;
+  const op = { ...request(), operationDigest: "a".repeat(64) };
+  try {
+    store = openRelayAdmissionStore(f.path, {
+      ...identity,
+      clock: () => now,
+      concurrency: 1,
+    });
+    const lease = store.acquire(op);
+    now += 20000;
+    assert.deepEqual(store.readOutcome(op), { ok: true, state: "unknown" });
+    assert.deepEqual(
+      store.acquire({
+        ...op,
+        requestId: "synthetic-other-1",
+        expiresAt: now + 60000,
+      }),
+      { ok: false, reason: "capacity" },
+    );
+    assert.deepEqual(store.finish(lease.leaseId), { ok: true });
+    assert.deepEqual(store.readOutcome(op), { ok: true, state: "unknown" });
+    assert.deepEqual(store.finish(lease.leaseId, { kind: "not-sent" }), {
+      ok: false,
+      reason: "conflict",
+    });
+    const second = {
+      ...op,
+      requestId: "synthetic-other-1",
+      expiresAt: now + 60000,
+    };
+    const next = store.acquire(second);
+    assert.deepEqual(store.finish(next.leaseId, { kind: "not-sent" }), {
+      ok: true,
+    });
+    assert.deepEqual(store.readOutcome(second), {
+      ok: true,
+      state: "completed",
+      outcome: { kind: "not-sent" },
+    });
+    now += 120000;
+    store.acquire({
+      ...op,
+      requestId: "synthetic-cleanup-1",
+      expiresAt: now + 60000,
+    });
+    assert.deepEqual(store.readOutcome(second), { ok: true, state: "unknown" });
+  } finally {
+    store?.close();
+    f.cleanup();
+  }
+});
+
+test("v1 migration preserves active/finished records as unknown rather than inferring delivery", () => {
+  const f = fixture();
+  let store;
+  let db;
+  try {
+    store = openRelayAdmissionStore(f.path, {
+      ...identity,
+      clock: () => 100000,
+    });
+    const old = store.acquire(request());
+    store.finish(old.leaseId);
+    store.acquire(request("synthetic-legacy-active"));
+    store.close();
+    db = new DatabaseSync(f.path);
+    db.exec(
+      "ALTER TABLE relay_admissions DROP COLUMN operation_digest; ALTER TABLE relay_admissions DROP COLUMN outcome_kind; ALTER TABLE relay_admissions DROP COLUMN http_status; PRAGMA user_version=1",
+    );
+    db.close();
+    db = undefined;
+    store = openRelayAdmissionStore(f.path, {
+      ...identity,
+      clock: () => 100001,
+    });
+    for (const requestId of [
+      "synthetic-request-1",
+      "synthetic-legacy-active",
+    ]) {
+      assert.deepEqual(
+        store.readOutcome({
+          ...request(requestId),
+          operationDigest: "a".repeat(64),
+        }),
+        { ok: true, state: "unknown" },
+      );
+      assert.deepEqual(store.acquire(request(requestId)), {
+        ok: false,
+        reason: "duplicate",
+      });
+    }
+    db = new DatabaseSync(f.path);
+    assert.equal(db.prepare("PRAGMA user_version").get().user_version, 2);
+    assert.equal(
+      db.prepare("SELECT COUNT(*) n FROM relay_admissions").get().n,
+      2,
+    );
+  } finally {
+    db?.close();
+    store?.close();
+    f.cleanup();
+  }
+});
+
+test("status completion and readback share durable authority between independent processes", async () => {
+  const f = fixture();
+  let store;
+  const op = { ...request(), operationDigest: "c".repeat(64) };
+  try {
+    store = openRelayAdmissionStore(f.path, {
+      ...identity,
+      clock: () => 100000,
+    });
+    const lease = store.acquire(op);
+    const module = new URL("./relay-admission-store.mjs", import.meta.url).href;
+    const code = `import {openRelayAdmissionStore} from ${JSON.stringify(module)};const s=openRelayAdmissionStore(${JSON.stringify(f.path)},${JSON.stringify(identity)});`;
+    // Explicit same clock for independent process; no shared JS in-memory object.
+    const processCode =
+      code.replace(
+        `${JSON.stringify(identity)})`,
+        `${JSON.stringify(identity).slice(0, -1)},clock:()=>100000})`,
+      ) +
+      `console.log(JSON.stringify(s.finish(${lease.leaseId},{kind:'http',status:503})));s.close();`;
+    const result = await promisify(execFile)(process.execPath, [
+      "--input-type=module",
+      "-e",
+      processCode,
+    ]);
+    assert.equal(JSON.parse(result.stdout).ok, true);
+    assert.deepEqual(store.readOutcome(op), {
+      ok: true,
+      state: "completed",
+      outcome: { kind: "http", status: 503 },
+    });
+    assert.deepEqual(
+      store.finish(lease.leaseId, { kind: "http", status: 200 }),
+      { ok: false, reason: "conflict" },
+    );
+  } finally {
+    store?.close();
+    f.cleanup();
+  }
+});
+
+test("readback fails closed for invalid input, busy locks and backwards clock", () => {
+  const f = fixture();
+  let store;
+  let db;
+  let now = 100000;
+  const op = { ...request(), operationDigest: "a".repeat(64) };
+  try {
+    store = openRelayAdmissionStore(f.path, {
+      ...identity,
+      clock: () => now,
+      busyTimeoutMs: 0,
+    });
+    const lease = store.acquire(op);
+    store.finish(lease.leaseId, { kind: "http", status: 204 });
+    for (const bad of [
+      { ...op, operationDigest: undefined },
+      { ...op, operationDigest: "bad" },
+      { ...op, callerId: "bad" },
+    ])
+      assert.deepEqual(store.readOutcome(bad), {
+        ok: false,
+        reason: "invalid",
+      });
+    db = new DatabaseSync(f.path);
+    db.exec("BEGIN IMMEDIATE");
+    assert.deepEqual(store.readOutcome(op), {
+      ok: false,
+      reason: "unavailable",
+    });
+    db.exec("ROLLBACK");
+    db.close();
+    db = undefined;
+    now--;
+    assert.deepEqual(store.readOutcome(op), {
+      ok: false,
+      reason: "unavailable",
+    });
+    now++;
+    assert.deepEqual(store.readOutcome(op), {
+      ok: true,
+      state: "completed",
+      outcome: { kind: "http", status: 204 },
+    });
+  } finally {
+    db?.close();
+    store?.close();
+    f.cleanup();
+  }
+});
