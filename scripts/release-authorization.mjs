@@ -7,6 +7,11 @@ import {
   PRIVATE_PILOT_PROFILE,
   privatePilotConfiguration,
 } from "../src/shared/private-pilot.ts";
+import {
+  TEST_NATIVE_EVENTS_PROFILE,
+  TEST_NATIVE_EVENTS_RISK,
+  testNativeEventsAllowed,
+} from "../src/shared/test-native-events.ts";
 import { verifyRecoveryContinuity } from "./recovery-configuration.mjs";
 import {
   githubRecoveryClient,
@@ -311,11 +316,13 @@ export async function authorizeRelease({
   );
   requireDecision(
     profile === "manual" ||
-      (profile === PRIVATE_PILOT_PROFILE && environment === "staging"),
+      ([PRIVATE_PILOT_PROFILE, TEST_NATIVE_EVENTS_PROFILE].includes(profile) &&
+        environment === "staging"),
     "profile-real-host-evidence-not-verified",
   );
   requireDecision(
-    profile !== PRIVATE_PILOT_PROFILE || !bootstrapStaging,
+    ![PRIVATE_PILOT_PROFILE, TEST_NATIVE_EVENTS_PROFILE].includes(profile) ||
+      !bootstrapStaging,
     "private-pilot-cannot-bootstrap",
   );
   requireDecision(
@@ -340,11 +347,12 @@ export async function authorizeRelease({
     "cloudflare-account-mismatch",
   );
   requireDecision(
-    config.vars.RESTORE_QUARANTINE === "false" &&
-      config.vars.ENABLE_MCP_SUBSCRIPTIONS === "false" &&
-      config.vars.ENABLE_OPENAI_EVENTS === "false" &&
-      (profile === PRIVATE_PILOT_PROFILE ||
-        config.vars.ALLOW_OUTBOUND_NOTIFICATIONS === "false"),
+    testNativeEventsAllowed(config.vars) ||
+      (config.vars.RESTORE_QUARANTINE === "false" &&
+        config.vars.ENABLE_MCP_SUBSCRIPTIONS === "false" &&
+        config.vars.ENABLE_OPENAI_EVENTS === "false" &&
+        (profile === PRIVATE_PILOT_PROFILE ||
+          config.vars.ALLOW_OUTBOUND_NOTIFICATIONS === "false")),
     "unsupported-capability-or-quarantine-clearance",
   );
   if (config.vars.ALLOW_NEW_GUESTS === "true") {
@@ -364,6 +372,10 @@ export async function authorizeRelease({
     now,
     bootstrapStaging,
   });
+  const testNativeEvents =
+    profile === TEST_NATIVE_EVENTS_PROFILE
+      ? verifyTestNativeEventsDecision(operations, config.vars)
+      : undefined;
   const privatePilot =
     profile === PRIVATE_PILOT_PROFILE
       ? verifyPrivatePilotDecision(operations, config.vars, now)
@@ -424,6 +436,7 @@ export async function authorizeRelease({
   return {
     ...offline,
     ...(privatePilot ? { privatePilot } : {}),
+    ...(testNativeEvents ? { testNativeEvents } : {}),
     bootstrapStaging,
     deploymentApproved: true,
     approvalSource: "protected-environment-and-live-provider-readback",
@@ -577,4 +590,21 @@ if (
   import.meta.url === pathToFileURL(process.argv[1]).href
 ) {
   await main();
+}
+
+/** Independent owner review stays mandatory; no DNS safety claim is minted. */
+export function verifyTestNativeEventsDecision(record, vars) {
+  const targetsSha256 = createHash("sha256")
+    .update(vars.EVENTS_REVIEWED_CALLBACK_TARGETS ?? "")
+    .digest("hex");
+  requireDecision(
+    testNativeEventsAllowed(vars) &&
+      record?.testNativeEvents?.risk === TEST_NATIVE_EVENTS_RISK &&
+      record.testNativeEvents.targetsSha256 === targetsSha256 &&
+      record.testNativeEvents.allAuthorizedTablesReviewed === true &&
+      record.testNativeEvents.callbackDataDisclosureReviewed === true &&
+      record.testNativeEvents.monitoringAndStopPlanReviewed === true,
+    "test-native-events-risk-not-approved",
+  );
+  return { risk: TEST_NATIVE_EVENTS_RISK, targetsSha256 };
 }

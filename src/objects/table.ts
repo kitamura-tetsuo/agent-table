@@ -114,6 +114,7 @@ import {
   type TableState,
 } from "../shared/table";
 import { emitOperationalEvent, recordFutureMetric } from "../shared/telemetry";
+import { testNativeEventsAllowed } from "../shared/test-native-events";
 import {
   MAX_POSTS_PER_MINUTE,
   POST_WINDOW_MS,
@@ -951,14 +952,16 @@ export class TableDO extends DurableObject<Env> {
         : row.status === "expired" || (row.expires_at ?? 0) <= Date.now()
           ? "expired"
           : "active";
-    const available = privatePilotRecipientAllowed(
-      this.env,
-      {
-        guestId: member.guest_id,
-        connectionId,
-      },
-      member.table_id,
-    );
+    const available =
+      testNativeEventsAllowed(this.env) ||
+      privatePilotRecipientAllowed(
+        this.env,
+        {
+          guestId: member.guest_id,
+          connectionId,
+        },
+        member.table_id,
+      );
     // A second connection belonging to the same guest must not observe this
     // subscription's queue or outcome. Never query callback/secret columns.
     if (!owned || !row?.subscription_id || status !== "active") {
@@ -1006,7 +1009,9 @@ export class TableDO extends DurableObject<Env> {
     return {
       available,
       reason: available
-        ? ("private_pilot_only" as const)
+        ? testNativeEventsAllowed(this.env)
+          ? ("test_native_risk_accepted" as const)
+          : ("private_pilot_only" as const)
         : ("delivery_not_ready" as const),
       status,
       pendingCount: counts.pending_count,
@@ -1611,6 +1616,7 @@ export class TableDO extends DurableObject<Env> {
     if (
       !allowOutboundNotifications(this.env) ||
       (!callbackTransportReadiness().enabled &&
+        !testNativeEventsAllowed(this.env) &&
         !privatePilotRecipientAllowed(
           this.env,
           actor,
@@ -3205,7 +3211,8 @@ export class TableDO extends DurableObject<Env> {
     return (
       this.env.ENABLE_OPENAI_EVENTS === "true" &&
       allowOutboundNotifications(this.env) &&
-      callbackTransportReadiness().enabled
+      (callbackTransportReadiness().enabled ||
+        testNativeEventsAllowed(this.env))
     );
   }
 

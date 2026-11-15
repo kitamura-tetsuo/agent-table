@@ -6,6 +6,11 @@ import {
   privatePilotConfiguration,
 } from "../src/shared/private-pilot.ts";
 import {
+  TEST_NATIVE_EVENTS_PROFILE,
+  TEST_NATIVE_EVENTS_RISK,
+  testNativeEventsAllowed,
+} from "../src/shared/test-native-events.ts";
+import {
   cloudflareReader,
   ProviderVerificationError,
   readCloudflareDeployment,
@@ -54,9 +59,21 @@ export async function verifyPublishedRelease({
       ? privatePilotConfiguration(config.vars)
       : null;
   requirePost(
-    profile === "manual" || privatePolicy,
+    profile === "manual" ||
+      privatePolicy ||
+      testNativeEventsAllowed(config.vars),
     "post-deploy-profile-unverified",
   );
+  if (profile === TEST_NATIVE_EVENTS_PROFILE) {
+    requirePost(
+      approval.testNativeEvents?.risk === TEST_NATIVE_EVENTS_RISK &&
+        approval.testNativeEvents.targetsSha256 ===
+          createHash("sha256")
+            .update(config.vars.EVENTS_REVIEWED_CALLBACK_TARGETS)
+            .digest("hex"),
+      "post-deploy-test-native-events-approval-mismatch",
+    );
+  }
   if (privatePolicy) {
     requirePost(
       approval.privatePilot?.mode === privatePolicy.mode &&

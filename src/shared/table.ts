@@ -22,7 +22,10 @@ export type SafeTableMetadata = {
   /** Only present on the authenticated get_table MCP read. */
   notifications?: {
     available: boolean;
-    reason: "delivery_not_ready" | "private_pilot_only";
+    reason:
+      | "delivery_not_ready"
+      | "private_pilot_only"
+      | "test_native_risk_accepted";
     status: "active" | "expired" | "disabled";
     /** Number of this connection's pending or leased deliveries, not host runs. */
     pendingCount: number;
