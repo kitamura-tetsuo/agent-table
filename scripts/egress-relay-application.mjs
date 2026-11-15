@@ -5,9 +5,13 @@
  * enable it, after checking persisted uncertain leases and environment identity.
  */
 
+import { createResultOnlyChallengeVerifier } from "./egress-relay-challenge.mjs";
 import { createRelayHttpsServer } from "./egress-relay-http.mjs";
 import { createRelayIngress } from "./egress-relay-ingress-prototype.mjs";
-import { sendPinnedPrototype } from "./egress-relay-prototype.mjs";
+import {
+  sendPinnedPrototype,
+  sendPinnedStatusOnlyPrototype,
+} from "./egress-relay-prototype.mjs";
 import { openRelayAdmissionStore } from "./relay-admission-store.mjs";
 
 export function createRelayApplication({
@@ -18,9 +22,13 @@ export function createRelayApplication({
   key,
   cert,
   admission = {},
+  messageDelivery = false,
+  challengeVerification = false,
 }) {
   // Binding identity may not be overridden inside general quota configuration.
   if (
+    typeof messageDelivery !== "boolean" ||
+    typeof challengeVerification !== "boolean" ||
     Object.hasOwn(admission, "environment") ||
     Object.hasOwn(admission, "serviceId")
   )
@@ -40,6 +48,10 @@ export function createRelayApplication({
       enabled: () => enabled && !closing,
       readEnabled: () => !closing,
       send: sendPinnedPrototype,
+      ...(challengeVerification ? {verifyChallenge:createResultOnlyChallengeVerifier()} : {}),
+      ...(messageDelivery
+        ? { sendMessage: sendPinnedStatusOnlyPrototype }
+        : {}),
     });
     const listener = createRelayHttpsServer({ key, cert, handler });
     return {

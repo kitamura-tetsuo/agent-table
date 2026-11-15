@@ -45,7 +45,7 @@ describe("status-only Worker relay readback", () => {
         "version",
       ]);
       const prefix = new TextEncoder().encode(
-        "POST\n/relay/v1/status\n" + config.callerId + "\n",
+        `POST\n/relay/v1/status\n${config.callerId}\n`,
       );
       const signed = new Uint8Array(prefix.length + raw.length);
       signed.set(prefix);
@@ -63,7 +63,9 @@ describe("status-only Worker relay readback", () => {
         await crypto.subtle.verify(
           "Ed25519",
           key,
-          from64(new Headers(init?.headers).get("x-agent-table-signature")!),
+          from64(
+            new Headers(init?.headers).get("x-agent-table-signature") ?? "",
+          ),
           signed,
         ),
       ).toBe(true);
@@ -89,7 +91,10 @@ describe("status-only Worker relay readback", () => {
     ).toBe(false);
     expect(denied).not.toHaveBeenCalled();
     for (const value of [
-      { state: "completed", outcome: { kind: "http", status: 204 } },
+      {
+        state: "completed",
+        outcome: { kind: "http", status: 204, retryAfterState: "unknown" },
+      },
       { state: "completed", outcome: { kind: "not-sent" } },
       { state: "pending" },
     ]) {

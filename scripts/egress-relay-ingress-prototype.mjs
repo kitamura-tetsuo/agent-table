@@ -5,6 +5,7 @@
  */
 import { createHash, createPublicKey, verify } from "node:crypto";
 import { validateReviewedCallbackDestination } from "../src/notifications/egress.ts";
+import { parseRelayHttpOutcome, parseRelayChallengeOutcome } from "../src/notifications/relay-outcome.ts";
 import { checkedHeaders } from "./egress-relay-prototype.mjs";
 
 const WINDOW = 60000;
@@ -32,13 +33,20 @@ export const relayStatusSigningBytes = (bytes, callerId) =>
     Buffer.from(`POST\n/relay/v1/status\n${callerId}\n`),
     Buffer.from(bytes),
   ]);
+export const relayMessageSigningBytes = (bytes, callerId) =>
+  Buffer.concat([
+    Buffer.from(`POST\n/relay/v1/message\n${callerId}\n`),
+    Buffer.from(bytes),
+  ]);
+export const relayChallengeSigningBytes = (bytes, callerId) =>
+  Buffer.concat([Buffer.from(`POST\n/relay/v1/challenge\n${callerId}\n`), Buffer.from(bytes)]);
 /** Call only on a fully validated semantic envelope; no payload is stored. */
-export function relayOperationDigest(envelope, callerId) {
+export function relayOperationDigest(envelope, callerId, kind = "forward") {
   return createHash("sha256")
     .update(
       JSON.stringify({
         version: 1,
-        kind: "forward",
+        kind,
         audience: envelope.audience,
         callerId,
         requestId: envelope.requestId,
@@ -79,6 +87,8 @@ export function createRelayIngress({
   enabled = () => true,
   readEnabled = () => true,
   send,
+  sendMessage,
+  verifyChallenge,
   clock = Date.now,
   perMinute = 10,
   readPerMinute = 30,
@@ -98,6 +108,8 @@ export function createRelayIngress({
         typeof admissionStore.finish !== "function")) ||
     typeof enabled !== "function" ||
     typeof readEnabled !== "function" ||
+    (sendMessage !== undefined && typeof sendMessage !== "function") ||
+    (verifyChallenge !== undefined && typeof verifyChallenge !== "function") ||
     typeof send !== "function"
   )
     throw new Error("invalid-configuration");
@@ -147,8 +159,16 @@ export function createRelayIngress({
   const result = (status, code) => ({ status, body: { code } });
   return async ({ method, path, callerId, signature, bytes }) => {
     const reading = path === "/relay/v1/status";
-    if (method !== "POST" || !["/relay/v1", "/relay/v1/status"].includes(path))
+    const challenging = path === "/relay/v1/challenge";
+    const messaging = path === "/relay/v1/message";
+    if (
+      method !== "POST" ||
+      !["/relay/v1", "/relay/v1/status", "/relay/v1/message", "/relay/v1/challenge"].includes(path)
+    )
       return result(404, "unavailable");
+    if (challenging && (typeof verifyChallenge !== "function" || !admissionStore)) return result(503,"unavailable");
+    if (messaging && typeof sendMessage !== "function")
+      return result(503, "unavailable");
     if ((reading ? readEnabled() : enabled()) !== true)
       return result(503, "unavailable");
     if (
@@ -175,7 +195,11 @@ export function createRelayIngress({
     if (
       !verify(
         null,
-        (reading ? relayStatusSigningBytes : relaySigningBytes)(raw, callerId),
+        (reading
+          ? relayStatusSigningBytes
+          : messaging
+            ? relayMessageSigningBytes
+            : challenging ? relayChallengeSigningBytes : relaySigningBytes)(raw, callerId),
         identity.key,
         Buffer.from(signature, "base64"),
       )
@@ -274,20 +298,11 @@ export function createRelayIngress({
             status: 200,
             body: { state: "completed", outcome: { kind: "not-sent" } },
           };
-        if (
-          outcome.state === "completed" &&
-          outcome.outcome?.kind === "http" &&
-          Number.isInteger(outcome.outcome.status) &&
-          outcome.outcome.status >= 100 &&
-          outcome.outcome.status <= 599
-        )
-          return {
-            status: 200,
-            body: {
-              state: "completed",
-              outcome: { kind: "http", status: outcome.outcome.status },
-            },
-          };
+        const challenge = parseRelayChallengeOutcome(outcome.outcome);
+        if (outcome.state === "completed" && challenge) return {status:200,body:{state:"completed",outcome:challenge}};
+        const http = parseRelayHttpOutcome(outcome.outcome);
+        if (outcome.state === "completed" && http)
+          return { status: 200, body: { state: "completed", outcome: http } };
         return result(503, "unavailable");
       } catch {
         return result(503, "unavailable");
@@ -297,6 +312,7 @@ export function createRelayIngress({
     }
     if (
       !exact(envelope, [
+        ...(messaging || challenging ? ["kind"] : []),
         "version",
         "audience",
         "requestId",
@@ -310,6 +326,8 @@ export function createRelayIngress({
       !ID.test(envelope.requestId) ||
       !Number.isSafeInteger(envelope.timestamp) ||
       Math.abs(now - envelope.timestamp) > MAX_SKEW ||
+      (messaging && envelope.kind !== "message") ||
+      (challenging && envelope.kind !== "challenge") ||
       !canonicalBase64(envelope.payload) ||
       !exact(envelope.headers, Object.keys(envelope.headers ?? {})) ||
       !validateReviewedCallbackDestination(
@@ -352,7 +370,11 @@ export function createRelayIngress({
                 callerId,
                 requestId: envelope.requestId,
                 expiresAt: envelope.timestamp + MAX_SKEW,
-                operationDigest: relayOperationDigest(envelope, callerId),
+                operationDigest: relayOperationDigest(
+                  envelope,
+                  callerId,
+                  messaging ? "message" : challenging ? "challenge" : "forward",
+                ),
               })
             : replayStore.reserve(
                 `${callerId}:${envelope.requestId}`,
@@ -394,7 +416,10 @@ export function createRelayIngress({
         !current ||
         !verify(
           null,
-          relaySigningBytes(raw, callerId),
+          (messaging ? relayMessageSigningBytes : challenging ? relayChallengeSigningBytes : relaySigningBytes)(
+            raw,
+            callerId,
+          ),
           current.key,
           Buffer.from(signature, "base64"),
         ) ||
@@ -404,6 +429,33 @@ export function createRelayIngress({
         ).ok
       )
         return result(401, "unauthorized");
+      if (challenging) {
+        const verified = await verifyChallenge(envelope, callerId, current.targets);
+        const expectedDigest = relayOperationDigest(envelope, callerId, "challenge");
+        if (!exact(verified,["kind","verification","operationDigest"]) || verified.operationDigest !== expectedDigest) return result(502,"delivery-failed");
+        const outcome = parseRelayChallengeOutcome({kind:verified.kind,verification:verified.verification});
+        if (!outcome) return result(502,"delivery-failed");
+        completion = outcome;
+        // Return authoritative success only after atomic durable receipt commit.
+        const committingLease = leaseId;
+        leaseId = undefined; // Never retry an unknown store operation implicitly.
+        const saved = await admissionStore.finish(committingLease, completion);
+        if (saved?.ok !== true) return result(503,"unavailable");
+        return {status:200,body:{state:"completed",outcome}};
+      }
+      if (messaging) {
+        const delivered = await sendMessage(
+          envelope.destination,
+          current.targets,
+          payload,
+          headers,
+        );
+        const http = parseRelayHttpOutcome(delivered);
+        if (!http || http.retryAfterState === "unknown")
+          return result(502, "delivery-failed");
+        completion = http;
+        return { status: 200, body: { state: "completed", outcome: http } };
+      }
       const delivered = await send(
         envelope.destination,
         current.targets,

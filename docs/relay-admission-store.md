@@ -56,8 +56,10 @@ The caller must not start outbound I/O before `acquire` succeeds. It owns the
 returned lease ID and must call `finish` only after the corresponding transport
 is known complete or confirmed stopped. Do not release a lease merely because
 an HTTP client disconnected, an application promise timed out, or a process
-heartbeat disappeared. An unknown network outcome must not be retried under a
-new request identity.
+heartbeat disappeared. An unknown network outcome must not be reissued as the same logical attempt
+under a fresh request identity. Separately authorized next-ordinal retry under
+#21 retains the original event ID, unknown-attempt evidence, 8-attempt budget
+and one-hour horizon; its distinct logical-attempt identity is not a reset.
 
 Expired but unfinished leases remain active and count against global concurrency,
 including after process restart or clock advancement. `listUncertainLeases`
@@ -210,3 +212,13 @@ versus read-disable, domain/audience/digest/freshness failures, read rates witho
 send reservations, canonical commitments, and actual localhost HTTPS path/body
 limits. Temporary test certificates and published RFC8032 fixture keys are not
 live credentials. There is no external network transfer or deployment.
+
+## Retry contract clarification
+
+The #21 contract permits at-least-once delivery: accepted response loss may
+lead to a separately authorized next-ordinal attempt for the same event ID.
+Unknown evidence remains retained, with original attempt ID, budget (8) and
+one-hour horizon. The replay prohibition applies to replacing the ID of the
+**same logical attempt**, not to that explicitly budgeted subsequent attempt.
+Status readback does not itself authorize a retry. Shared active-capacity and
+uncertain-process safety limits continue to apply independently.

@@ -7,9 +7,10 @@ import { createHash } from "node:crypto";
 import { existsSync, lstatSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { parseRelayHttpOutcome, parseRelayChallengeOutcome } from "../src/notifications/relay-outcome.ts";
 
 const APPLICATION_ID = 0x4154524c;
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 4;
 const COMMITMENT = /^[a-f0-9]{64}$/;
 const WINDOW_MS = 60000;
 const IDENTIFIER = /^[A-Za-z0-9_-]{16,128}$/;
@@ -114,6 +115,10 @@ export function openRelayAdmissionStore(path, options = {}) {
             operation_digest TEXT,
             outcome_kind TEXT CHECK(outcome_kind IN ('http', 'not-sent', 'unknown')),
             http_status INTEGER CHECK(http_status BETWEEN 100 AND 599),
+            retry_after_state TEXT NOT NULL DEFAULT 'unknown' CHECK(retry_after_state IN ('unknown','absent','known')),
+            retry_after_seconds INTEGER CHECK(retry_after_seconds BETWEEN 0 AND 900),
+            retry_after_observed_ms INTEGER,
+
             UNIQUE(caller_hash, request_hash)
           ) STRICT;
           CREATE INDEX relay_admissions_time ON relay_admissions(admitted_ms);
@@ -126,7 +131,7 @@ export function openRelayAdmissionStore(path, options = {}) {
         );
       } else if (
         application !== APPLICATION_ID ||
-        ![1, SCHEMA_VERSION].includes(version)
+        ![1, 2, 3, SCHEMA_VERSION].includes(version)
       ) {
         throw new Error("unsupported-admission-schema");
       }
@@ -147,9 +152,47 @@ export function openRelayAdmissionStore(path, options = {}) {
           PRAGMA user_version = ${SCHEMA_VERSION};
         `);
       }
+      if (version === 1 || version === 2) {
+        db.exec(`
+          ALTER TABLE relay_admissions ADD COLUMN retry_after_state TEXT NOT NULL DEFAULT 'unknown' CHECK(retry_after_state IN ('unknown','absent','known'));
+          ALTER TABLE relay_admissions ADD COLUMN retry_after_seconds INTEGER CHECK(retry_after_seconds BETWEEN 0 AND 900);
+          ALTER TABLE relay_admissions ADD COLUMN retry_after_observed_ms INTEGER;
+          PRAGMA user_version = ${SCHEMA_VERSION};
+        `);
+      }
+      // Atomic v4 rebuild preserves IDs, reservations and prior metadata. No
+      // challenge assertion is inferred for existing rows.
+      if (version < 4) {
+        db.exec(`
+          CREATE TABLE relay_admissions_v4 (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            caller_hash TEXT NOT NULL, request_hash TEXT NOT NULL,
+            admitted_ms INTEGER NOT NULL, replay_expires_ms INTEGER NOT NULL,
+            lease_expires_ms INTEGER NOT NULL,
+            state TEXT NOT NULL CHECK(state IN ('active','finished')),
+            operation_digest TEXT,
+            outcome_kind TEXT CHECK(outcome_kind IN ('http','not-sent','unknown','challenge')),
+            http_status INTEGER CHECK(http_status BETWEEN 100 AND 599),
+            retry_after_state TEXT NOT NULL DEFAULT 'unknown' CHECK(retry_after_state IN ('unknown','absent','known')),
+            retry_after_seconds INTEGER CHECK(retry_after_seconds BETWEEN 0 AND 900),
+            retry_after_observed_ms INTEGER,
+            challenge_verification TEXT CHECK(challenge_verification IN ('verified','failed')),
+            CHECK ((outcome_kind = 'challenge' AND challenge_verification IS NOT NULL AND http_status IS NULL AND retry_after_state='unknown' AND retry_after_seconds IS NULL AND retry_after_observed_ms IS NULL) OR (COALESCE(outcome_kind,'unknown') != 'challenge' AND challenge_verification IS NULL)),
+            UNIQUE(caller_hash,request_hash)
+          ) STRICT;
+          INSERT INTO relay_admissions_v4 (id,caller_hash,request_hash,admitted_ms,replay_expires_ms,lease_expires_ms,state,operation_digest,outcome_kind,http_status,retry_after_state,retry_after_seconds,retry_after_observed_ms)
+          SELECT id,caller_hash,request_hash,admitted_ms,replay_expires_ms,lease_expires_ms,state,operation_digest,outcome_kind,http_status,retry_after_state,retry_after_seconds,retry_after_observed_ms FROM relay_admissions;
+          UPDATE sqlite_sequence SET seq=MAX(seq,COALESCE((SELECT seq FROM sqlite_sequence WHERE name='relay_admissions'),0)) WHERE name='relay_admissions_v4';
+          DROP TABLE relay_admissions;
+          ALTER TABLE relay_admissions_v4 RENAME TO relay_admissions;
+          CREATE INDEX relay_admissions_time ON relay_admissions(admitted_ms);
+          CREATE INDEX relay_admissions_caller_time ON relay_admissions(caller_hash,admitted_ms);
+          PRAGMA user_version = 4;
+        `);
+      }
       // Validate schema shape even when an externally edited version matches.
       db.prepare(
-        "SELECT id,caller_hash,request_hash,admitted_ms,replay_expires_ms,lease_expires_ms,state,operation_digest,outcome_kind,http_status FROM relay_admissions LIMIT 0",
+        "SELECT id,caller_hash,request_hash,admitted_ms,replay_expires_ms,lease_expires_ms,state,operation_digest,outcome_kind,http_status,retry_after_state,retry_after_seconds,retry_after_observed_ms,challenge_verification FROM relay_admissions LIMIT 0",
       ).all();
     });
   } catch {
@@ -266,39 +309,57 @@ export function openRelayAdmissionStore(path, options = {}) {
      * Never release a recovered lease using a new generation's receipt.
      */
     finish(leaseId, outcome) {
+      const http =
+        outcome?.kind === "http" ? parseRelayHttpOutcome(outcome, true) : null;
+      const challenge = parseRelayChallengeOutcome(outcome);
+      const verification = challenge?.verification ?? null;
       const kind = outcome === undefined ? "unknown" : outcome?.kind;
-      const status = kind === "http" ? outcome.status : null;
+      const status = http?.status ?? null;
+      const delayState = http?.retryAfterState ?? "unknown";
+      const delaySeconds =
+        http?.retryAfterState === "known" ? http.retryAfterSeconds : null;
+      const observedAt =
+        http?.retryAfterState === "known" ? http.retryAfterObservedAt : null;
       if (
         outcome !== undefined &&
+        !http &&
+        !challenge &&
         (!outcome ||
           typeof outcome !== "object" ||
           Array.isArray(outcome) ||
-          !["http", "not-sent"].includes(kind) ||
-          Object.keys(outcome).sort().join(",") !==
-            (kind === "http" ? "kind,status" : "kind") ||
-          (kind === "http" && !integer(status, 100, 599)))
+          outcome.kind !== "not-sent" ||
+          Object.keys(outcome).join(",") !== "kind")
       )
         return { ok: false, reason: "invalid" };
       if (closed || !integer(leaseId, 1, Number.MAX_SAFE_INTEGER))
         return { ok: false, reason: "invalid" };
       try {
         return transaction(() => {
-          observeClock();
+          const now = observeClock();
           const row = db
             .prepare(
-              "SELECT state,outcome_kind,http_status FROM relay_admissions WHERE id = ?",
+              "SELECT state,outcome_kind,http_status,admitted_ms,challenge_verification,retry_after_state,retry_after_seconds,retry_after_observed_ms FROM relay_admissions WHERE id = ?",
             )
             .get(leaseId);
           if (!row) return { ok: false, reason: "unknown" };
+          if (
+            observedAt !== null &&
+            (observedAt < row.admitted_ms || observedAt > now)
+          )
+            return { ok: false, reason: "invalid" };
           if (row.state === "finished") {
             return (row.outcome_kind ?? "unknown") === kind &&
-              row.http_status === status
+              row.http_status === status &&
+              row.retry_after_state === delayState &&
+              row.retry_after_seconds === delaySeconds &&
+              row.retry_after_observed_ms === observedAt &&
+              row.challenge_verification === verification
               ? { ok: true }
               : { ok: false, reason: "conflict" };
           }
           db.prepare(
-            "UPDATE relay_admissions SET state = 'finished',outcome_kind = ?,http_status = ? WHERE id = ? AND state = 'active'",
-          ).run(kind, status, leaseId);
+            "UPDATE relay_admissions SET state = 'finished',outcome_kind = ?,http_status = ?,retry_after_state = ?,retry_after_seconds = ?,retry_after_observed_ms = ?,challenge_verification = ? WHERE id = ? AND state = 'active'",
+          ).run(kind, status, delayState, delaySeconds, observedAt, verification, leaseId);
           return { ok: true };
         });
       } catch {
@@ -326,7 +387,7 @@ export function openRelayAdmissionStore(path, options = {}) {
           const now = observeClock();
           const row = db
             .prepare(
-              "SELECT state,operation_digest,outcome_kind,http_status,lease_expires_ms FROM relay_admissions WHERE caller_hash = ? AND request_hash = ?",
+              "SELECT state,operation_digest,outcome_kind,http_status,lease_expires_ms,challenge_verification,retry_after_state,retry_after_seconds,retry_after_observed_ms FROM relay_admissions WHERE caller_hash = ? AND request_hash = ?",
             )
             .get(digest(callerId), digest(requestId));
           if (!row || row.operation_digest === null)
@@ -338,6 +399,11 @@ export function openRelayAdmissionStore(path, options = {}) {
               ok: true,
               state: row.lease_expires_ms > now ? "pending" : "unknown",
             };
+          if (row.outcome_kind === "challenge") {
+            const result = parseRelayChallengeOutcome({kind:"challenge", verification:row.challenge_verification});
+            if (!result) return {ok:true,state:"unknown"};
+            return {ok:true,state:"completed",outcome:result};
+          }
           if (row.outcome_kind === "not-sent")
             return {
               ok: true,
@@ -348,7 +414,17 @@ export function openRelayAdmissionStore(path, options = {}) {
             return {
               ok: true,
               state: "completed",
-              outcome: { kind: "http", status: row.http_status },
+              outcome: {
+                kind: "http",
+                status: row.http_status,
+                retryAfterState: row.retry_after_state,
+                ...(row.retry_after_state === "known"
+                  ? {
+                      retryAfterSeconds: row.retry_after_seconds,
+                      retryAfterObservedAt: row.retry_after_observed_ms,
+                    }
+                  : {}),
+              },
             };
           return { ok: true, state: "unknown" };
         });

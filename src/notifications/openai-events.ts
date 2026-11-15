@@ -1,5 +1,6 @@
 import { Webhook } from "standardwebhooks";
 import { parseOwnInboxUri } from "../shared/resources";
+import { acceptedChallenge } from "./challenge";
 import { type ReviewedCallbackTarget, sendVerifiedHttps } from "./egress";
 
 export const MESSAGE_EVENT_NAME = "table.message.created";
@@ -348,27 +349,6 @@ export function messageCreatedEvent(input: {
     },
     cursor: null,
   } as const;
-}
-
-function acceptedChallenge(body: Uint8Array, expected: string): boolean {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body));
-  } catch {
-    return false;
-  }
-  if (
-    !exactRecord(parsed, ["challenge"]) ||
-    typeof parsed.challenge !== "string"
-  )
-    return false;
-  const actual = new TextEncoder().encode(parsed.challenge);
-  const wanted = new TextEncoder().encode(expected);
-  let difference = actual.length ^ wanted.length;
-  for (let i = 0; i < Math.max(actual.length, wanted.length); i++) {
-    difference |= (actual[i] ?? 0) ^ (wanted[i] ?? 0);
-  }
-  return difference === 0;
 }
 
 /**

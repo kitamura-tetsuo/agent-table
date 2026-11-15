@@ -51,3 +51,13 @@ listeners, integer/date bounds, malformed metadata, DNS/network/deadline
 unknowns and delayed DNS creating no late HTTP request. Shared transport tests
 continue covering peer/TLS refusal and bounded old body behavior. Injected
 status tests are not hosted public-network or receiver acceptance evidence.
+
+## Retry contract clarification
+
+The #21 contract permits at-least-once delivery: accepted response loss may
+lead to a separately authorized next-ordinal attempt for the same event ID.
+Unknown evidence remains retained, with original attempt ID, budget (8) and
+one-hour horizon. The replay prohibition applies to replacing the ID of the
+**same logical attempt**, not to that explicitly budgeted subsequent attempt.
+Status readback does not itself authorize a retry. Shared active-capacity and
+uncertain-process safety limits continue to apply independently.

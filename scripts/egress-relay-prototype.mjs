@@ -191,9 +191,19 @@ function createSender(
             if (statusOnly) {
               // Final response headers are receiver HTTP evidence, not body or
               // host consumption. Never follow Location or retain response data.
+              const retryAfterObservedAt = clock();
+              if (
+                !Number.isSafeInteger(retryAfterObservedAt) ||
+                retryAfterObservedAt <= 0 ||
+                retryAfterObservedAt > Number.MAX_SAFE_INTEGER - 900000
+              ) {
+                response.destroy();
+                reject(new Error("transport-error"));
+                return;
+              }
               const retryAfterSeconds = boundedRetryAfterSeconds(
                 response.headers?.["retry-after"],
-                clock(),
+                retryAfterObservedAt,
               );
               response.destroy();
               if (!Number.isInteger(status) || status < 200 || status > 599) {
@@ -204,8 +214,12 @@ function createSender(
                 kind: "http",
                 status,
                 ...(retryAfterSeconds === undefined
-                  ? {}
-                  : { retryAfterSeconds }),
+                  ? { retryAfterState: "absent" }
+                  : {
+                      retryAfterState: "known",
+                      retryAfterSeconds,
+                      retryAfterObservedAt,
+                    }),
               });
               return;
             }

@@ -46,7 +46,9 @@ export function createRelayHttpsServer({ key, cert, handler }) {
       }
       if (
         request.method !== "POST" ||
-        !["/relay/v1", "/relay/v1/status"].includes(request.url)
+        !["/relay/v1", "/relay/v1/status", "/relay/v1/message", "/relay/v1/challenge"].includes(
+          request.url,
+        )
       ) {
         fixed(response, 404, "unavailable");
         return;

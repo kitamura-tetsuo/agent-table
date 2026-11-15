@@ -129,8 +129,11 @@ of the original object cannot redirect a signed request. A Worker semantic diges
 matches the Node ingress with a fixed cross-runtime test vector.
 
 Unknown finished admissions can age out of the relay ledger. The producer MUST
-persist the original attempt timestamp/expiry and never extend or replace an
-unknown attempt. Current outbox lease renewal/retry code has not yet been connected
+persist the original attempt timestamp/expiry and never extend or replace the identity of an
+unknown logical attempt. This does not forbid the existing #21 at-least-once
+policy from authorizing a new ordinal after recovery/backoff within the original
+eight-attempt/one-hour budget, with the same event ID and fresh authority. The
+old unknown evidence is retained; duplicate receiver acceptance remains possible. Current outbox lease renewal/retry code has not yet been connected
 to this contract. An independent immutable attempt ledger and receipt reconciliation
 are required before activation. Non-2xx transport outcomes and bounded Retry-After
 also need explicit typed integration; a generic exception remains unknown.
@@ -138,3 +141,16 @@ also need explicit typed integration; a generic exception remains unknown.
 Current local checks: typecheck, 11 Worker helper tests and 39 Node tests passed.
 These do not certify hosted delivery, outbox integration, challenge recovery or
 production activation.
+
+## Contract clarification: unknown versus a legitimate subsequent retry
+
+Issue #21 explicitly tests receiver acceptance followed by response loss and a
+later bounded retry with the same event ID. Therefore an earlier candidate's
+permanent unresolved-predecessor block is NOT the final integration contract.
+The controlling implementation must retain each original unknown attempt's
+identity/evidence, never disguise it as no-send, and separately authorize a new
+logical ordinal only under #21's recovery deadline, existing retry/backoff budget,
+current grant/generation/lifecycle and operator controls. Exactly-once receiver
+effects are not promised. The independent ledger integration is being adjusted
+to this authoritative contract; do not activate the earlier reject-all recovery
+candidate as a substitute for the required delivery behavior.

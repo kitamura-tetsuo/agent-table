@@ -411,7 +411,7 @@ test("durable status readback binds caller, request and semantic commitment with
     assert.deepEqual(store.readOutcome(op), {
       ok: true,
       state: "completed",
-      outcome: { kind: "http", status: 204 },
+      outcome: { kind: "http", status: 204, retryAfterState: "unknown" },
     });
     assert.deepEqual(store.acquire(op), { ok: false, reason: "duplicate" });
     const bytes = readFileSync(f.path).toString("utf8");
@@ -494,7 +494,7 @@ test("v1 migration preserves active/finished records as unknown rather than infe
     store.close();
     db = new DatabaseSync(f.path);
     db.exec(
-      "ALTER TABLE relay_admissions DROP COLUMN operation_digest; ALTER TABLE relay_admissions DROP COLUMN outcome_kind; ALTER TABLE relay_admissions DROP COLUMN http_status; PRAGMA user_version=1",
+      "CREATE TABLE old_admissions AS SELECT id,caller_hash,request_hash,admitted_ms,replay_expires_ms,lease_expires_ms,state FROM relay_admissions; DROP TABLE relay_admissions; ALTER TABLE old_admissions RENAME TO relay_admissions; PRAGMA user_version=1",
     );
     db.close();
     db = undefined;
@@ -519,7 +519,7 @@ test("v1 migration preserves active/finished records as unknown rather than infe
       });
     }
     db = new DatabaseSync(f.path);
-    assert.equal(db.prepare("PRAGMA user_version").get().user_version, 2);
+    assert.equal(db.prepare("PRAGMA user_version").get().user_version, 4);
     assert.equal(
       db.prepare("SELECT COUNT(*) n FROM relay_admissions").get().n,
       2,
@@ -559,7 +559,7 @@ test("status completion and readback share durable authority between independent
     assert.deepEqual(store.readOutcome(op), {
       ok: true,
       state: "completed",
-      outcome: { kind: "http", status: 503 },
+      outcome: { kind: "http", status: 503, retryAfterState: "unknown" },
     });
     assert.deepEqual(
       store.finish(lease.leaseId, { kind: "http", status: 200 }),
@@ -612,11 +612,204 @@ test("readback fails closed for invalid input, busy locks and backwards clock", 
     assert.deepEqual(store.readOutcome(op), {
       ok: true,
       state: "completed",
-      outcome: { kind: "http", status: 204 },
+      outcome: { kind: "http", status: 204, retryAfterState: "unknown" },
     });
   } finally {
     db?.close();
     store?.close();
     f.cleanup();
   }
+});
+
+test("schema3 preserves observed delay across reopen and refuses changed delay receipts", () => {
+  const f = fixture();
+  let now = 100000;
+  let store;
+  const op = { ...request(), operationDigest: "a".repeat(64) };
+  try {
+    const open = () =>
+      openRelayAdmissionStore(f.path, { ...identity, clock: () => now });
+    store = open();
+    const lease = store.acquire(op);
+    now = 101000;
+    const result = {
+      kind: "http",
+      status: 429,
+      retryAfterState: "known",
+      retryAfterSeconds: 120,
+      retryAfterObservedAt: now,
+    };
+    assert.deepEqual(
+      store.finish(lease.leaseId, { ...result, retryAfterSeconds: 901 }),
+      { ok: false, reason: "invalid" },
+    );
+    assert.deepEqual(
+      store.finish(lease.leaseId, { ...result, retryAfterObservedAt: 99999 }),
+      { ok: false, reason: "invalid" },
+    );
+    assert.deepEqual(
+      store.finish(lease.leaseId, { ...result, retryAfterObservedAt: now + 1 }),
+      { ok: false, reason: "invalid" },
+    );
+    assert.deepEqual(store.finish(lease.leaseId, result), { ok: true });
+    store.close();
+    now += 30000;
+    store = open();
+    assert.deepEqual(store.readOutcome(op), {
+      ok: true,
+      state: "completed",
+      outcome: result,
+    });
+    assert.deepEqual(
+      store.finish(lease.leaseId, { ...result, retryAfterSeconds: 119 }),
+      { ok: false, reason: "conflict" },
+    );
+    assert.deepEqual(
+      store.finish(lease.leaseId, {
+        kind: "http",
+        status: 429,
+        retryAfterState: "absent",
+      }),
+      { ok: false, reason: "conflict" },
+    );
+    assert.equal(
+      result.retryAfterObservedAt + result.retryAfterSeconds * 1000,
+      221000,
+    );
+  } finally {
+    store?.close();
+    f.cleanup();
+  }
+});
+
+test("schema2 HTTP migration keeps delay unknown rather than assuming absent", () => {
+  const f = fixture();
+  let store, db;
+  const op = { ...request(), operationDigest: "a".repeat(64) };
+  try {
+    store = openRelayAdmissionStore(f.path, {
+      ...identity,
+      clock: () => 100000,
+    });
+    const lease = store.acquire(op);
+    store.finish(lease.leaseId, { kind: "http", status: 503 });
+    store.close();
+    db = new DatabaseSync(f.path);
+    db.exec(
+      "CREATE TABLE old_admissions AS SELECT id,caller_hash,request_hash,admitted_ms,replay_expires_ms,lease_expires_ms,state,operation_digest,outcome_kind,http_status FROM relay_admissions; DROP TABLE relay_admissions; ALTER TABLE old_admissions RENAME TO relay_admissions; PRAGMA user_version=2",
+    );
+    db.close();
+    db = undefined;
+    store = openRelayAdmissionStore(f.path, {
+      ...identity,
+      clock: () => 100001,
+    });
+    assert.deepEqual(store.readOutcome(op), {
+      ok: true,
+      state: "completed",
+      outcome: { kind: "http", status: 503, retryAfterState: "unknown" },
+    });
+    assert.deepEqual(store.acquire(op), { ok: false, reason: "duplicate" });
+  } finally {
+    db?.close();
+    store?.close();
+    f.cleanup();
+  }
+});
+
+test("schema3 distinguishes observed absent delay from unknown and rejects malformed fields", () => {
+  const f = fixture();
+  let store;
+  const op = { ...request(), operationDigest: "a".repeat(64) };
+  try {
+    store = openRelayAdmissionStore(f.path, {
+      ...identity,
+      clock: () => 100000,
+    });
+    const lease = store.acquire(op);
+    for (const outcome of [
+      {
+        kind: "http",
+        status: 503,
+        retryAfterState: "absent",
+        retryAfterSeconds: 0,
+      },
+      {
+        kind: "http",
+        status: 503,
+        retryAfterState: "known",
+        retryAfterSeconds: 1.5,
+        retryAfterObservedAt: 100000,
+      },
+      {
+        kind: "http",
+        status: 503,
+        retryAfterState: "known",
+        retryAfterSeconds: 1,
+      },
+      {
+        kind: "http",
+        status: 503,
+        retryAfterState: "unknown",
+        retryAfterObservedAt: 100000,
+      },
+    ])
+      assert.deepEqual(store.finish(lease.leaseId, outcome), {
+        ok: false,
+        reason: "invalid",
+      });
+    const outcome = { kind: "http", status: 503, retryAfterState: "absent" };
+    assert.deepEqual(store.finish(lease.leaseId, outcome), { ok: true });
+    assert.deepEqual(store.readOutcome(op), {
+      ok: true,
+      state: "completed",
+      outcome,
+    });
+    assert.deepEqual(
+      store.finish(lease.leaseId, { kind: "http", status: 503 }),
+      { ok: false, reason: "conflict" },
+    );
+  } finally {
+    store?.close();
+    f.cleanup();
+  }
+});
+
+
+test("challenge receipt is immutable, exclusive, private and survives schema4 reopen", () => {
+ const f=fixture(); let store;
+ const operation={...request(),operationDigest:"d".repeat(64)};
+ const read={callerId:operation.callerId,requestId:operation.requestId,operationDigest:operation.operationDigest};
+ try {
+  store=openRelayAdmissionStore(f.path,{...identity,clock:()=>100000});
+  const lease=store.acquire(operation); assert.equal(lease.ok,true);
+  assert.equal(store.finish(lease.leaseId,{kind:"challenge",verification:"verified",status:200}).ok,false);
+  const outcome={kind:"challenge",verification:"verified"};
+  assert.deepEqual(store.finish(lease.leaseId,outcome),{ok:true});
+  assert.deepEqual(store.finish(lease.leaseId,outcome),{ok:true});
+  assert.equal(store.finish(lease.leaseId,{kind:"challenge",verification:"failed"}).reason,"conflict");
+  assert.equal(store.finish(lease.leaseId,{kind:"http",status:200,retryAfterState:"absent"}).reason,"conflict");
+  store.close();store=openRelayAdmissionStore(f.path,{...identity,clock:()=>100001});
+  assert.deepEqual(store.readOutcome(read),{ok:true,state:"completed",outcome});
+  assert.equal(store.readOutcome({...read,operationDigest:"e".repeat(64)}).reason,"conflict");
+  assert.equal(store.acquire(operation).reason,"duplicate");
+ } finally {store?.close();f.cleanup();}
+});
+
+test("schema3 upgrade preserves old HTTP, unknown leases and non-reused sequence", () => {
+ const f=fixture();let store;
+ try {
+  const options={...identity,clock:()=>100000};
+  store=openRelayAdmissionStore(f.path,options);
+  const a=store.acquire({...request(),operationDigest:"f".repeat(64)});
+  store.finish(a.leaseId,{kind:"http",status:429,retryAfterState:"known",retryAfterSeconds:9,retryAfterObservedAt:100000});
+  const b=store.acquire(request("synthetic-request-2"));store.close();store=null;
+  const db=new DatabaseSync(f.path);
+  db.exec("CREATE TABLE old_admissions AS SELECT id,caller_hash,request_hash,admitted_ms,replay_expires_ms,lease_expires_ms,state,operation_digest,outcome_kind,http_status,retry_after_state,retry_after_seconds,retry_after_observed_ms FROM relay_admissions; DROP TABLE relay_admissions; ALTER TABLE old_admissions RENAME TO relay_admissions; PRAGMA user_version=3");db.close();
+  store=openRelayAdmissionStore(f.path,options);
+  assert.equal(store.acquire(request()).reason,"duplicate");
+  assert.equal(store.acquire(request("synthetic-request-2")).reason,"duplicate");
+  assert.equal(store.readOutcome({...request(),operationDigest:"f".repeat(64)}).outcome.retryAfterSeconds,9);
+  const c=store.acquire(request("synthetic-request-3"));assert.equal(c.ok,true);assert.ok(c.leaseId>b.leaseId);
+ } finally {store?.close();f.cleanup();}
 });

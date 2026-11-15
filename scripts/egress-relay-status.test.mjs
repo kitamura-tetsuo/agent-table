@@ -112,7 +112,10 @@ test("authenticated status survives actual SQLite restart, pause allows reads on
     const request = signed(status(body), "/relay/v1/status");
     assert.deepEqual(await handler(request), {
       status: 200,
-      body: { state: "completed", outcome: { kind: "http", status: 204 } },
+      body: {
+        state: "completed",
+        outcome: { kind: "http", status: 204, retryAfterState: "unknown" },
+      },
     });
     assert.equal((await handler(signed(body))).status, 503);
     assert.deepEqual(
@@ -258,7 +261,7 @@ test("status read rate and async current caller fences do not reserve or send", 
   release({
     ok: true,
     state: "completed",
-    outcome: { kind: "http", status: 204 },
+    outcome: { kind: "http", status: 204, retryAfterState: "unknown" },
   });
   assert.equal((await pending).status, 401);
   assert.equal(reserves, 0);
@@ -409,4 +412,206 @@ test("actual localhost HTTPS status path preserves signature binding and 1KiB bo
     store?.close();
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("message-only domain preserves known 429 delay; challenge domain cannot invoke status sender", async () => {
+  const { relayMessageSigningBytes } = await import(
+    "./egress-relay-ingress-prototype.mjs"
+  );
+  const dir = mkdtempSync(join(tmpdir(), "relay-message-test-"));
+  let store;
+  let bodyCalls = 0,
+    messageCalls = 0;
+  try {
+    const path = join(dir, "store.sqlite");
+    const open = () =>
+      openRelayAdmissionStore(path, {
+        environment: "test",
+        serviceId: "synthetic-relay",
+      });
+    store = open();
+    const outcome = {
+      kind: "http",
+      status: 429,
+      retryAfterState: "known",
+      retryAfterSeconds: 120,
+      retryAfterObservedAt: 0,
+    };
+    const make = () =>
+      createRelayIngress({
+        callers: new Map([[callerId, policy()]]),
+        audience: "test:synthetic-relay",
+        admissionStore: store,
+        send: async () => {
+          bodyCalls++;
+          return { status: 204, body: new Uint8Array() };
+        },
+        sendMessage: async () => {
+          messageCalls++;
+          outcome.retryAfterObservedAt = Date.now();
+          return outcome;
+        },
+      });
+    const body = { ...envelope(), kind: "message" };
+    const bytes = Buffer.from(JSON.stringify(body));
+    const req = {
+      method: "POST",
+      path: "/relay/v1/message",
+      callerId,
+      bytes,
+      signature: sign(
+        null,
+        relayMessageSigningBytes(bytes, callerId),
+        privateKey,
+      ).toString("base64"),
+    };
+    let handler = make();
+    assert.equal(
+      (
+        await handler({
+          ...req,
+          signature: sign(
+            null,
+            relaySigningBytes(bytes, callerId),
+            privateKey,
+          ).toString("base64"),
+        })
+      ).status,
+      401,
+    );
+    assert.equal((await handler({ ...req, path: "/relay/v1" })).status, 401);
+    assert.deepEqual(await handler(req), {
+      status: 200,
+      body: { state: "completed", outcome },
+    });
+    assert.equal(messageCalls, 1);
+    assert.equal(bodyCalls, 0);
+    store.close();
+    store = open();
+    handler = make();
+    const read = signed(
+      status(body, {
+        operationDigest: relayOperationDigest(body, callerId, "message"),
+      }),
+      "/relay/v1/status",
+    );
+    assert.deepEqual(await handler(read), {
+      status: 200,
+      body: { state: "completed", outcome },
+    });
+    assert.equal((await handler(req)).status, 409);
+    assert.equal(messageCalls, 1);
+    assert.notEqual(
+      relayOperationDigest(body, callerId, "message"),
+      relayOperationDigest(body, callerId),
+    );
+  } finally {
+    store?.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("challenge-only authenticated result commits across restart without body or message-domain confusion", async () => {
+  const { relayChallengeSigningBytes } = await import(
+    "./egress-relay-ingress-prototype.mjs"
+  );
+  const { createResultOnlyChallengeVerifier } = await import("./egress-relay-challenge.mjs");
+  const challenge = "123e4567-e89b-42d3-a456-426614174000";
+  const dir = mkdtempSync(join(tmpdir(), "relay-challenge-test-"));
+  let store;
+  let bodyCalls = 0,
+    messageCalls = 0;
+  try {
+    const path = join(dir, "store.sqlite");
+    const open = () =>
+      openRelayAdmissionStore(path, {
+        environment: "test",
+        serviceId: "synthetic-relay",
+      });
+    store = open();
+    const outcome = {kind:"challenge",verification:"verified"};
+    const make = () =>
+      createRelayIngress({
+        callers: new Map([[callerId, policy()]]),
+        audience: "test:synthetic-relay",
+        admissionStore: store,
+        send: async () => {
+          bodyCalls++;
+          return { status: 204, body: new Uint8Array() };
+        },
+        verifyChallenge: createResultOnlyChallengeVerifier(async () => {
+          messageCalls++; return {status:200,body:Buffer.from(JSON.stringify({challenge}))};
+        }),
+      });
+    const body = { ...envelope(), kind: "challenge", payload:Buffer.from(JSON.stringify({type:"verification",challenge})).toString("base64") };
+    const bytes = Buffer.from(JSON.stringify(body));
+    const req = {
+      method: "POST",
+      path: "/relay/v1/challenge",
+      callerId,
+      bytes,
+      signature: sign(
+        null,
+        relayChallengeSigningBytes(bytes, callerId),
+        privateKey,
+      ).toString("base64"),
+    };
+    let handler = make();
+    assert.equal(
+      (
+        await handler({
+          ...req,
+          signature: sign(
+            null,
+            relaySigningBytes(bytes, callerId),
+            privateKey,
+          ).toString("base64"),
+        })
+      ).status,
+      401,
+    );
+    assert.equal((await handler({ ...req, path: "/relay/v1" })).status, 401);
+    assert.deepEqual(await handler(req), {
+      status: 200,
+      body: { state: "completed", outcome },
+    });
+    assert.equal(messageCalls, 1);
+    assert.equal(bodyCalls, 0);
+    store.close();
+    store = open();
+    handler = make();
+    const read = signed(
+      status(body, {
+        operationDigest: relayOperationDigest(body, callerId, "challenge"),
+      }),
+      "/relay/v1/status",
+    );
+    assert.deepEqual(await handler(read), {
+      status: 200,
+      body: { state: "completed", outcome },
+    });
+    assert.equal((await handler(req)).status, 409);
+    assert.equal(messageCalls, 1);
+    assert.notEqual(
+      relayOperationDigest(body, callerId, "challenge"),
+      relayOperationDigest(body, callerId),
+    );
+  } finally {
+    store?.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("challenge commit failure never claims completion or implicitly repeats a store write", async () => {
+ const {relayChallengeSigningBytes}=await import('./egress-relay-ingress-prototype.mjs');
+ const {createResultOnlyChallengeVerifier}=await import('./egress-relay-challenge.mjs');
+ const challenge='123e4567-e89b-42d3-a456-426614174000';
+ const body={...envelope(),kind:'challenge',payload:Buffer.from(JSON.stringify({type:'verification',challenge})).toString('base64')};
+ const bytes=Buffer.from(JSON.stringify(body));
+ const req={method:'POST',path:'/relay/v1/challenge',callerId,bytes,signature:sign(null,relayChallengeSigningBytes(bytes,callerId),privateKey).toString('base64')};
+ for (const throws of [true,false]) {
+  let writes=0,sends=0;
+  const handler=createRelayIngress({callers:new Map([[callerId,policy()]]),audience:'test:synthetic-relay',admissionStore:{acquire:()=>({ok:true,leaseId:1}),finish:()=>{writes++;if(throws)throw Error('private');return {ok:false,reason:'unavailable'};}},send:async()=>{throw Error('wrong path')},verifyChallenge:createResultOnlyChallengeVerifier(async()=>{sends++;return {status:200,body:Buffer.from(JSON.stringify({challenge}))};})});
+  const response=await handler(req);assert.notEqual(response.status,200);assert.equal(response.body.state,undefined);assert.equal(writes,1);assert.equal(sends,1);
+ }
 });

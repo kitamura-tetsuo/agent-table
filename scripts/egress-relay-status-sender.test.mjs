@@ -18,6 +18,7 @@ test("message-only HTTP results preserve non-2xx without following redirects or 
       destroyed = 0,
       responseDestroyed = 0;
     const sender = createStatusOnlyPrototypeSender({
+      clock: () => 100000,
       resolve: async () => ["8.8.8.8"],
       requestHttps: (options, receive) => {
         assert.equal(options.hostname, "callback.example.org");
@@ -49,7 +50,13 @@ test("message-only HTTP results preserve non-2xx without following redirects or 
     });
     assert.deepEqual(
       await sender(destination, targets, new Uint8Array([1, 2])),
-      { kind: "http", status, retryAfterSeconds: 900 },
+      {
+        kind: "http",
+        status,
+        retryAfterState: "known",
+        retryAfterSeconds: 900,
+        retryAfterObservedAt: 100000,
+      },
     );
     assert.equal(sent, 1);
     assert.equal(responseDestroyed, 1);
@@ -86,6 +93,7 @@ test("DNS/TLS/network/deadline failures remain unknown, never fabricated HTTP or
   for (const scenario of ["dns", "network", "deadline", "invalid-status"]) {
     let sent = 0;
     const sender = createStatusOnlyPrototypeSender({
+      clock: () => 100000,
       resolve: async () => {
         if (scenario === "dns") throw new Error("PRIVATE_DNS_SENTINEL");
         return ["8.8.8.8"];
@@ -118,6 +126,7 @@ test("typed sender deadline across DNS cannot start a late request", async () =>
   let resolveDns,
     sent = 0;
   const sender = createStatusOnlyPrototypeSender({
+    clock: () => 100000,
     resolve: () =>
       new Promise((r) => {
         resolveDns = r;

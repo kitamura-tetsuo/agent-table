@@ -3,6 +3,7 @@
  * Caller-provided hashes are not trusted as proof of actual delivered bytes.
  */
 export interface RelaySemanticOperation {
+  kind?: "forward" | "message" | "challenge";
   audience: string;
   callerId: string;
   requestId: string;
@@ -17,7 +18,7 @@ export async function relayOperationDigest(
   const bytes = new TextEncoder().encode(
     JSON.stringify({
       version: 1,
-      kind: "forward",
+      kind: snapshot.kind ?? "forward",
       audience: snapshot.audience,
       callerId: snapshot.callerId,
       requestId: snapshot.requestId,

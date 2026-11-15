@@ -1,13 +1,19 @@
 /** Unwired, metadata-only authenticated readback. Never forwards a callback. */
 import { validateReviewedCallbackDestination } from "./egress";
 import type { RelayClientConfiguration } from "./relay-client";
+import {
+  parseRelayChallengeOutcome,
+  parseRelayHttpOutcome,
+  type RelayChallengeOutcome,
+  type RelayHttpOutcome,
+} from "./relay-outcome";
 
 export type RelayStatusOutcome =
   | { ok: true; state: "pending" | "unknown" }
   | {
       ok: true;
       state: "completed";
-      outcome: { kind: "http"; status: number } | { kind: "not-sent" };
+      outcome: RelayHttpOutcome | RelayChallengeOutcome | { kind: "not-sent" };
     }
   | { ok: false; reason: "unavailable" | "conflict" };
 const b64 = (bytes: Uint8Array) => btoa(String.fromCharCode(...bytes));
@@ -65,7 +71,7 @@ export async function readRelayStatus(
       typeof authorizeRead !== "function" ||
       config.signingKeyPkcs8.length > 1024 ||
       new URL(config.origin).origin !== config.origin ||
-      !validateReviewedCallbackDestination(config.origin + "/relay/v1/status", [
+      !validateReviewedCallbackDestination(`${config.origin}/relay/v1/status`, [
         { origin: config.origin, pathPrefix: "/relay/v1/status" },
       ]).ok
     )
@@ -89,7 +95,7 @@ export async function readRelayStatus(
       ]),
     );
     const prefix = new TextEncoder().encode(
-      "POST\n/relay/v1/status\n" + config.callerId + "\n",
+      `POST\n/relay/v1/status\n${config.callerId}\n`,
     );
     const signing = new Uint8Array(prefix.length + bytes.length);
     signing.set(prefix);
@@ -104,7 +110,7 @@ export async function readRelayStatus(
     )
       return unavailable;
     const response = await bounded(
-      transport(config.origin + "/relay/v1/status", {
+      transport(`${config.origin}/relay/v1/status`, {
         method: "POST",
         redirect: "manual",
         signal: controller.signal,
@@ -153,19 +159,10 @@ export async function readRelayStatus(
     const outcome = result.outcome;
     if (exact(outcome, ["kind"]) && outcome.kind === "not-sent")
       return { ok: true, state: "completed", outcome: { kind: "not-sent" } };
-    if (
-      exact(outcome, ["kind", "status"]) &&
-      outcome.kind === "http" &&
-      typeof outcome.status === "number" &&
-      Number.isInteger(outcome.status) &&
-      outcome.status >= 100 &&
-      outcome.status <= 599
-    )
-      return {
-        ok: true,
-        state: "completed",
-        outcome: { kind: "http", status: outcome.status },
-      };
+    const challenge = parseRelayChallengeOutcome(outcome);
+    if (challenge) return { ok: true, state: "completed", outcome: challenge };
+    const http = parseRelayHttpOutcome(outcome, true);
+    if (http) return { ok: true, state: "completed", outcome: http };
     return unavailable;
   } catch {
     return unavailable;
