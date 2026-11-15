@@ -15,6 +15,7 @@ on:
         options:
           - manual
           - private-pilot-a-only
+          - test-native-events
       bootstrap_staging:
         description: First-time staging identity bootstrap; disables new guest/table intake and preserves existing DO/KV
         type: boolean

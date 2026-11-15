@@ -6,6 +6,11 @@ import {
   PRIVATE_PILOT_PROFILE,
   privatePilotConfiguration,
 } from "../src/shared/private-pilot.ts";
+import {
+  TEST_NATIVE_EVENTS_PROFILE,
+  testNativeEventsAllowed,
+  testNativeEventsInspectable,
+} from "../src/shared/test-native-events.ts";
 
 const EXPECTED_DOS = new Map([
   ["TABLES", "TableDO"],
@@ -85,6 +90,7 @@ const REQUIRED_SECRETS = [
 const ACCOUNT_ID = /^[a-f0-9]{32}$/i;
 const BUILD_SHA = /^[a-f0-9]{40}$/;
 const RELEASE_PROFILES = new Set([
+  TEST_NATIVE_EVENTS_PROFILE,
   "manual",
   "live",
   "events",
@@ -92,6 +98,14 @@ const RELEASE_PROFILES = new Set([
   PRIVATE_PILOT_PROFILE,
 ]);
 const EVIDENCE_CHECKS = {
+  [TEST_NATIVE_EVENTS_PROFILE]: [
+    "application",
+    "security",
+    "browser",
+    "live_runtime",
+    "provider",
+    "delivery",
+  ],
   manual: ["application", "security", "browser"],
   // This isolated verification profile gathers real-host evidence; it does not
   // advertise that the evidence already exists or authorize a public release.
@@ -414,6 +428,11 @@ export function validateRelease({
   );
 
   validatePeerIsolation(config, peer, environment);
+  requireCondition(
+    peer.vars.RELEASE_PROFILE !== TEST_NATIVE_EVENTS_PROFILE ||
+      testNativeEventsInspectable(peer.vars),
+    "peer-test-native-events-invalid",
+  );
 
   validateSecretInventory(secrets, environment, config.name);
   // A runtime switch cannot assert readiness for a profile lacking independent evidence.
@@ -421,6 +440,16 @@ export function validateRelease({
   const enabledEvents =
     vars.ENABLE_OPENAI_EVENTS === "true" ||
     vars.ALLOW_OUTBOUND_NOTIFICATIONS === "true";
+  requireCondition(
+    profile !== TEST_NATIVE_EVENTS_PROFILE ||
+      (environment === "staging" && testNativeEventsAllowed(vars)),
+    "invalid-test-native-events-configuration",
+  );
+  requireCondition(
+    profile === TEST_NATIVE_EVENTS_PROFILE ||
+      vars.TEST_NATIVE_EVENTS_RISK_ACCEPTANCE === undefined,
+    "test-risk-outside-test-profile",
+  );
   if (profile === PRIVATE_PILOT_PROFILE) {
     requireCondition(
       environment === "staging" && privatePilotConfiguration(vars),
@@ -433,12 +462,20 @@ export function validateRelease({
     );
   }
   requireCondition(
-    !enabledLive || ["live", "events", "autonomous"].includes(profile),
+    !enabledLive ||
+      ["live", "events", "autonomous", TEST_NATIVE_EVENTS_PROFILE].includes(
+        profile,
+      ),
     "live-switch-without-live-evidence",
   );
   requireCondition(
     !enabledEvents ||
-      ["events", "autonomous", PRIVATE_PILOT_PROFILE].includes(profile),
+      [
+        "events",
+        "autonomous",
+        PRIVATE_PILOT_PROFILE,
+        TEST_NATIVE_EVENTS_PROFILE,
+      ].includes(profile),
     "events-switch-without-events-evidence",
   );
   verifyEvidence(evidence, { environment, buildSha, configSha256, profile });

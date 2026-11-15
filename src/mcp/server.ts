@@ -34,6 +34,7 @@ import {
   PRIVATE_PILOT_PROFILE,
   privatePilotDiscoveryAllowed,
 } from "../shared/private-pilot";
+import { testNativeEventsAllowed } from "../shared/test-native-events";
 import { getOwnConnectionIdentity } from "./connection-identity";
 import type { EventDiagnosticTrace } from "./event-diagnostic-trace";
 import {
@@ -170,7 +171,9 @@ function newServer(
   diagnostics?: EventDiagnosticTrace,
 ) {
   const advertiseEvents =
-    privateEvents && privatePilotDiscoveryAllowed(env, identity);
+    privateEvents &&
+    (privatePilotDiscoveryAllowed(env, identity) ||
+      testNativeEventsAllowed(env));
   diagnostics?.record(
     diagnostics.methodHint,
     "capabilities",
@@ -595,7 +598,8 @@ export async function handleMcp(
       )
     ).allowed;
   const privateEvents =
-    privatePilotDiscoveryAllowed(env, identity) &&
+    (privatePilotDiscoveryAllowed(env, identity) ||
+      testNativeEventsAllowed(env)) &&
     identity.scopes.includes("events:subscribe") &&
     identity.tokenExpiresAtMs !== null &&
     identity.tokenExpiresAtMs > Date.now() &&

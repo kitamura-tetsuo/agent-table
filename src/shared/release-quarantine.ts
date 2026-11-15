@@ -1,5 +1,6 @@
 import { privatePilotConfiguration } from "./private-pilot";
 import { recoveryEnvironmentDenied } from "./recovery";
+import { testNativeEventsAllowed } from "./test-native-events";
 
 /**
  * This independent Worker binding is outside restored Durable Object state.
@@ -27,6 +28,8 @@ export function isRestoreQuarantined(
       | "OAUTH_SERIALIZER"
       | "ADMISSION"
       | "PUBLIC_ORIGIN"
+      | "TEST_NATIVE_EVENTS_RISK_ACCEPTANCE"
+      | "EVENTS_REVIEWED_CALLBACK_TARGETS"
     >
   >,
 ): boolean {
@@ -37,7 +40,8 @@ export function isRestoreQuarantined(
     env.RELEASE_ENVIRONMENT === "production";
   if (!knownEnvironment || env.RESTORE_QUARANTINE !== "false") return true;
   if (env.RELEASE_ENVIRONMENT === "local") return false;
-  if (privatePilotConfiguration(env)) return false;
+  if (privatePilotConfiguration(env) || testNativeEventsAllowed(env))
+    return false;
   // The initial public profile is manual-only. A feature flag or old Worker
   // configuration must not promote unverified live or autonomous capability.
   return !(

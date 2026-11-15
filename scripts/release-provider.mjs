@@ -1,5 +1,9 @@
 import { createHash } from "node:crypto";
 import { PRIVATE_PILOT_PROFILE } from "../src/shared/private-pilot.ts";
+import {
+  TEST_NATIVE_EVENTS_PROFILE,
+  testNativeEventsInspectable,
+} from "../src/shared/test-native-events.ts";
 import { RECOVERY_BINDINGS } from "./recovery-configuration.mjs";
 
 // All provider calls are GETs to the fixed Cloudflare API origin. The raw
@@ -274,6 +278,29 @@ export async function inspectWorker(
   // Older manual deployments legitimately omit the private policy. If either
   // surface retains it, verify its exact bytes and unique nonsecret type on both.
   // Do not require the new candidate's policy during a pre-deploy manual readback.
+  for (const name of [
+    "TEST_NATIVE_EVENTS_RISK_ACCEPTANCE",
+    "EVENTS_REVIEWED_CALLBACK_TARGETS",
+  ]) {
+    const present =
+      settings.bindings.some((b) => b?.name === name) ||
+      versionBindings.some((b) => b?.name === name);
+    if (present) {
+      const current = readBinding(settings.bindings, name, "plain_text");
+      const deployed = readBinding(versionBindings, name, "plain_text");
+      ensure(
+        typeof current.text === "string" && current.text === deployed.text,
+        "provider-test-native-binding-unverified",
+      );
+    }
+  }
+  // Observed active OR emergency-paused state can be read for a manual rollback.
+  // Candidate activation remains strict in preflight/authorization/postverify.
+  ensure(
+    textBindings.RELEASE_PROFILE !== TEST_NATIVE_EVENTS_PROFILE ||
+      testNativeEventsInspectable(textBindings),
+    "provider-test-native-profile-unverified",
+  );
   const policyName = "PRIVATE_PILOT_POLICY";
   const policyPresent =
     settings.bindings.some((binding) => binding?.name === policyName) ||
@@ -353,6 +380,15 @@ export function verifyDeployedConfiguration(observed, config) {
     ensure(
       observed.textBindings[name] === config.vars[name],
       "provider-deployed-config-mismatch",
+    );
+  }
+  for (const name of [
+    "TEST_NATIVE_EVENTS_RISK_ACCEPTANCE",
+    "EVENTS_REVIEWED_CALLBACK_TARGETS",
+  ]) {
+    ensure(
+      observed.textBindings[name] === config.vars[name],
+      "provider-deployed-test-native-binding-mismatch",
     );
   }
   const policy = config.vars.PRIVATE_PILOT_POLICY;
