@@ -1,16 +1,36 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
+import {
+  ADMISSION_RECOVERY_STORAGE,
+  recoveryStorageManifest,
+} from "../src/shared/recovery-manifests.ts";
 import { recoveryDigest } from "./recovery-configuration.mjs";
 import {
   assertClearanceProposal,
+  createBoundedPlatformProxy,
   recoverPendingDeployment,
+  verifySuccessorInspection,
 } from "./recovery-hosted-clearance.mjs";
+import {
+  verifyObjectInspectionReceipts,
+  verifyObjectResetReceipts,
+} from "./recovery-provider.mjs";
 
 const proposal = JSON.parse(
   await readFile(
     new URL(
       "../docs/issue51-synthetic-clearance-proposal-v2.json",
+      import.meta.url,
+    ),
+    "utf8",
+  ),
+);
+
+const canonicalInspection = JSON.parse(
+  await readFile(
+    new URL(
+      "../docs/issue51-cloudflare-recovery-inspection.json",
       import.meta.url,
     ),
     "utf8",
@@ -254,4 +274,220 @@ test("transient read failures recover within the bounded observation attempts", 
   assert.equal(input.state.pending, null);
   assert.equal(input.state.phase, "serving-unverified");
   assert.equal(input.records.length, 1);
+});
+
+function successorInspectionFixture() {
+  const { inventory, receipts, expected } =
+    structuredClone(canonicalInspection);
+  const objectId = "a".repeat(64);
+  inventory.objects.ADMISSION = [{ id: objectId, hasStoredData: true }];
+  inventory.counts.ADMISSION = 1;
+  const admission = {
+    format: "agent-table.recovery-inspection.v1",
+    environment: expected.environment,
+    buildSha: expected.buildSha,
+    configSha256: expected.configSha256,
+    operationId: expected.operationId,
+    generation: expected.generation,
+    objectId,
+    binding: "ADMISSION",
+    component: "admission",
+    schemaVersion: ADMISSION_RECOVERY_STORAGE.schemaVersion,
+    manifest: structuredClone(
+      recoveryStorageManifest(ADMISSION_RECOVERY_STORAGE),
+    ),
+    counts: { admission_hits: 3 },
+    kvEntries: 0,
+    markerGeneration: expected.generation,
+    empty: false,
+    requestNonce: expected.requestNonce,
+  };
+  receipts.push(admission);
+  return {
+    ctx: { verifyObjectInspectionReceipts, verifyObjectResetReceipts },
+    inventory,
+    receipts,
+    expected,
+    admission,
+  };
+}
+
+function inspectSuccessor(input) {
+  return verifySuccessorInspection(
+    input.ctx,
+    input.inventory,
+    input.receipts,
+    input.expected,
+  );
+}
+
+test("successor inspection retains current-generation Admission rows without weakening historical empty-state checks", () => {
+  const input = successorInspectionFixture();
+  const before = structuredClone({
+    inventory: input.inventory,
+    receipts: input.receipts,
+  });
+  const result = inspectSuccessor(input);
+  assert.equal(result.allObjects.totalObjects, 3);
+  assert.deepEqual(result.allObjects.objectCounts, {
+    TABLES: 1,
+    GUESTS: 1,
+    OAUTH_SERIALIZER: 0,
+    ADMISSION: 1,
+  });
+  assert.equal(result.historicalPrivateReset.totalObjects, 2);
+  assert.deepEqual(result.historicalPrivateReset.objectCounts, {
+    TABLES: 1,
+    GUESTS: 1,
+    OAUTH_SERIALIZER: 0,
+    ADMISSION: 0,
+  });
+  assert.equal(result.retainedAdmissionObjects, 1);
+  assert.equal(result.retainedAdmissionRows, 3);
+  assert.equal(result.admissionResetPerformed, false);
+  assert.deepEqual(input.inventory, before.inventory);
+  assert.deepEqual(input.receipts, before.receipts);
+});
+
+test("successor inspection still refuses historical guest or transcript rows", () => {
+  for (const [binding, table] of [
+    ["GUESTS", "guest_sessions"],
+    ["TABLES", "table_messages"],
+  ]) {
+    const input = successorInspectionFixture();
+    const historical = input.receipts.find(
+      (value) => value.binding === binding,
+    );
+    historical.counts[table] = 1;
+    historical.empty = false;
+    assert.throws(
+      () => inspectSuccessor(input),
+      /recovery-inspection-private-state-remains/,
+    );
+  }
+});
+
+test("successor inspection requires complete Admission coverage including objects reported without stored data", () => {
+  const input = successorInspectionFixture();
+  input.inventory.objects.ADMISSION[0].hasStoredData = false;
+  assert.equal(inspectSuccessor(input).retainedAdmissionObjects, 1);
+  input.receipts.pop();
+  assert.throws(
+    () => inspectSuccessor(input),
+    /recovery-inspection-coverage-incomplete/,
+  );
+});
+
+test("successor inspection refuses stale or absent Admission markers and any Admission KV", () => {
+  for (const change of [
+    (value) => {
+      value.markerGeneration = "0".repeat(64);
+    },
+    (value) => {
+      value.markerGeneration = null;
+    },
+    (value) => {
+      value.kvEntries = 1;
+    },
+  ]) {
+    const input = successorInspectionFixture();
+    change(input.admission);
+    assert.throws(
+      () => inspectSuccessor(input),
+      /retry-admission-state-unverified/,
+    );
+  }
+});
+
+test("successor Admission exception retains the real provider schema and nonce validation", () => {
+  const cases = [
+    [
+      (value) => {
+        value.counts.unknown_private_table = 1;
+      },
+      /recovery-inspection-schema-mismatch/,
+    ],
+    [
+      (value) => {
+        value.counts.admission_hits = -1;
+      },
+      /recovery-inspection-schema-mismatch/,
+    ],
+    [
+      (value) => {
+        value.manifest.at(-1).columns.push("unexpected_payload");
+      },
+      /recovery-inspection-schema-mismatch/,
+    ],
+    [
+      (value) => {
+        value.requestNonce = "0".repeat(64);
+      },
+      /recovery-inspection-identity-mismatch/,
+    ],
+  ];
+  for (const [change, error] of cases) {
+    const input = successorInspectionFixture();
+    change(input.admission);
+    assert.throws(() => inspectSuccessor(input), error);
+  }
+});
+
+test("successor inspection also accepts a fully empty Admission inventory", () => {
+  const input = successorInspectionFixture();
+  input.inventory.objects.ADMISSION = [];
+  input.inventory.counts.ADMISSION = 0;
+  input.receipts.pop();
+  const result = inspectSuccessor(input);
+  assert.equal(result.allObjects.totalObjects, 2);
+  assert.equal(result.historicalPrivateReset.totalObjects, 2);
+  assert.equal(result.retainedAdmissionObjects, 0);
+  assert.equal(result.retainedAdmissionRows, 0);
+  assert.equal(result.admissionResetPerformed, false);
+});
+
+test("platform proxy startup times out and disposes a late result without adopting it", {
+  timeout: 5_000,
+}, async () => {
+  let finishStartup;
+  const pending = new Promise((resolve) => {
+    finishStartup = resolve;
+  });
+  await assert.rejects(
+    createBoundedPlatformProxy(() => pending, { startupMs: 5, disposalMs: 5 }),
+    /private-proxy-start-timeout/,
+  );
+  let disposalCalls = 0;
+  let observeDisposal;
+  const disposed = new Promise((resolve) => {
+    observeDisposal = resolve;
+  });
+  finishStartup({
+    get env() {
+      return assert.fail(
+        "A proxy that arrives after startup timeout must never be adopted",
+      );
+    },
+    dispose: async () => {
+      disposalCalls++;
+      observeDisposal();
+    },
+  });
+  await disposed;
+  assert.equal(disposalCalls, 1);
+});
+
+test("a stalled platform proxy disposal cannot indefinitely postpone compensation", {
+  timeout: 5_000,
+}, async () => {
+  const env = { CONTROL: {} };
+  const proxy = await createBoundedPlatformProxy(
+    async () => ({
+      env,
+      dispose: () => new Promise(() => undefined),
+    }),
+    { startupMs: 5, disposalMs: 5 },
+  );
+  assert.equal(proxy.env, env);
+  await assert.rejects(proxy.dispose(), /private-proxy-stop-timeout/);
 });

@@ -34,7 +34,18 @@ const QUARANTINE =
   "56be00421e272f3415e9ee8a694998cfb95243c25462c4ac0b123f0bfdfceb07";
 const APPROVAL =
   "https://github.com/kitamura-tetsuo/agent-table/issues/51#issuecomment-6886616675";
-const DIRECTORY = `${ORIGINAL_ROOT}/clearance-v2`;
+const PARENT_DIRECTORY = `${ORIGINAL_ROOT}/clearance-v2`;
+const DIRECTORY = `${ORIGINAL_ROOT}/clearance-v2-retry`;
+const PARENT_CHECKPOINT_SHA256 =
+  "48260bbaf4e7f25ff577465ea7d204ee2b6bf2d52cb8d2adbf313fe776b3161f";
+const PARENT_EVIDENCE_SHA256 =
+  "16d15e1ccacb2f7786787fa81b8d6d54d4d3ba9ae05d3bd59180ceda92f2be1f";
+const PARENT_RECORD_HEAD =
+  "7a142579d74b589b7abf611116ec9701b457b1221642ed66767669aa1fd60fe0";
+const PARENT_HELPER_SHA256 =
+  "e0c42b91c253935d8f1ea49e0e857f0cd0eee538359240b105482fbbf40ba142";
+const PARENT_CHECKS_SHA256 =
+  "36c359e7a4c2a3ab1d31066fa44ddbfc252e797a5c105aab780b8f0f897daf88";
 const STATE = `${DIRECTORY}/continuation.json`;
 const DOS = ["TABLES", "GUESTS", "OAUTH_SERIALIZER", "ADMISSION"];
 const CLASSES = {
@@ -61,18 +72,19 @@ function safeError(error) {
       "RecoveryVerificationError",
       "RecoveryProviderError",
       "PrivateClearanceCheckError",
+      "PrivateClearanceTransportError",
     ].includes(error?.constructor?.name);
   return trusted && /^[a-z][a-z0-9:-]{1,119}$/.test(error.message)
     ? error.message
     : "clearance-operation-failed";
 }
-async function boundedRpc(operation, code) {
+async function boundedRpc(operation, code, timeoutMs = 15_000) {
   let timer;
   try {
     return await Promise.race([
       operation(),
       new Promise((_, reject) => {
-        timer = setTimeout(() => reject(new ClearanceError(code)), 15_000);
+        timer = setTimeout(() => reject(new ClearanceError(code)), timeoutMs);
       }),
     ]);
   } finally {
@@ -237,7 +249,7 @@ async function initialize() {
         return client(path, options);
       },
     );
-  return {
+  const ctx = {
     ...configModule,
     ...provider,
     digest,
@@ -250,6 +262,111 @@ async function initialize() {
     oldCheckpointSha256: digest(raw),
     inventory,
     token,
+  };
+  ctx.parent = await verifiedParent(ctx);
+  return ctx;
+}
+
+// Preserve the failed attempt byte-for-byte and lease its proven rollback only.
+async function verifiedParent(ctx) {
+  const raw = await privateFile(`${PARENT_DIRECTORY}/continuation.json`);
+  const state = JSON.parse(raw);
+  const evidence = JSON.parse(
+    await privateFile(`${PARENT_DIRECTORY}/evidence.json`),
+  );
+  ensure(
+    ctx.digest(raw) === PARENT_CHECKPOINT_SHA256 &&
+      ctx.digest(evidence) === PARENT_EVIDENCE_SHA256 &&
+      state.format === "agent-table.synthetic-clearance-continuation.v1" &&
+      state.proposalSha256 === PROPOSAL &&
+      state.approvalRef === APPROVAL &&
+      state.oldCheckpointSha256 === ctx.oldCheckpointSha256 &&
+      state.phase === "rolled-back" &&
+      state.pending === null &&
+      state.records.length === 12 &&
+      state.records.at(-1).sha256 === PARENT_RECORD_HEAD,
+    "retry-parent-identity-changed",
+  );
+  let previous = ctx.proposal.evidence.localRecordHeadSha256;
+  for (let index = 0; index < state.records.length; index++) {
+    const record = state.records[index];
+    const { sha256, ...value } = record;
+    ensure(
+      value.previousSha256 === previous && ctx.digest(value) === sha256,
+      "retry-parent-chain-invalid",
+    );
+    equal(
+      record,
+      JSON.parse(
+        await privateFile(
+          `${PARENT_DIRECTORY}/event-${String(index + 1).padStart(4, "0")}.json`,
+        ),
+      ),
+      "retry-parent-record-file-changed",
+      ctx.canonicalJson,
+    );
+    previous = sha256;
+  }
+  equal(
+    evidence.records,
+    state.records,
+    "retry-parent-evidence-records-changed",
+    ctx.canonicalJson,
+  );
+  equal(
+    evidence.currentDeployment,
+    state.active.receipt,
+    "retry-parent-evidence-deployment-changed",
+    ctx.canonicalJson,
+  );
+  ensure(
+    ctx.digest(
+      await privateFile(`${PARENT_DIRECTORY}/recovery-hosted-clearance.mjs`),
+    ) === PARENT_HELPER_SHA256 &&
+      ctx.digest(
+        await privateFile(
+          `${PARENT_DIRECTORY}/recovery-hosted-clearance-checks.mjs`,
+        ),
+      ) === PARENT_CHECKS_SHA256,
+    "retry-parent-helper-changed",
+  );
+  const first = state.records[0].metadata;
+  const last = state.records.at(-1);
+  ensure(
+    first.executionHelperSha256 === PARENT_HELPER_SHA256 &&
+      first.verificationHelperSha256 === PARENT_CHECKS_SHA256 &&
+      first.inventory.objects.ADMISSION.length === 0 &&
+      last.action === "rollback-verified" &&
+      last.metadata.ingress.all503 === true &&
+      last.metadata.ingress.routes === 9 &&
+      state.active.receipt.versionId ===
+        "c419489a-a11d-4486-bd8d-7d60cf02ae31" &&
+      state.active.config.vars.RESTORE_QUARANTINE === "true" &&
+      ctx.recoveryConfigurationDigest(state.active.config) === QUARANTINE,
+    "retry-parent-rollback-unverified",
+  );
+  const claims = ctx.verifyRecoveryConfiguration(
+    state.active.config,
+    Date.parse(last.observedAt),
+  );
+  ensure(
+    claims.phase === "reset" &&
+      claims.operationId === ctx.target.operationId &&
+      claims.generation === ctx.target.generation &&
+      claims.planSha256 === ctx.historicalClaims.planSha256,
+    "retry-parent-authority-changed",
+  );
+  return {
+    state,
+    anchor: {
+      evidenceSha256: PARENT_EVIDENCE_SHA256,
+      checkpointSha256: PARENT_CHECKPOINT_SHA256,
+      recordHeadSha256: PARENT_RECORD_HEAD,
+      executionHelperSha256: PARENT_HELPER_SHA256,
+      verificationHelperSha256: PARENT_CHECKS_SHA256,
+      immutableHelperRevision: "c9f04e4bcd573edafc8a4a46759b01af347818d1",
+      rollbackVersionId: state.active.receipt.versionId,
+    },
   };
 }
 
@@ -456,7 +573,44 @@ async function observedDeployment(ctx, target, config, expectedVersion) {
     serviceEnvironment: "production",
   };
 }
-async function services(_ctx, operation) {
+// Local resource lifecycle must not indefinitely postpone quarantine compensation.
+export async function createBoundedPlatformProxy(
+  factory,
+  { startupMs = 30_000, disposalMs = 10_000 } = {},
+) {
+  const pending = Promise.resolve().then(factory);
+  let proxy;
+  try {
+    proxy = await boundedRpc(
+      () => pending,
+      "private-proxy-start-timeout",
+      startupMs,
+    );
+  } catch (error) {
+    // A startup finishing after timeout is never used and is disposed separately.
+    void pending
+      .then((value) =>
+        boundedRpc(
+          () => value.dispose(),
+          "private-proxy-stop-timeout",
+          disposalMs,
+        ),
+      )
+      .catch(() => undefined);
+    throw error;
+  }
+  return {
+    env: proxy.env,
+    dispose: () =>
+      boundedRpc(
+        () => proxy.dispose(),
+        "private-proxy-stop-timeout",
+        disposalMs,
+      ),
+  };
+}
+
+async function services(_ctx, operation, useLocalRelay = false) {
   const path = `${DIRECTORY}/client-${randomUUID()}.json`;
   await writeFile(
     path,
@@ -480,21 +634,42 @@ async function services(_ctx, operation) {
     { flag: "wx", mode: 0o600 },
   );
   let proxy;
+  let relay;
   try {
     const requireSource = createRequire(`${SOURCE_ROOT}/package.json`);
-    const { getPlatformProxy } = await import(
+    const { getPlatformProxy, unstable_dev } = await import(
       pathToFileURL(requireSource.resolve("wrangler")).href
     );
-    proxy = await getPlatformProxy({
-      configPath: path,
-      envFiles: [],
-      persist: false,
-      remoteBindings: true,
-    });
-    return plain(await operation(proxy.env));
+    proxy = await createBoundedPlatformProxy(() =>
+      getPlatformProxy({
+        configPath: path,
+        envFiles: [],
+        persist: false,
+        remoteBindings: true,
+      }),
+    );
+    if (useLocalRelay) {
+      const { createPrivateClearanceTransport } = await import(
+        "./recovery-hosted-clearance-transport.mjs"
+      );
+      relay = await createPrivateClearanceTransport({ unstable_dev });
+    }
+    return plain(
+      await operation({
+        CONTROL: proxy.env.CONTROL,
+        APPLICATION: relay ? relay.application : proxy.env.APPLICATION,
+      }),
+    );
   } finally {
-    if (proxy) await proxy.dispose();
-    await unlink(path);
+    try {
+      if (relay) await relay.dispose();
+    } finally {
+      try {
+        if (proxy) await proxy.dispose();
+      } finally {
+        await unlink(path);
+      }
+    }
   }
 }
 function identity(ctx, current) {
@@ -511,7 +686,7 @@ function identity(ctx, current) {
     ctx.canonicalJson,
   );
 }
-function inventoryIdentity(ctx, inventory, allowAdmission = false) {
+function inventoryIdentity(ctx, inventory, allowAdmission = true) {
   ensure(
     inventory.oauthKeys.length === 0 &&
       inventory.objects.OAUTH_SERIALIZER.length === 0,
@@ -559,13 +734,64 @@ async function quarantineIngress(ctx, config) {
     };
   });
 }
+async function quarantineRelayProbe(ctx, config) {
+  return services(
+    ctx,
+    async ({ CONTROL, APPLICATION }) => {
+      identity(
+        ctx,
+        plain(
+          await boundedRpc(() => CONTROL.identity(), "relay-identity-timeout"),
+        ),
+      );
+      const csrf = randomBytes(32).toString("base64url");
+      const observed = await boundedRpc(async () => {
+        const response = await APPLICATION.fetch(
+          `${config.vars.PUBLIC_ORIGIN}/guest/session`,
+          {
+            method: "POST",
+            headers: {
+              Origin: config.vars.PUBLIC_ORIGIN,
+              "Sec-Fetch-Site": "same-origin",
+              "Content-Type": "application/x-www-form-urlencoded",
+              Cookie: `__Host-agent_table_csrf=${csrf}`,
+            },
+            body: new URLSearchParams({ choice: "new", csrf }).toString(),
+            redirect: "manual",
+            signal: AbortSignal.timeout(15_000),
+          },
+        );
+        ensure(
+          response.status === 503 &&
+            response.headers.get("Cache-Control") === "no-store" &&
+            (await response.text()) === "Service unavailable during recovery",
+          "relay-quarantine-probe-failed",
+        );
+        return {
+          status: 503,
+          noStore: true,
+          exactApplicationQuarantineResponse: true,
+        };
+      }, "relay-quarantine-probe-timeout");
+      return {
+        ...observed,
+        checkedAt: now(),
+        method: "POST",
+        path: "/guest/session",
+        remoteOriginIncluded: true,
+        transport: "local-worker-authenticated-service-binding",
+      };
+    },
+    true,
+  );
+}
+
 async function append(ctx, state, action, details) {
   const value = {
     action,
     observedAt: now(),
     previousSha256:
-      state.records.at(-1)?.sha256 ??
-      ctx.proposal.evidence.localRecordHeadSha256,
+      state.records.at(-1)?.sha256 ?? ctx.parent.anchor.recordHeadSha256,
     metadata: details,
   };
   const record = { ...value, sha256: ctx.digest(value) };
@@ -583,13 +809,19 @@ async function append(ctx, state, action, details) {
 async function loadState(ctx) {
   const state = JSON.parse(await privateFile(STATE));
   ensure(
-    state.format === "agent-table.synthetic-clearance-continuation.v1" &&
+    state.format === "agent-table.synthetic-clearance-successor.v1" &&
       state.proposalSha256 === PROPOSAL &&
       state.approvalRef === APPROVAL &&
       state.oldCheckpointSha256 === ctx.oldCheckpointSha256,
     "continuation-identity-changed",
   );
-  let previous = ctx.proposal.evidence.localRecordHeadSha256;
+  equal(
+    state.parentAttempt,
+    ctx.parent.anchor,
+    "retry-parent-anchor-changed",
+    ctx.canonicalJson,
+  );
+  let previous = ctx.parent.anchor.recordHeadSha256;
   for (let index = 0; index < state.records.length; index++) {
     const record = state.records[index];
     const { sha256, ...value } = record;
@@ -621,6 +853,16 @@ async function loadState(ctx) {
           ),
         ),
     "continuation-helper-code-changed",
+  );
+  ensure(
+    provenance.transportHelperSha256 ===
+      ctx.digest(
+        await readFile(
+          new URL("./recovery-hosted-clearance-transport.mjs", import.meta.url),
+          "utf8",
+        ),
+      ),
+    "continuation-transport-code-changed",
   );
   return state;
 }
@@ -783,6 +1025,51 @@ export async function recoverPendingDeployment(
   }
   throw new ClearanceError("pending-deployment-outcome-unverified");
 }
+// Rate buckets created by the first private checks are retained operational state.
+// They are inspected with full coverage, while historical private state stays empty.
+export function verifySuccessorInspection(ctx, inventory, receipts, expected) {
+  const allObjects = ctx.verifyObjectInspectionReceipts(
+    inventory,
+    receipts,
+    expected,
+  );
+  const historicalInventory = {
+    ...inventory,
+    objects: { ...inventory.objects, ADMISSION: [] },
+    counts: { ...inventory.counts, ADMISSION: 0 },
+  };
+  const historicalReceipts = receipts.filter(
+    (value) => value.binding !== "ADMISSION",
+  );
+  const historicalPrivateReset = ctx.verifyObjectResetReceipts(
+    historicalInventory,
+    historicalReceipts,
+    expected,
+  );
+  const admission = receipts.filter((value) => value.binding === "ADMISSION");
+  for (const receipt of admission) {
+    ensure(
+      receipt.markerGeneration === expected.generation &&
+        receipt.kvEntries === 0 &&
+        Object.keys(receipt.counts).length === 1 &&
+        Number.isSafeInteger(receipt.counts.admission_hits) &&
+        receipt.counts.admission_hits >= 0,
+      "retry-admission-state-unverified",
+    );
+  }
+  return {
+    allObjects,
+    historicalPrivateReset,
+    historicalResetComponents: ["TABLES", "GUESTS", "OAUTH_SERIALIZER"],
+    retainedAdmissionObjects: admission.length,
+    retainedAdmissionRows: admission.reduce(
+      (sum, value) => sum + value.counts.admission_hits,
+      0,
+    ),
+    admissionResetPerformed: false,
+  };
+}
+
 async function inspect(ctx, state) {
   const current = await observedDeployment(
     ctx,
@@ -825,7 +1112,7 @@ async function inspect(ctx, state) {
     return values;
   });
   const expected = { ...claims, requestNonce };
-  const summary = ctx.verifyObjectResetReceipts(before, receipts, expected);
+  const summary = verifySuccessorInspection(ctx, before, receipts, expected);
   const after = await ctx.inventory();
   inventoryIdentity(ctx, after);
   ensure(
@@ -889,6 +1176,7 @@ function publicEvidence(ctx, state) {
     sourceProvenance: ctx.provenance,
     originalEvidenceSha256: ctx.proposal.evidence.canonicalSha256,
     originalRecordHeadSha256: ctx.proposal.evidence.localRecordHeadSha256,
+    parentAttempt: ctx.parent.anchor,
     phase: state.phase,
     completedAt: state.completedAt ?? null,
     currentDeployment: state.active.receipt,
@@ -937,8 +1225,8 @@ export async function runClearance(phase) {
       const receipt = await observedDeployment(
         ctx,
         ctx.target,
-        ctx.target.deployment.config,
-        ctx.proposal.observedCurrentDeployment.versionId,
+        ctx.parent.state.active.config,
+        ctx.parent.state.active.receipt.versionId,
       );
       const excluded = ctx.rehearsal.targets.schema;
       const excludedReceipt = await observedDeployment(
@@ -951,22 +1239,40 @@ export async function runClearance(phase) {
       inventoryIdentity(ctx, inventory);
       const ingress = await quarantineIngress(
         ctx,
-        ctx.target.deployment.config,
+        ctx.parent.state.active.config,
+      );
+      const relayProbe = await quarantineRelayProbe(
+        ctx,
+        ctx.parent.state.active.config,
       );
       const state = {
-        format: "agent-table.synthetic-clearance-continuation.v1",
+        format: "agent-table.synthetic-clearance-successor.v1",
         proposalSha256: PROPOSAL,
         approvalRef: APPROVAL,
         phase: "prepared",
         oldCheckpointSha256: ctx.oldCheckpointSha256,
-        active: { config: ctx.target.deployment.config, receipt },
+        parentAttempt: ctx.parent.anchor,
+        active: { config: ctx.parent.state.active.config, receipt },
         pending: null,
         records: [],
       };
-      await append(ctx, state, "approved-preflight-recorded", {
+      await append(ctx, state, "approved-retry-preflight-recorded", {
+        parentAttempt: ctx.parent.anchor,
+        correction:
+          "Local Worker relay preserves remote request Origin without weakening the platform proxy guard.",
         proposalSha256: PROPOSAL,
         approvalRef: APPROVAL,
         provenance: ctx.provenance,
+        relayProbe,
+        transportHelperSha256: ctx.digest(
+          await readFile(
+            new URL(
+              "./recovery-hosted-clearance-transport.mjs",
+              import.meta.url,
+            ),
+            "utf8",
+          ),
+        ),
         executionHelperSha256: ctx.digest(
           await readFile(fileURLToPath(import.meta.url), "utf8"),
         ),
@@ -1034,16 +1340,30 @@ export async function runClearance(phase) {
       // Refresh actual receipts immediately before issuing the serving permit.
       await inspect(ctx, state);
       const config = renewedConfiguration(ctx, state, "serve");
+      const privateResponses = [];
       try {
         await deploy(ctx, state, config, "approved-synthetic-clearance");
-        const verification = await services(ctx, ({ CONTROL, APPLICATION }) =>
-          verifyPrivateClearance({
-            control: CONTROL,
-            application: APPLICATION,
-            config,
-            subject: ctx.proposal.subject,
-            scenario: ctx.target.scenario,
-          }),
+        const verification = await services(
+          ctx,
+          ({ CONTROL, APPLICATION }) =>
+            verifyPrivateClearance({
+              control: CONTROL,
+              application: {
+                fetch: async (url, init) => {
+                  const response = await APPLICATION.fetch(url, init);
+                  privateResponses.push({
+                    path: new URL(url).pathname,
+                    method: init?.method ?? "GET",
+                    status: response.status,
+                  });
+                  return response;
+                },
+              },
+              config,
+              subject: ctx.proposal.subject,
+              scenario: ctx.target.scenario,
+            }),
+          true,
         );
         const inventory = await ctx.inventory();
         inventoryIdentity(ctx, inventory, true);
@@ -1073,6 +1393,7 @@ export async function runClearance(phase) {
       } catch (error) {
         await append(ctx, state, "clearance-verification-failed", {
           errorCode: safeError(error),
+          privateResponses,
         });
         if (state.pending) await recoverPendingDeployment(ctx, state);
         if (state.active.config.vars.RESTORE_QUARANTINE === "false")
