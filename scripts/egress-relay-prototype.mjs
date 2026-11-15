@@ -3,10 +3,11 @@
  * retries or production import. Never invoke with private production payloads
  * before independent review and an approved authenticated relay deployment.
  */
-import https from "node:https";
-import tls from "node:tls";
+
 import { resolve4 } from "node:dns/promises";
+import https from "node:https";
 import { isIP } from "node:net";
+import tls from "node:tls";
 import { validateReviewedCallbackDestination } from "../src/notifications/egress.ts";
 
 const DENIED = [
@@ -134,7 +135,8 @@ export function checkedHeaders(headers) {
       !ALLOWED_HEADERS.has(key) ||
       typeof value !== "string" ||
       value.length > 4096 ||
-      /[\r\n\x00]/.test(value)
+      /[\r\n]/.test(value) ||
+      value.includes("\0")
     )
       throw new Error("invalid-headers");
     result[key] = value;
@@ -147,11 +149,15 @@ export function checkedHeaders(headers) {
  * rate/body bounds and replay protection BEFORE calling this function.
  * Hard deadline includes DNS, TLS and response. Errors never expose URL/secrets.
  */
-export function createPrototypeSender({
-  resolve = resolve4,
-  requestHttps = https.request,
-  schedule = setTimeout,
-} = {}) {
+function createSender(
+  {
+    resolve = resolve4,
+    requestHttps = https.request,
+    schedule = setTimeout,
+    clock = Date.now,
+  } = {},
+  statusOnly = false,
+) {
   return async function sendPinnedPrototype(
     destination,
     targets,
@@ -182,6 +188,28 @@ export function createPrototypeSender({
           },
           (response) => {
             const status = response.statusCode ?? 0;
+            if (statusOnly) {
+              // Final response headers are receiver HTTP evidence, not body or
+              // host consumption. Never follow Location or retain response data.
+              const retryAfterSeconds = boundedRetryAfterSeconds(
+                response.headers?.["retry-after"],
+                clock(),
+              );
+              response.destroy();
+              if (!Number.isInteger(status) || status < 200 || status > 599) {
+                reject(new Error("transport-error"));
+                return;
+              }
+              resolve({
+                kind: "http",
+                status,
+                ...(retryAfterSeconds === undefined
+                  ? {}
+                  : { retryAfterSeconds }),
+              });
+              return;
+            }
+
             if (status < 200 || status >= 300) {
               response.destroy();
               reject(
@@ -238,5 +266,50 @@ export function createPrototypeSender({
     }
   };
 }
+/** Existing bounded response-body contract; unchanged for challenge users. */
+export function createPrototypeSender(options = {}) {
+  return createSender(options, false);
+}
+
+/**
+ * Opt-in message-only sender. Never use for challenge verification, whose
+ * response-body oracle is intentionally absent. Unknown never means no-send.
+ */
+export function createStatusOnlyPrototypeSender(options = {}) {
+  const send = createSender(options, true);
+  return async (...args) => {
+    try {
+      return await send(...args);
+    } catch (error) {
+      return {
+        kind: "unknown",
+        reason: error?.message === "deadline" ? "deadline" : "transport-error",
+      };
+    }
+  };
+}
+
+/** Numeric metadata only; raw Retry-After never leaves the transport. */
+export function boundedRetryAfterSeconds(value, now = Date.now()) {
+  if (
+    typeof value !== "string" ||
+    value.length > 128 ||
+    !Number.isSafeInteger(now)
+  )
+    return undefined;
+  if (/^\d{1,10}$/.test(value)) return Math.min(900, Number(value));
+  if (
+    !/^(Mon|Tue|Wed|Thu|Fri|Sat|Sun), \d{2} (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{4} \d{2}:\d{2}:\d{2} GMT$/.test(
+      value,
+    )
+  )
+    return undefined;
+  const instant = Date.parse(value);
+  if (!Number.isFinite(instant) || new Date(instant).toUTCString() !== value)
+    return undefined;
+  return Math.min(900, Math.max(0, Math.ceil((instant - now) / 1000)));
+}
+
 // Production callers must not supply dependency overrides. No server invokes this.
 export const sendPinnedPrototype = createPrototypeSender();
+export const sendPinnedStatusOnlyPrototype = createStatusOnlyPrototypeSender();
