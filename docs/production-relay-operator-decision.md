@@ -72,13 +72,12 @@ Do not convert unknown to success or not-sent. #21 permits a separately charged
 next ordinal with the same event ID within its original eight-attempt/one-hour
 budget; it does not permit a replacement ID for the unknown original operation.
 
-There is currently no dedicated operator mutation CLI with a durable operation
-receipt. `finish` is row-idempotent, but does not persist an operator operation ID;
-status readback merges expired-active and finished-unknown into `unknown`.
-An uncertain helper result therefore cannot be declared resolved by that status.
-The store's open/read paths can migrate/update its clock and are not strict
-read-only plans. Do not advertise automatic restart recovery as complete or ask
-operators to bypass this limitation with SQL edits. A separately reviewed minimal
-operation receipt/administrative recovery boundary is still needed before an
-idempotent automated operator tool can claim completion; no such control plane
-is activated by this candidate.
+The candidate now supplies atomic unknown-only recovery receipts and the bounded
+local adapter described in [relay-operator-recovery.md](relay-operator-recovery.md).
+The [foreground launcher](relay-launcher.md) exposes that same adapter over trusted
+local stdin, with exact process/config command binding, paused startup and drain.
+There is no network administration endpoint, process controller or automatic
+restart recovery. Generic status unknown is not the operator receipt. Opening
+storage can migrate/write; exact planning/readback after open are read-only.
+Concrete host policy and independently established old-transport stop evidence
+remain required before any live recovery or activation.

@@ -13,6 +13,11 @@ import {
   sendPinnedStatusOnlyPrototype,
 } from "./egress-relay-prototype.mjs";
 import { openRelayAdmissionStore } from "./relay-admission-store.mjs";
+import {
+  applyUncertainRecovery,
+  planUncertainRecovery,
+  readUncertainRecovery,
+} from "./relay-uncertain-reconciliation.mjs";
 
 export function createRelayApplication({
   databasePath,
@@ -48,7 +53,9 @@ export function createRelayApplication({
       enabled: () => enabled && !closing,
       readEnabled: () => !closing,
       send: sendPinnedPrototype,
-      ...(challengeVerification ? {verifyChallenge:createResultOnlyChallengeVerifier()} : {}),
+      ...(challengeVerification
+        ? { verifyChallenge: createResultOnlyChallengeVerifier() }
+        : {}),
       ...(messageDelivery
         ? { sendMessage: sendPinnedStatusOnlyPrototype }
         : {}),
@@ -68,6 +75,19 @@ export function createRelayApplication({
         enabled = value;
       },
       inspectUncertainAttempts: () => store.listUncertainLeases(),
+      // Local trusted-controller APIs only; owner stop evidence remains human
+      // reviewed. A pending local handler can never be reconciled as stopped.
+      planRecovery() {
+        if (enabled || closing || !listener.isIdle())
+          throw new Error("operator-recovery-not-paused-idle");
+        return planUncertainRecovery(store);
+      },
+      applyRecovery(request) {
+        if (enabled || closing || !listener.isIdle())
+          throw new Error("operator-recovery-not-paused-idle");
+        return applyUncertainRecovery(store, request);
+      },
+      readRecovery: (operationId) => readUncertainRecovery(store, operationId),
       async close() {
         enabled = false;
         closing = true;

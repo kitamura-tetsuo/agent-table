@@ -1,7 +1,9 @@
 # Candidate local operator recovery (#78)
 
 Local JavaScript/store adapter only: no network management API, process
-controller, deployment authority or new service. No live database or credentials.
+controller, deployment authority or new service. The [foreground local launcher](relay-launcher.md)
+reuses this adapter with paused/idle guards; it does not establish real stop evidence.
+No live database or credentials.
 
 ## Authority and procedure
 

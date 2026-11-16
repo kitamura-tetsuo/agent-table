@@ -46,9 +46,12 @@ export function createRelayHttpsServer({ key, cert, handler }) {
       }
       if (
         request.method !== "POST" ||
-        !["/relay/v1", "/relay/v1/status", "/relay/v1/message", "/relay/v1/challenge"].includes(
-          request.url,
-        )
+        ![
+          "/relay/v1",
+          "/relay/v1/status",
+          "/relay/v1/message",
+          "/relay/v1/challenge",
+        ].includes(request.url)
       ) {
         fixed(response, 404, "unavailable");
         return;
@@ -167,6 +170,7 @@ export function createRelayHttpsServer({ key, cert, handler }) {
   );
   return {
     server,
+    isIdle: () => inflight.size === 0,
     async close(timeoutMs = 15000) {
       if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 15000)
         throw new Error("invalid-shutdown-timeout");
