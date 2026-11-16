@@ -15,6 +15,7 @@ function createLedger(sql: Sql, now: number) {
   const tableId = crypto.randomUUID();
   const creatorId = crypto.randomUUID();
   const peerId = crypto.randomUUID();
+  const peerGuestId = crypto.randomUUID();
   const subscriptionId = "sub_exampleLedgerSubscriber1234";
   const expiry = now + 2 * 60 * 60_000;
   sql.exec(
@@ -37,13 +38,13 @@ function createLedger(sql: Sql, now: number) {
     "INSERT INTO table_memberships (membership_id, table_id, guest_id, seat, role, joined_at) VALUES (?, ?, ?, 2, 'invitee', ?)",
     peerId,
     tableId,
-    crypto.randomUUID(),
+    peerGuestId,
     now,
   );
   sql.exec(
     "INSERT INTO table_event_subscriptions (membership_id, generation, fence, status, guest_id, connection_id, subscription_id, expires_at) VALUES (?, 1, 1, 'active', ?, ?, ?, ?)",
     peerId,
-    crypto.randomUUID(),
+    peerGuestId,
     crypto.randomUUID(),
     subscriptionId,
     expiry,

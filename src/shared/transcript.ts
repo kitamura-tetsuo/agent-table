@@ -4,17 +4,21 @@ import { TABLE_LIMITS } from "./limits";
 export const MAX_POSTS_PER_MINUTE = 10;
 export const POST_WINDOW_MS = 60_000;
 
-export interface PostMessageInput {
+export interface SessionFence {
+  session_id?: string;
+  generation?: number;
+}
+export interface PostMessageInput extends SessionFence {
   request_id: string;
   body: string;
   reply_to_message_id?: string;
 }
-export interface ReadMessagesInput {
+export interface ReadMessagesInput extends SessionFence {
   after_seq?: number;
   limit?: number;
   through_seq?: number;
 }
-export interface PostReceipt {
+export interface PostReceipt extends SessionFence {
   table_id: string;
   message_id: string;
   seq: number;
@@ -39,7 +43,7 @@ export interface TranscriptMessage {
   created_at: string;
   reply_to_message_id?: string;
 }
-export interface TranscriptPage {
+export interface TranscriptPage extends SessionFence {
   messages: TranscriptMessage[];
   next_after_seq: number;
   through_seq: number;
@@ -47,14 +51,30 @@ export interface TranscriptPage {
   own_inbox_uri: string;
   latest_peer_seq: number;
 }
+function validFence(item: Record<string, unknown>): boolean {
+  return (
+    (item.session_id === undefined && item.generation === undefined) ||
+    (validTableId(item.session_id) &&
+      Number.isSafeInteger(item.generation) &&
+      (item.generation as number) >= 1)
+  );
+}
 const KEY = /^[A-Za-z0-9_-]{16,128}$/;
 
 export function validPostInput(value: unknown): value is PostMessageInput {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const item = value as Record<string, unknown>;
+  if (!validFence(item)) return false;
   if (
     Object.keys(item).some(
-      (key) => !["request_id", "body", "reply_to_message_id"].includes(key),
+      (key) =>
+        ![
+          "request_id",
+          "body",
+          "reply_to_message_id",
+          "session_id",
+          "generation",
+        ].includes(key),
     ) ||
     typeof item.request_id !== "string" ||
     !KEY.test(item.request_id) ||
@@ -77,9 +97,17 @@ export function validPostInput(value: unknown): value is PostMessageInput {
 export function validReadInput(value: unknown): value is ReadMessagesInput {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const item = value as Record<string, unknown>;
+  if (!validFence(item)) return false;
   if (
     Object.keys(item).some(
-      (key) => !["after_seq", "through_seq", "limit"].includes(key),
+      (key) =>
+        ![
+          "after_seq",
+          "through_seq",
+          "limit",
+          "session_id",
+          "generation",
+        ].includes(key),
     )
   )
     return false;

@@ -73,3 +73,5 @@ not transcript content or autonomous host wake-ups. Each stream ends after at
 most four hints or one minute; reconnect and read the durable cursor to catch
 up. Staging costs and external host compatibility remain **NOT RUN**. See the
 [current Issue #18 status](docs/notifications.md#current-issue-18-public-mcp-live-inbox-status-2026-11-10-jst).
+
+Reusable private channels and one-hour conversations: [API, migration and privacy contract](docs/reusable-conversations.md).

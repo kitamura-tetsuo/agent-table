@@ -7,9 +7,9 @@ import {
 describe("application schema manifest", () => {
   it("is a contiguous, immutable forward-only migration sequence", () => {
     expect(migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
     ]);
-    expect(APPLICATION_SCHEMA_VERSION).toBe(14);
+    expect(APPLICATION_SCHEMA_VERSION).toBe(15);
     expect(
       migrations.every(
         (migration) =>

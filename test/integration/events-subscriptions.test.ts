@@ -668,7 +668,10 @@ describe("production MCP Events registration, OAuth and TableDO", () => {
     try {
       expect(client.getServerCapabilities()).not.toHaveProperty("events");
       expect(await callEvent(client, "events/list")).toMatchObject({
-        events: [{ name: "table.message.created", delivery: ["webhook"] }],
+        events: [
+          { name: "table.message.created", delivery: ["webhook"] },
+          { name: "table.resume.requested", delivery: ["webhook"] },
+        ],
       });
       expect(
         await callEvent(client, "events/list", {
@@ -676,7 +679,10 @@ describe("production MCP Events registration, OAuth and TableDO", () => {
           _meta: { progressToken: "synthetic" },
         }),
       ).toMatchObject({
-        events: [{ name: "table.message.created" }],
+        events: [
+          { name: "table.message.created" },
+          { name: "table.resume.requested" },
+        ],
       });
       await expect(
         callEvent(client, "events/list", { cursor: "forged" }),
@@ -1731,10 +1737,6 @@ describe("authenticated event producer through native alarm and HTTPS sender (co
         const harness = instance as unknown as {
           env: Env;
           outboxDispatchEnabled(): boolean;
-          closeTableForGuest(
-            guestId: string,
-            requestId: string,
-          ): Promise<{ ok: boolean }>;
         };
         harness.env = {
           ...harness.env,
@@ -1742,8 +1744,16 @@ describe("authenticated event producer through native alarm and HTTPS sender (co
         };
         harness.outboxDispatchEnabled = () => true;
         closeAfterSendStarts = async () => {
-          const closed = await harness.closeTableForGuest(
+          const authority = await authorizeGuestConnection(
+            harness.env,
             owner.guestId,
+            owner.connectionId,
+            "tables:write",
+          );
+          if (!authority.allowed)
+            throw new Error("Missing synthetic close authority");
+          const closed = await instance.closeTable(
+            authority.actor,
             crypto.randomUUID(),
           );
           expect(closed.ok).toBe(true);

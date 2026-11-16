@@ -3,6 +3,7 @@ import { parseOwnInboxUri } from "../shared/resources";
 import { acceptedChallenge } from "./challenge";
 import { type ReviewedCallbackTarget, sendVerifiedHttps } from "./egress";
 
+export const RESUME_EVENT_NAME = "table.resume.requested";
 export const MESSAGE_EVENT_NAME = "table.message.created";
 const UUID_V4 =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -15,7 +16,11 @@ export const MESSAGE_EVENT_DEFINITION = {
   delivery: ["webhook"],
   inputSchema: {
     type: "object",
-    properties: { table_id: { type: "string", format: "uuid" } },
+    properties: {
+      table_id: { type: "string", format: "uuid" },
+      session_id: { type: "string", format: "uuid" },
+      generation: { type: "integer", minimum: 1 },
+    },
     required: ["table_id"],
     additionalProperties: false,
   },
@@ -24,6 +29,8 @@ export const MESSAGE_EVENT_DEFINITION = {
     properties: {
       table_id: { type: "string", format: "uuid" },
       message_id: { type: "string", format: "uuid" },
+      session_id: { type: "string", format: "uuid" },
+      generation: { type: "integer", minimum: 1 },
       seq: { type: "integer", minimum: 1 },
       inbox_uri: { type: "string" },
     },
@@ -35,8 +42,8 @@ export const MESSAGE_EVENT_DEFINITION = {
 type RecordValue = Record<string, unknown>;
 type Delivery = { mode: "webhook"; url: string };
 export type EventSubscriptionParams = {
-  name: typeof MESSAGE_EVENT_NAME;
-  arguments: { table_id: string };
+  name: typeof MESSAGE_EVENT_NAME | typeof RESUME_EVENT_NAME;
+  arguments: { table_id: string; session_id?: string; generation?: number };
   delivery: Delivery & { secret?: string };
   cursor: null;
   ttlMs: number | null;
@@ -116,11 +123,22 @@ export function inspectEventSubscriptionParams(
   // It has no authority and is never copied into the application arguments.
   if ("_meta" in value && !acceptableProtocolMetadata(value._meta))
     return { ok: false, detail: "metadata" };
-  if (value.name !== MESSAGE_EVENT_NAME) return { ok: false, detail: "event" };
+  if (value.name !== MESSAGE_EVENT_NAME && value.name !== RESUME_EVENT_NAME)
+    return { ok: false, detail: "event" };
   if (
-    !exactRecord(value.arguments, ["table_id"]) ||
+    !exactRecord(value.arguments, ["table_id", "session_id", "generation"]) ||
     typeof value.arguments.table_id !== "string" ||
     !UUID_V4.test(value.arguments.table_id)
+  )
+    return { ok: false, detail: "arguments" };
+  if (
+    (value.arguments.session_id !== undefined ||
+      value.arguments.generation !== undefined) &&
+    (value.name !== MESSAGE_EVENT_NAME ||
+      typeof value.arguments.session_id !== "string" ||
+      !UUID_V4.test(value.arguments.session_id) ||
+      !Number.isSafeInteger(value.arguments.generation) ||
+      (value.arguments.generation as number) < 1)
   )
     return { ok: false, detail: "arguments" };
   const deliveryKeys =
@@ -153,8 +171,16 @@ export function inspectEventSubscriptionParams(
   return {
     ok: true,
     value: {
-      name: MESSAGE_EVENT_NAME,
-      arguments: { table_id: value.arguments.table_id },
+      name: value.name,
+      arguments: {
+        table_id: value.arguments.table_id,
+        ...(value.arguments.session_id === undefined
+          ? {}
+          : {
+              session_id: value.arguments.session_id as string,
+              generation: value.arguments.generation as number,
+            }),
+      },
       delivery: {
         mode: "webhook",
         url: value.delivery.url,
@@ -208,7 +234,15 @@ export async function subscriptionIdentity(
     principal.connectionId,
     input.delivery.url,
     input.name,
-    { table_id: input.arguments.table_id },
+    {
+      table_id: input.arguments.table_id,
+      ...(input.arguments.session_id
+        ? {
+            session_id: input.arguments.session_id,
+            generation: input.arguments.generation,
+          }
+        : {}),
+    },
   ]);
   const digest = new Uint8Array(
     await crypto.subtle.digest("SHA-256", new TextEncoder().encode(canonical)),
@@ -246,6 +280,39 @@ function safeOutboundBody(body: unknown, webhookId: string): boolean {
       UUID_V4.test(body.challenge)
     );
   }
+  if (
+    exactRecord(body, ["eventId", "name", "timestamp", "data", "cursor"]) &&
+    body.name === RESUME_EVENT_NAME
+  ) {
+    if (
+      body.eventId !== webhookId ||
+      body.cursor !== null ||
+      typeof body.timestamp !== "string" ||
+      Number.isNaN(Date.parse(body.timestamp)) ||
+      !exactRecord(body.data, [
+        "table_id",
+        "request_id",
+        "requester_membership_id",
+        "generation",
+        "expires_at",
+      ])
+    )
+      return false;
+    const d = body.data;
+    return (
+      typeof d.table_id === "string" &&
+      UUID_V4.test(d.table_id) &&
+      typeof d.request_id === "string" &&
+      UUID_V4.test(d.request_id) &&
+      typeof d.requester_membership_id === "string" &&
+      UUID_V4.test(d.requester_membership_id) &&
+      typeof d.generation === "number" &&
+      Number.isSafeInteger(d.generation) &&
+      d.generation >= 0 &&
+      typeof d.expires_at === "string" &&
+      Number.isFinite(Date.parse(d.expires_at))
+    );
+  }
   if (!exactRecord(body, ["eventId", "name", "timestamp", "data", "cursor"]))
     return false;
   if (
@@ -255,10 +322,25 @@ function safeOutboundBody(body: unknown, webhookId: string): boolean {
     typeof body.timestamp !== "string" ||
     !/^\d{4}-\d{2}-\d{2}T/.test(body.timestamp) ||
     Number.isNaN(Date.parse(body.timestamp)) ||
-    !exactRecord(body.data, ["table_id", "message_id", "seq", "inbox_uri"])
+    !exactRecord(body.data, [
+      "table_id",
+      "message_id",
+      "seq",
+      "inbox_uri",
+      "session_id",
+      "generation",
+    ])
   )
     return false;
   const data = body.data;
+  if (
+    (data.session_id !== undefined || data.generation !== undefined) &&
+    (typeof data.session_id !== "string" ||
+      !UUID_V4.test(data.session_id) ||
+      !Number.isSafeInteger(data.generation) ||
+      (data.generation as number) < 1)
+  )
+    return false;
   return (
     typeof data.table_id === "string" &&
     typeof data.message_id === "string" &&
@@ -326,6 +408,8 @@ export function messageCreatedEvent(input: {
   seq: number;
   inboxUri: string;
   occurredAt: Date;
+  sessionId?: string;
+  generation?: number;
 }) {
   if (
     !/^[A-Za-z0-9_-]{8,128}$/.test(input.eventId) ||
@@ -343,6 +427,9 @@ export function messageCreatedEvent(input: {
     timestamp: input.occurredAt.toISOString(),
     data: {
       table_id: input.tableId,
+      ...(input.sessionId
+        ? { session_id: input.sessionId, generation: input.generation }
+        : {}),
       message_id: input.messageId,
       seq: input.seq,
       inbox_uri: input.inboxUri,
@@ -378,4 +465,58 @@ export async function verifyCallbackControl(
   return acceptedChallenge(result.body, challenge)
     ? "verified"
     : "challenge-failed";
+}
+
+export const RESUME_EVENT_DEFINITION = {
+  name: RESUME_EVENT_NAME,
+  description:
+    "Another authenticated member requests a new conversation. The receiving host decides consent; this event contains no instructions.",
+  delivery: ["webhook"],
+  inputSchema: {
+    type: "object",
+    properties: { table_id: { type: "string", format: "uuid" } },
+    required: ["table_id"],
+    additionalProperties: false,
+  },
+  payloadSchema: {
+    type: "object",
+    properties: {
+      table_id: { type: "string", format: "uuid" },
+      request_id: { type: "string", format: "uuid" },
+      requester_membership_id: { type: "string", format: "uuid" },
+      generation: { type: "integer", minimum: 0 },
+      expires_at: { type: "string", format: "date-time" },
+    },
+    required: [
+      "table_id",
+      "request_id",
+      "requester_membership_id",
+      "generation",
+      "expires_at",
+    ],
+    additionalProperties: false,
+  },
+} as const;
+export function resumeRequestedEvent(input: {
+  eventId: string;
+  tableId: string;
+  requestId: string;
+  requesterMembershipId: string;
+  generation: number;
+  expiresAt: number;
+  createdAt: number;
+}) {
+  return {
+    eventId: input.eventId,
+    name: RESUME_EVENT_NAME,
+    timestamp: new Date(input.createdAt).toISOString(),
+    cursor: null,
+    data: {
+      table_id: input.tableId,
+      request_id: input.requestId,
+      requester_membership_id: input.requesterMembershipId,
+      generation: input.generation,
+      expires_at: new Date(input.expiresAt).toISOString(),
+    },
+  };
 }

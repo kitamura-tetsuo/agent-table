@@ -43,7 +43,7 @@ function record(environment = "staging") {
     generation: "a".repeat(64),
     buildSha: "b".repeat(40),
     configSha256: "c".repeat(64),
-    schemaVersion: 14,
+    schemaVersion: 15,
     namespaceIdentity: {
       ...structuredClone(identity),
       workerName: `agent-table-${environment}`,
@@ -269,7 +269,7 @@ test("strict metadata schema and canonical digests exclude malformed phase autho
       delete value.planSha256;
     },
     (value) => {
-      value.schemaVersion = 15;
+      value.schemaVersion = 16;
     },
     (value) => {
       value.namespaceIdentity.namespaces.GUESTS =
@@ -712,14 +712,14 @@ for (const historicalVersion of [12, 13])
     );
     assert.equal(mock.calls.length, before);
     const replacement = next(historical, "prepared", {
-      schemaVersion: 14,
+      schemaVersion: 15,
       operationId: "22222222-2222-4222-8222-222222222222",
       generation: "3".repeat(64),
       buildSha: "4".repeat(40),
     });
     await persist(mock, replacement);
     const latest = await readRecoveryJournal("staging", mock.client);
-    assert.equal(latest.record.schemaVersion, 14);
+    assert.equal(latest.record.schemaVersion, 15);
     assert.equal(latest.record.previousRecordSha256, digest);
     assert.equal(latest.history[0].digest, digest);
     await assert.rejects(

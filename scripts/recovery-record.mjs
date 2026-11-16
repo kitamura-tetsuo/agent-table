@@ -110,7 +110,7 @@ export function validateRecoveryRecord(value) {
       matches(value.generation, DIGEST) &&
       matches(value.buildSha, SHA) &&
       matches(value.configSha256, DIGEST) &&
-      [12, 13, 14].includes(value.schemaVersion) &&
+      [12, 13, 14, 15].includes(value.schemaVersion) &&
       validateRecoveryNamespaceIdentity(value.namespaceIdentity) &&
       matches(value.planSha256, DIGEST) &&
       matches(value.previousRecordSha256, DIGEST) &&
@@ -548,7 +548,7 @@ export async function readRecoveryJournal(environment, client) {
 /** Git non-force update makes competing sibling commits fail instead of overwrite. */
 export async function writeRecoveryJournalCAS(next, expected, client) {
   validateRecoveryRecord(next);
-  requireRecord(next.schemaVersion === 14, "recovery-current-schema-required");
+  requireRecord(next.schemaVersion === 15, "recovery-current-schema-required");
   requireRecord(
     exact(expected, ["headSha", "recordSha256"]) &&
       (expected.headSha === null || matches(expected.headSha, SHA)) &&

@@ -28,7 +28,7 @@ export interface RecoveryClaims {
   environment: "local" | "staging" | "production";
   buildSha: string;
   configSha256: string;
-  schemaVersion: 14;
+  schemaVersion: 15;
   namespaceIdentity: RecoveryNamespaceIdentity;
   planSha256: string;
   evidenceSha256: string | null;
@@ -157,7 +157,7 @@ export function validateRecoveryClaims(value: unknown): RecoveryClaims | null {
     !SHA1.test(value.buildSha) ||
     typeof value.configSha256 !== "string" ||
     !SHA256.test(value.configSha256) ||
-    value.schemaVersion !== 14 ||
+    value.schemaVersion !== 15 ||
     !validateRecoveryNamespaceIdentity(value.namespaceIdentity) ||
     typeof value.planSha256 !== "string" ||
     !SHA256.test(value.planSha256) ||

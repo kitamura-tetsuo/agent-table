@@ -284,7 +284,7 @@ function successorInspectionFixture() {
     structuredClone(canonicalInspection);
   // Fresh in-memory current-schema fixture; never rewrite the historical JSON
   // or represent its schema-12 inspection as evidence for schema 13.
-  expected.schemaVersion = 14;
+  expected.schemaVersion = 15;
   const descriptors = {
     TABLES: TABLE_RECOVERY_STORAGE,
     GUESTS: GUEST_RECOVERY_STORAGE,

@@ -4,6 +4,8 @@ export type CanonicalInboxFilter = {
   readonly uri: string;
   readonly tableId: string;
   readonly membershipId: string;
+  readonly session_id?: string;
+  readonly generation?: number;
 };
 
 // A preflight snapshot is not a stream lease or an acknowledgment. A future
@@ -61,6 +63,19 @@ export function parseCanonicalInboxFilter(
   // Live streams require a single byte-exact canonical URI, without aliases.
   const tableId = parsed.tableId.toLowerCase();
   const membershipId = parsed.membershipId.toLowerCase();
-  if (ownInboxUri(tableId, membershipId) !== uri) return null;
-  return { uri, tableId, membershipId };
+  const session = parsed.session_id
+    ? {
+        sessionId: parsed.session_id.toLowerCase(),
+        generation: parsed.generation as number,
+      }
+    : null;
+  if (ownInboxUri(tableId, membershipId, session) !== uri) return null;
+  return {
+    uri,
+    tableId,
+    membershipId,
+    ...(session
+      ? { session_id: session.sessionId, generation: session.generation }
+      : {}),
+  };
 }

@@ -1,38 +1,38 @@
-import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { createPrivateKey, createHash, sign } from "node:crypto";
+import { createHash, createPrivateKey, sign } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import https from "node:https";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import https from "node:https";
 import { DatabaseSync } from "node:sqlite";
+import test from "node:test";
+import { relayAttemptLedgerSchema } from "../schema/013_relay_attempt_ledger.ts";
+import {
+  reconcileRelayOutboxAttempt,
+  reserveOutboxAttempt,
+  settleOutboxAttempt,
+} from "../src/notifications/outbox.ts";
+import {
+  markRelayDispatched,
+  markRelayUnknown,
+  prepareRelayAttempt,
+  recordRelayReceipt,
+} from "../src/notifications/relay-attempt-ledger.ts";
 import { createRelayApplication } from "./egress-relay-application.mjs";
 import { createRelayHttpsServer } from "./egress-relay-http.mjs";
 import {
   createRelayIngress,
   relayMessageSigningBytes,
-  relayStatusSigningBytes,
   relayOperationDigest,
+  relayStatusSigningBytes,
 } from "./egress-relay-ingress-prototype.mjs";
 import { openRelayAdmissionStore } from "./relay-admission-store.mjs";
 import {
-  planUncertainRecovery,
   applyUncertainRecovery,
+  planUncertainRecovery,
   readUncertainRecovery,
 } from "./relay-uncertain-reconciliation.mjs";
-import { relayAttemptLedgerSchema } from "../schema/013_relay_attempt_ledger.ts";
-import {
-  prepareRelayAttempt,
-  markRelayDispatched,
-  markRelayUnknown,
-  recordRelayReceipt,
-} from "../src/notifications/relay-attempt-ledger.ts";
-import {
-  reserveOutboxAttempt,
-  reconcileRelayOutboxAttempt,
-  settleOutboxAttempt,
-} from "../src/notifications/outbox.ts";
 
 const callerId = "synthetic-worker-1",
   audience = "test:synthetic-relay";
@@ -189,13 +189,19 @@ test("signed local intake, operator recovery, real application resume and Worker
     worker.exec(
       `CREATE TABLE table_metadata(state TEXT,expires_at INTEGER); CREATE TABLE table_event_subscriptions(membership_id TEXT,subscription_id TEXT,generation INTEGER,status TEXT,expires_at INTEGER); CREATE TABLE table_event_outbox(event_id TEXT PRIMARY KEY,subscription_id TEXT,recipient_membership_id TEXT,subscription_generation INTEGER,status TEXT,attempt_count INTEGER,first_attempt_at INTEGER,next_attempt_at INTEGER,lease_token TEXT,lease_deadline INTEGER,last_error_category TEXT,expires_at INTEGER);`,
     );
+    // Model current channel/session authority in this isolated helper ledger.
+    worker.exec(
+      "ALTER TABLE table_metadata ADD COLUMN singleton INTEGER DEFAULT 1; ALTER TABLE table_metadata ADD COLUMN table_id TEXT DEFAULT 'synthetic-table'; ALTER TABLE table_event_subscriptions ADD COLUMN event_name TEXT DEFAULT 'table.message.created'; ALTER TABLE table_event_subscriptions ADD COLUMN session_id TEXT; ALTER TABLE table_event_subscriptions ADD COLUMN session_generation INTEGER DEFAULT 0; ALTER TABLE table_event_subscriptions ADD COLUMN guest_id TEXT DEFAULT 'synthetic-guest'; ALTER TABLE table_event_outbox ADD COLUMN event_name TEXT DEFAULT 'table.message.created'; ALTER TABLE table_event_outbox ADD COLUMN session_id TEXT; ALTER TABLE table_event_outbox ADD COLUMN session_generation INTEGER DEFAULT 0; ALTER TABLE table_event_outbox ADD COLUMN message_id TEXT; CREATE TABLE table_memberships(membership_id TEXT,guest_id TEXT,table_id TEXT); CREATE TABLE table_channel(singleton INTEGER,generation INTEGER,session_id TEXT,deadline INTEGER); CREATE TABLE table_resume_requests(request_id TEXT,generation INTEGER,recipient TEXT,requester TEXT,status TEXT,expires_at INTEGER); INSERT INTO table_memberships VALUES('member','synthetic-guest','synthetic-table');",
+    );
     for (const statement of relayAttemptLedgerSchema.componentStatements.table)
       worker.exec(statement);
     worker
-      .prepare("INSERT INTO table_metadata VALUES (?,?)")
+      .prepare("INSERT INTO table_metadata(state,expires_at) VALUES (?,?)")
       .run("open", now + 3600000);
     worker
-      .prepare("INSERT INTO table_event_subscriptions VALUES (?,?,?,?,?)")
+      .prepare(
+        "INSERT INTO table_event_subscriptions(membership_id,subscription_id,generation,status,expires_at) VALUES (?,?,?,?,?)",
+      )
       .run("member", "synthetic-subscription-1", 1, "active", now + 3600000);
     worker
       .prepare(

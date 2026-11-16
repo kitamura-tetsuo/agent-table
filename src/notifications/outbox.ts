@@ -90,6 +90,33 @@ export function classifyAttemptOutcome(
  * A timed-out lease can only be reclaimed after its original deadline.
  * Execute inside a DO storage transaction with a prearmed recovery wakeup.
  */
+/** Synchronous channel/session authority for both lease and completion. */
+function currentSessionAuthority(
+  sql: OutboxSql,
+  eventId: string,
+  now: number,
+): boolean {
+  return (
+    sql
+      .exec(
+        "SELECT 1 FROM table_event_outbox o JOIN table_metadata t ON t.singleton=1 " +
+          "JOIN table_event_subscriptions s ON s.membership_id=o.recipient_membership_id AND s.subscription_id=o.subscription_id AND s.generation=o.subscription_generation AND s.event_name=o.event_name " +
+          "JOIN table_memberships m ON m.membership_id=s.membership_id AND m.guest_id=s.guest_id AND m.table_id=t.table_id " +
+          "WHERE o.event_id=? AND s.status='active' AND s.expires_at>? AND t.state IN ('waiting','open') AND " +
+          "((NOT EXISTS(SELECT 1 FROM table_channel) AND t.expires_at>?) OR " +
+          "EXISTS(SELECT 1 FROM table_channel c WHERE c.singleton=1 AND t.state='open' AND (SELECT COUNT(*) FROM table_memberships)=2 AND " +
+          "((o.event_name='table.message.created' AND c.session_id=o.session_id AND c.generation=o.session_generation AND c.deadline>? AND s.session_id=c.session_id AND s.session_generation=c.generation) OR " +
+          "(o.event_name='table.resume.requested' AND c.session_id IS NULL AND c.generation=o.session_generation AND EXISTS(SELECT 1 FROM table_resume_requests r WHERE r.request_id=o.message_id AND r.generation=c.generation AND r.recipient=m.membership_id AND r.requester<>m.membership_id AND r.status='pending' AND r.expires_at>?)))))",
+        eventId,
+        now,
+        now,
+        now,
+        now,
+      )
+      .toArray().length === 1
+  );
+}
+
 export function reserveOutboxAttempt(
   sql: OutboxSql,
   eventId: string,
@@ -105,6 +132,7 @@ export function reserveOutboxAttempt(
     authorityExpiresAt <= now
   )
     return null;
+  if (!currentSessionAuthority(sql, eventId, now)) return null;
   const row = sql
     .exec<OutboxRow>(
       "SELECT * FROM table_event_outbox WHERE event_id = ?",
@@ -156,7 +184,7 @@ export function reserveOutboxAttempt(
        )
        AND EXISTS (
          SELECT 1 FROM table_metadata
-         WHERE state IN ('waiting', 'open') AND expires_at > ?
+         WHERE state IN ('waiting', 'open') AND (expires_at > ? OR EXISTS(SELECT 1 FROM table_channel WHERE singleton=1))
        )`,
     firstAttemptAt,
     leaseToken,
@@ -232,6 +260,7 @@ function settleMatchingOutboxAttempt(
   recovery: boolean,
 ): "accepted" | "pending" | "failed" | null {
   if (!Number.isSafeInteger(now) || now <= 0) return null;
+  if (!currentSessionAuthority(sql, lease.eventId, now)) return null;
   const row = sql
     .exec<OutboxRow>(
       "SELECT * FROM table_event_outbox WHERE event_id = ?",
@@ -296,7 +325,7 @@ function settleMatchingOutboxAttempt(
        )
        AND EXISTS (
          SELECT 1 FROM table_metadata
-         WHERE state IN ('waiting', 'open') AND expires_at > ?
+         WHERE state IN ('waiting', 'open') AND (expires_at > ? OR EXISTS(SELECT 1 FROM table_channel WHERE singleton=1))
        )`,
     status,
     error,

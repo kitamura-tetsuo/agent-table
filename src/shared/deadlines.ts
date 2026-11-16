@@ -56,6 +56,7 @@ export class DurableDeadlineScheduler {
   commitWithWakeup<T>(
     deadline: number,
     mutation: () => T,
+    beforeMutation?: () => Promise<void>,
   ): Promise<DeadlineObservation<T>> {
     if (!validDeadline(deadline)) {
       return Promise.reject(new Error("Invalid durable deadline"));
@@ -69,6 +70,9 @@ export class DurableDeadlineScheduler {
           await txn.setAlarm(next);
         }
         await this.checkpoint("after-arm");
+        // Read-only authorization may be repeated if the storage transaction retries.
+        // It must precede the synchronous mutation, after all local scheduling waits.
+        await beforeMutation?.();
         const value = this.storage.transactionSync(mutation);
         await this.checkpoint("after-mutation");
         return { value, alarmAt: next };

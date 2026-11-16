@@ -75,7 +75,7 @@ function testEnvironment(proposal) {
       environment: "staging",
       buildSha: SOURCE,
       configSha256: "0".repeat(64),
-      schemaVersion: 14,
+      schemaVersion: 15,
       namespaceIdentity: proposal.subject.namespaceIdentity,
       planSha256: "a".repeat(64),
       evidenceSha256: proposal.evidence.canonicalSha256,
