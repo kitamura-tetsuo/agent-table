@@ -118,6 +118,8 @@ test("no exception in production or without explicit risk/config", () => {
     (v) => (v.RELEASE_ENVIRONMENT = "production"),
     (v) => delete v.TEST_NATIVE_EVENTS_RISK_ACCEPTANCE,
     (v) => (v.EVENTS_REVIEWED_CALLBACK_TARGETS = "[]"),
+    (v) => (v.EVENTS_RELAY_CONFIGURATION = "{}"),
+    (v) => (v.PRIVATE_PILOT_POLICY = "{}"),
   ]) {
     const f = fixture(),
       config = JSON.parse(f.configText);
@@ -150,10 +152,72 @@ test("scope, data and stop-plan approvals cannot be omitted", async () => {
     );
   }
 });
+test("native activation refuses a retained relay secret in inventory or any provider surface", async () => {
+  const f = fixture();
+  const secretName = "EVENTS_RELAY_SIGNING_KEY_PKCS8";
+  assert.throws(
+    () =>
+      validateRelease({
+        ...f,
+        secrets: {
+          ...f.inventory,
+          bindings: [...f.inventory.bindings, secretName],
+        },
+      }),
+    /relay-secret-in-test-native-profile/,
+  );
+  const config = JSON.parse(f.configText),
+    peer = JSON.parse(f.peerText);
+  for (const surface of ["settings", "version", "secrets"]) {
+    const provider = makeProviderMock(config, peer);
+    const base = `/client/v4/accounts/${config.account_id}/workers/scripts/${config.name}`;
+    const binding = { name: secretName, type: "secret_text" };
+    if (surface === "settings")
+      provider.routes.get(`${base}/settings`).bindings.push(binding);
+    if (surface === "version")
+      provider.routes
+        .get(`${base}/versions/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb`)
+        .resources.bindings.push(binding);
+    if (surface === "secrets")
+      provider.routes.get(`${base}/secrets`).push(binding);
+    await assert.rejects(
+      authorizeRelease({
+        ...f,
+        cloudflareRead: provider.read,
+        githubRead: makeGithubMock().read,
+        now,
+      }),
+      /provider-test-native-relay-secret-present/,
+    );
+  }
+  assert.throws(
+    () =>
+      verifyDeployedConfiguration(
+        {
+          textBindings: config.vars,
+          secretNames: [secretName],
+        },
+        config,
+      ),
+    /provider-deployed-test-native-profile-unverified/,
+  );
+  assert.doesNotThrow(() =>
+    verifyDeployedConfiguration(
+      {
+        textBindings: config.vars,
+        secretNames: f.inventory.bindings,
+      },
+      config,
+    ),
+  );
+});
 test("postdeploy readback requires exact risk and callback binding removal on rollback", () => {
   const f = fixture(),
     config = JSON.parse(f.configText);
-  const observed = { textBindings: { ...config.vars } };
+  const observed = {
+    textBindings: { ...config.vars },
+    secretNames: f.inventory.bindings,
+  };
   verifyDeployedConfiguration(observed, config);
   for (const name of [
     "TEST_NATIVE_EVENTS_RISK_ACCEPTANCE",

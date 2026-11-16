@@ -18,6 +18,9 @@ export interface TestNativeBindings {
   ALLOW_OUTBOUND_NOTIFICATIONS?: string;
   TEST_NATIVE_EVENTS_RISK_ACCEPTANCE?: string;
   EVENTS_REVIEWED_CALLBACK_TARGETS?: string;
+  PRIVATE_PILOT_POLICY?: string;
+  EVENTS_RELAY_CONFIGURATION?: string;
+  EVENTS_RELAY_SIGNING_KEY_PKCS8?: string;
 }
 
 /** No table/guest exception: normal durable membership and scope checks apply. */
@@ -31,6 +34,11 @@ export function testNativeEventsAllowed(env: TestNativeBindings): boolean {
     env.ENABLE_OPENAI_EVENTS === "true" &&
     env.ALLOW_OUTBOUND_NOTIFICATIONS === "true" &&
     env.TEST_NATIVE_EVENTS_RISK_ACCEPTANCE === TEST_NATIVE_EVENTS_RISK &&
+    // A staging exception must never silently ignore a stale selected scope or
+    // production transport identity (including an installed relay secret).
+    env.PRIVATE_PILOT_POLICY === undefined &&
+    env.EVENTS_RELAY_CONFIGURATION === undefined &&
+    env.EVENTS_RELAY_SIGNING_KEY_PKCS8 === undefined &&
     reviewedCallbackTargets(env.EVENTS_REVIEWED_CALLBACK_TARGETS).length > 0
   );
 }
