@@ -1196,4 +1196,140 @@ describe("Reusable private channel/session contract in SQLite Workerd", () => {
       value: { state: "open", session: { generation: 1 } },
     });
   });
+  it("reconstructs uncertain committed request/accept/end results without duplicating or reviving epochs", async () => {
+    const f = await fixture(),
+      request = {
+        request_id: crypto.randomUUID(),
+        generation: 0,
+        requested_at: Date.now(),
+      },
+      peer = await f.peer.actor("tables:write");
+    const uncertain = async (
+      operation: "request" | "accept" | "end",
+      fence?: { session_id: string; generation: number },
+    ) => {
+      const result = await runInDurableObject(f.stub, async (instance) => {
+        const h = instance as unknown as {
+          deadlines: { checkpoint: (phase: string) => Promise<void> };
+        };
+        h.deadlines.checkpoint = async (phase) => {
+          if (phase === "after-durable-commit")
+            throw new Error("synthetic-uncertain-result");
+        };
+        try {
+          if (operation === "request")
+            await instance.requestTableResume(f.writer, request);
+          else if (operation === "accept")
+            await instance.respondTableResume(peer, {
+              request_id: request.request_id,
+              generation: 0,
+              decision: "accept",
+            });
+          else if (fence)
+            await instance.endConversation(f.writer, {
+              ...fence,
+              request_id: "uncertain_end_request_79",
+            });
+          return "unexpected-success";
+        } catch (error) {
+          return String(error);
+        }
+      });
+      expect(result).toContain("synthetic-uncertain-result");
+      await evictDurableObject(f.stub);
+    };
+    await uncertain("request");
+    expect(await f.stub.requestTableResume(f.writer, request)).toMatchObject({
+      ok: true,
+      value: { state: "pending" },
+    });
+    await uncertain("accept");
+    const accepted = await f.stub.respondTableResume(peer, {
+      request_id: request.request_id,
+      generation: 0,
+      decision: "accept",
+    });
+    if (!accepted.ok || !accepted.value.sessionId)
+      throw new Error("Missing committed acceptance");
+    const fence = { session_id: accepted.value.sessionId, generation: 1 };
+    await uncertain("end", fence);
+    expect(
+      await f.stub.endConversation(f.writer, {
+        ...fence,
+        request_id: "uncertain_end_request_79",
+      }),
+    ).toMatchObject({ ok: true, value: { state: "ended" } });
+    expect((await start(f, 1)).fence.generation).toBe(2);
+    await f.stub.respondTableResume(peer, {
+      request_id: request.request_id,
+      generation: 0,
+      decision: "accept",
+    });
+    await runInDurableObject(f.stub, (_i, state) => {
+      expect(
+        state.storage.sql.exec("SELECT generation FROM table_channel").one(),
+      ).toEqual({ generation: 2 });
+      expect(
+        state.storage.sql
+          .exec("SELECT COUNT(*) n FROM table_session_terminals")
+          .one(),
+      ).toEqual({ n: 1 });
+    });
+  });
+
+  it("cancels channel subscriptions and delayed verification independently from the current message subscription", async () => {
+    const f = await fixture();
+    const channel = await subscribe(f, f.peer, RESUME_EVENT_NAME),
+      session = await start(f);
+    const messages = await subscribe(
+      f,
+      f.peer,
+      "table.message.created",
+      session.fence,
+    );
+    const pending = await f.stub.beginEventSubscription(
+      channel.actor,
+      channel.params,
+    );
+    if (!pending.ok) throw new Error("Missing refresh candidate");
+    const params = {
+      name: RESUME_EVENT_NAME,
+      arguments: { table_id: f.id },
+      delivery: { mode: "webhook", url: CALLBACK },
+    };
+    expect((await f.stub.unsubscribeEvent(channel.actor, params)).ok).toBe(
+      true,
+    );
+    expect(
+      await f.stub.commitVerifiedEventSubscription(
+        channel.actor,
+        pending.value.candidateId,
+      ),
+    ).toEqual({ ok: false, code: "STALE" });
+    await evictDurableObject(f.stub);
+    await runInDurableObject(f.stub, (_i, state) => {
+      expect(
+        state.storage.sql
+          .exec(
+            "SELECT subscription_id FROM table_event_subscriptions WHERE status='active'",
+          )
+          .toArray(),
+      ).toEqual([{ subscription_id: messages.result.value.id }]);
+    });
+    await f.stub.endConversation(f.writer, {
+      ...session.fence,
+      request_id: crypto.randomUUID(),
+    });
+    await subscribe(f, f.peer, RESUME_EVENT_NAME);
+    expect(
+      (
+        await f.stub.requestTableResume(f.writer, {
+          request_id: crypto.randomUUID(),
+          generation: 1,
+          requested_at: Date.now(),
+        })
+      ).ok,
+    ).toBe(true);
+    expect(await counts(f)).toMatchObject({ table_event_outbox: 1 });
+  });
 });

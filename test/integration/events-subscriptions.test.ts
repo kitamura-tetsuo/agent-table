@@ -1737,10 +1737,6 @@ describe("authenticated event producer through native alarm and HTTPS sender (co
         const harness = instance as unknown as {
           env: Env;
           outboxDispatchEnabled(): boolean;
-          closeTableForGuest(
-            guestId: string,
-            requestId: string,
-          ): Promise<{ ok: boolean }>;
         };
         harness.env = {
           ...harness.env,
@@ -1748,8 +1744,16 @@ describe("authenticated event producer through native alarm and HTTPS sender (co
         };
         harness.outboxDispatchEnabled = () => true;
         closeAfterSendStarts = async () => {
-          const closed = await harness.closeTableForGuest(
+          const authority = await authorizeGuestConnection(
+            harness.env,
             owner.guestId,
+            owner.connectionId,
+            "tables:write",
+          );
+          if (!authority.allowed)
+            throw new Error("Missing synthetic close authority");
+          const closed = await instance.closeTable(
+            authority.actor,
             crypto.randomUUID(),
           );
           expect(closed.ok).toBe(true);
