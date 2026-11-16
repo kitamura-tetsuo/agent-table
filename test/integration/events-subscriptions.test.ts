@@ -4286,6 +4286,7 @@ async function scopedSignedRelayScenario(seedExisting = false) {
     PRIVATE_PILOT_POLICY: JSON.stringify(policy),
   };
   let challengeMode: "verified" | "unknown" | "failed" | "pending" = "verified";
+  let messageMode: "completed" | "unknown" = "completed";
   const calls: Array<{
     kind: string;
     requestId: string;
@@ -4346,6 +4347,8 @@ async function scopedSignedRelayScenario(seedExisting = false) {
       ["unknown", "pending"].includes(challengeMode)
     )
       return Response.json({ state: challengeMode });
+    if (envelope.kind === "message" && messageMode === "unknown")
+      return Response.json({ state: "unknown" });
     return Response.json({
       state: "completed",
       outcome:
@@ -4445,6 +4448,9 @@ async function scopedSignedRelayScenario(seedExisting = false) {
     setMode(value: typeof challengeMode) {
       challengeMode = value;
     },
+    setMessageMode(value: typeof messageMode) {
+      messageMode = value;
+    },
     async close() {
       await Promise.all([ac.close(), bc.close(), cc.close(), dc.close()]);
     },
@@ -4452,6 +4458,133 @@ async function scopedSignedRelayScenario(seedExisting = false) {
 }
 
 describe("bounded production private signed relay", () => {
+  it("full production stop preserves an unknown original attempt across reconstruction without new dispatch", async () => {
+    const f = await scopedSignedRelayScenario();
+    let clockNow = Date.now();
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => clockNow);
+    const stub = env.TABLES.get(env.TABLES.idFromName(f.tables[0]));
+    const snapshot = () =>
+      runInDurableObject(stub, (_instance, state) => ({
+        schema: state.storage.sql
+          .exec<{ version: number }>(
+            "SELECT version FROM __agent_table_schema WHERE singleton=1",
+          )
+          .one().version,
+        messages: state.storage.sql
+          .exec("SELECT * FROM table_messages ORDER BY seq")
+          .toArray(),
+        outbox: state.storage.sql
+          .exec("SELECT * FROM table_event_outbox ORDER BY event_id")
+          .toArray(),
+        attempts: state.storage.sql
+          .exec("SELECT * FROM table_event_relay_attempts ORDER BY request_id")
+          .toArray(),
+      }));
+    const realAlarm = () =>
+      runInDurableObject(stub, (instance) => instance.alarm());
+    try {
+      await callEvent(
+        f.ac,
+        "events/subscribe",
+        subscriptionParams(f.tables[0]),
+      );
+      f.setMessageMode("unknown");
+      expect((await f.post(f.tables[0])).seq).toBe(1);
+      const scheduled = await snapshot();
+      expect(scheduled.outbox).toHaveLength(1);
+      expect(scheduled.outbox[0].next_attempt_at).not.toBeNull();
+      clockNow =
+        Math.max(clockNow, Number(scheduled.outbox[0].next_attempt_at)) + 1;
+      await realAlarm();
+      const charged = await snapshot();
+      expect(charged.schema).toBe(15);
+      expect(charged.attempts).toHaveLength(1);
+      const original = charged.attempts[0];
+      expect(original).toMatchObject({ ordinal: 1, state: "unknown" });
+      const messageCall = f.calls.filter((call) => call.kind === "message");
+      expect(messageCall).toHaveLength(1);
+      expect(original.request_id).toBe(messageCall[0].requestId);
+      expect(original.event_id).toBe(messageCall[0].eventId);
+      expect(original.operation_digest).toMatch(/^[a-f0-9]{64}$/);
+      expect(charged.outbox[0]).toMatchObject({ attempt_count: 1 });
+      expect(Number(original.first_attempt_at) + 3600000).toBeGreaterThan(
+        clockNow,
+      );
+
+      // A second real commit supplies pending work with no charged attempt.
+      expect((await f.post(f.tables[0])).seq).toBe(2);
+      const before = await snapshot();
+      expect(before.messages).toHaveLength(2);
+      expect(before.outbox).toHaveLength(2);
+      expect(before.outbox.find((row) => row.message_seq === 2)).toMatchObject({
+        status: "pending",
+        attempt_count: 0,
+      });
+      const callsBeforeStop = f.calls.length;
+      const identities = {
+        build: f.overlay.RELEASE_BUILD_SHA,
+        profile: f.overlay.RELEASE_PROFILE,
+        policy: f.overlay.PRIVATE_PILOT_POLICY,
+        relay: f.overlay.EVENTS_RELAY_CONFIGURATION,
+        key: f.overlay.EVENTS_RELAY_SIGNING_KEY_PKCS8,
+      };
+      for (const name of [
+        "ALLOW_NEW_GUESTS",
+        "ALLOW_NEW_TABLES",
+        "ENABLE_MCP_SUBSCRIPTIONS",
+        "ENABLE_OPENAI_EVENTS",
+        "ALLOW_OUTBOUND_NOTIFICATIONS",
+      ] as const)
+        f.overlay[name] = "false";
+      await f.configure();
+      await evictDurableObject(f.a.guest);
+      await evictDurableObject(f.b.guest);
+      // Both the original lease and normal retry backoff have elapsed. Pause,
+      // rather than expiry or lack of due work, must prevent any replacement.
+      clockNow += 61000;
+      await realAlarm();
+      await realAlarm();
+      expect(f.calls).toHaveLength(callsBeforeStop);
+      expect(await snapshot()).toEqual(before);
+      expect({
+        build: f.overlay.RELEASE_BUILD_SHA,
+        profile: f.overlay.RELEASE_PROFILE,
+        policy: f.overlay.PRIVATE_PILOT_POLICY,
+        relay: f.overlay.EVENTS_RELAY_CONFIGURATION,
+        key: f.overlay.EVENTS_RELAY_SIGNING_KEY_PKCS8,
+      }).toEqual(identities);
+      const read = await f.ac.callTool({
+        name: "read_messages",
+        arguments: { table_id: f.tables[0] },
+      });
+      expect(read.isError).not.toBe(true);
+      const metadata = await f.ac.callTool({
+        name: "get_table",
+        arguments: { table_id: f.tables[0] },
+      });
+      expect(metadata.isError).not.toBe(true);
+      expect(toolOutput(metadata).notifications).toMatchObject({
+        available: false,
+      });
+      await expect(
+        callEvent(f.ac, "events/subscribe", subscriptionParams(f.tables[0])),
+      ).rejects.toThrow();
+      const create = await f.ac.callTool({
+        name: "create_table",
+        arguments: {
+          title: "SYNTHETIC STOP DENIAL",
+          request_id: crypto.randomUUID(),
+        },
+      });
+      expect(create.isError).toBe(true);
+      expect(f.calls).toHaveLength(callsBeforeStop);
+      expect(await snapshot()).toEqual(before);
+    } finally {
+      await f.close();
+      clock.mockRestore();
+    }
+  });
+
   it("real authorized participants/old subscriptions outside recipient, connection and table scope never dispatch; seq cap and expiry survive reconstruction", async () => {
     const f = await scopedSignedRelayScenario(true);
     let clockNow = Date.now();
