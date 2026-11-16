@@ -36,6 +36,8 @@ jobs:
         run: npx biome check scripts/private-pilot-observations.mjs scripts/private-pilot-observations.test.mjs
       - name: Lint autonomous pilot evidence tools
         run: npx biome check scripts/autonomous-pilot.mjs scripts/autonomous-pilot.test.mjs
+      - name: Lint foreground relay launcher
+        run: npx biome check scripts/relay-launcher.mjs scripts/relay-launcher.test.mjs scripts/egress-relay-application.mjs scripts/egress-relay-http.mjs scripts/release-relay-decision.mjs scripts/production-relay-release.test.mjs scripts/relay-readiness-diagnostics.mjs scripts/relay-readiness-diagnostics.test.mjs
       - run: node --test scripts/*.test.mjs
       - uses: actions/setup-python@v5
         with:
@@ -46,6 +48,8 @@ jobs:
         run: npm test
       - name: Worker integration tests
         run: npm run test:integration
+      - name: Relay operator real-producer recovery
+        run: npm run test:relay-operator
       - name: Restore runtime tests
         run: npm run test:restore-runtime
       - run: npm run probe:subscriptions:sdk

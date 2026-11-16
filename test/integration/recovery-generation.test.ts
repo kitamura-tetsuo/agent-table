@@ -112,7 +112,9 @@ describe("source-bound recovery certificate", () => {
         kind: "denied",
       });
     for (const claims of [
+      { schemaVersion: 12 },
       { schemaVersion: 13 },
+      { schemaVersion: 15 },
       { evidenceSha256: null },
       { expiresAt: new Date(Date.now() + 60_000).toISOString() },
       { issuedAt: new Date(Date.now() + 60_000).toISOString() },
@@ -567,5 +569,94 @@ describe("generation fences and approved in-place reset", () => {
         scheduler.checkpoint = checkpoint;
       }
     });
+  });
+});
+
+describe("relay ledger schema recovery boundary", () => {
+  it("retains the exact reviewed triggers and rejects missing, altered and foreign triggers", async () => {
+    const f = recoveryFixture(env);
+    for (const drift of [
+      "none",
+      "missing",
+      "altered",
+      "foreign",
+      "verification-missing",
+      "verification-altered",
+    ] as const) {
+      const stub = env.TABLES.get(env.TABLES.idFromName(crypto.randomUUID()));
+      await runInDurableObject(stub, async (_instance, state) => {
+        const sql = state.storage.sql;
+        sql.exec(
+          `INSERT INTO table_event_relay_attempts
+          (request_id,event_id,subscription_id,generation,ordinal,lease_token,
+          first_attempt_at,lease_deadline,audience,caller_id,issued_at,
+          acceptance_expires_at,operation_digest,state)
+          VALUES ('synthetic-request-1','synthetic-event-1','synthetic-subscription-1',
+          1,1,'synthetic-lease-1',100000,130000,'test:relay','synthetic-caller-1',
+          100000,160000,?,'unknown')`,
+          "a".repeat(64),
+        );
+        sql.exec(
+          `INSERT INTO table_event_relay_verifications
+          (candidate_id,membership_id,subscription_id,guest_id,connection_id,fence,
+          candidate_expires_at,request_id,issued_at,acceptance_expires_at,audience,caller_id,operation_digest,state)
+          VALUES ('candidate-1','member-1','subscription-1','guest-1','connection-1',1,
+          200000,'verification-1',100000,160000,'test:relay','caller-1',?,'unknown')`,
+          "b".repeat(64),
+        );
+        if (
+          drift === "verification-missing" ||
+          drift === "verification-altered"
+        )
+          sql.exec(
+            "DROP TRIGGER table_event_relay_verification_identity_immutable",
+          );
+        if (drift === "verification-altered")
+          sql.exec(
+            "CREATE TRIGGER table_event_relay_verification_identity_immutable BEFORE UPDATE ON table_event_relay_verifications BEGIN SELECT 1; END",
+          );
+        if (drift === "missing" || drift === "altered")
+          sql.exec("DROP TRIGGER table_event_relay_attempt_identity_immutable");
+        if (drift === "altered")
+          sql.exec(
+            "CREATE TRIGGER table_event_relay_attempt_identity_immutable BEFORE UPDATE ON table_event_relay_attempts BEGIN SELECT 1; END",
+          );
+        if (drift === "foreign")
+          sql.exec(
+            "CREATE TRIGGER foreign_relay_trigger BEFORE DELETE ON table_event_relay_attempts BEGIN SELECT 1; END",
+          );
+        const reset = new TableDO(state, resetting(f));
+        const request = {
+          operationId: f.claims.operationId,
+          objectId: stub.id.toString(),
+        };
+        if (drift === "none") {
+          const inspection = await reset.inspectRecovery(request);
+          expect(inspection.counts.table_event_relay_attempts).toBe(1);
+          expect(inspection.counts.table_event_relay_verifications).toBe(1);
+          const result = await reset.resetRecovery(request);
+          expect(result.counts.table_event_relay_attempts).toBe(0);
+          expect(result.counts.table_event_relay_verifications).toBe(0);
+          expect(result.schemaVersion).toBe(14);
+          expect(
+            sql
+              .exec("SELECT name FROM sqlite_master WHERE type='trigger'")
+              .toArray(),
+          ).toHaveLength(4);
+        } else {
+          await expect(reset.resetRecovery(request)).rejects.toThrow(
+            "Recovery state unavailable",
+          );
+          expect(
+            sql.exec("SELECT state FROM table_event_relay_attempts").toArray(),
+          ).toEqual([{ state: "unknown" }]);
+          expect(
+            sql
+              .exec("SELECT state FROM table_event_relay_verifications")
+              .toArray(),
+          ).toEqual([{ state: "unknown" }]);
+        }
+      });
+    }
   });
 });

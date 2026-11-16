@@ -1,6 +1,10 @@
 import { createHash } from "node:crypto";
 import { PRIVATE_PILOT_PROFILE } from "../src/shared/private-pilot.ts";
 import {
+  productionRelayInspectableConfiguration,
+  productionRelayProfileSelected,
+} from "../src/shared/production-relay-events.ts";
+import {
   TEST_NATIVE_EVENTS_PROFILE,
   testNativeEventsInspectable,
 } from "../src/shared/test-native-events.ts";
@@ -63,6 +67,11 @@ function readBinding(bindings, name, type) {
 function validateAccountWorker(config) {
   ensure(ACCOUNT_ID.test(config?.account_id), "invalid-provider-account");
   ensure(WORKER_NAME.test(config?.name), "invalid-provider-worker");
+}
+
+/** Readback of a valid active OR emergency-paused profile; never activation. */
+export function productionRelayInspectable(vars) {
+  return !!vars && productionRelayInspectableConfiguration(vars) !== null;
 }
 
 /**
@@ -281,6 +290,7 @@ export async function inspectWorker(
   for (const name of [
     "TEST_NATIVE_EVENTS_RISK_ACCEPTANCE",
     "EVENTS_REVIEWED_CALLBACK_TARGETS",
+    "EVENTS_RELAY_CONFIGURATION",
   ]) {
     const present =
       settings.bindings.some((b) => b?.name === name) ||
@@ -300,6 +310,26 @@ export async function inspectWorker(
     textBindings.RELEASE_PROFILE !== TEST_NATIVE_EVENTS_PROFILE ||
       testNativeEventsInspectable(textBindings),
     "provider-test-native-profile-unverified",
+  );
+  // This authenticates provider configuration/secret *presence*, never secret
+  // material, peer safety, host acceptance, or permission to activate the profile.
+  const relaySecret = "EVENTS_RELAY_SIGNING_KEY_PKCS8";
+  const relaySecretPresent =
+    settings.bindings.some((b) => b?.name === relaySecret) ||
+    versionBindings.some((b) => b?.name === relaySecret) ||
+    secretNames.has(relaySecret);
+  if (relaySecretPresent || productionRelayProfileSelected(textBindings)) {
+    readBinding(settings.bindings, relaySecret, "secret_text");
+    readBinding(versionBindings, relaySecret, "secret_text");
+    ensure(
+      secretList.filter((b) => b?.name === relaySecret).length === 1,
+      "provider-relay-secret-unverified",
+    );
+  }
+  ensure(
+    !productionRelayProfileSelected(textBindings) ||
+      productionRelayInspectable(textBindings),
+    "provider-relay-profile-unverified",
   );
   const policyName = "PRIVATE_PILOT_POLICY";
   const policyPresent =
@@ -385,10 +415,18 @@ export function verifyDeployedConfiguration(observed, config) {
   for (const name of [
     "TEST_NATIVE_EVENTS_RISK_ACCEPTANCE",
     "EVENTS_REVIEWED_CALLBACK_TARGETS",
+    "EVENTS_RELAY_CONFIGURATION",
   ]) {
     ensure(
       observed.textBindings[name] === config.vars[name],
       "provider-deployed-test-native-binding-mismatch",
+    );
+  }
+  if (productionRelayProfileSelected(config.vars)) {
+    ensure(
+      productionRelayInspectable(config.vars) &&
+        observed.secretNames.includes("EVENTS_RELAY_SIGNING_KEY_PKCS8"),
+      "provider-deployed-relay-configuration-unverified",
     );
   }
   const policy = config.vars.PRIVATE_PILOT_POLICY;

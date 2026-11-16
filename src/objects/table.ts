@@ -43,6 +43,18 @@ import {
   reserveOutboxAttempt,
   settleOutboxAttempt,
 } from "../notifications/outbox";
+import { selectProductionRelayAdapters } from "../notifications/production-relay-adapters";
+import { latestRelayAttempt } from "../notifications/relay-attempt-ledger";
+import {
+  dispatchRelayOutbox,
+  type RelayOutboxAdapter,
+  recoverRelayOutbox,
+} from "../notifications/relay-outbox";
+import { parseRelayChallengeOutcome } from "../notifications/relay-outcome";
+import {
+  type RelayVerificationOperation,
+  validRelayVerificationOperation,
+} from "../notifications/relay-verification";
 import type { TableEventDiagnostics } from "../services/event-diagnostics";
 import { allowOutboundNotifications } from "../shared/admission";
 import {
@@ -86,6 +98,10 @@ import {
   privatePilotRecipientAllowed,
   privatePilotRecipientMatches,
 } from "../shared/private-pilot";
+import {
+  productionRelayProfileSelected,
+  productionRelayReadiness,
+} from "../shared/production-relay-events";
 import { digestSessionSecret, randomBase64Url } from "../shared/random";
 import {
   initializeRecoveryFence,
@@ -211,6 +227,7 @@ type EventSubscriptionRow = {
 };
 
 type EventCandidateRow = {
+  verification_mode: "native" | "relay";
   membership_id: string;
   candidate_id: string;
   subscription_id: string;
@@ -664,7 +681,7 @@ export class TableDO extends DurableObject<Env> {
         ? this.privateSql
             .exec<{ deadline: number | null }>(
               `SELECT MIN(CASE WHEN status = 'pending' THEN next_attempt_at
-                         ELSE lease_deadline END) AS deadline
+                         ELSE MAX(lease_deadline,COALESCE(relay_reconcile_after,0)) END) AS deadline
              FROM table_event_outbox WHERE status IN ('pending', 'in_flight')`,
             )
             .one().deadline
@@ -684,6 +701,14 @@ export class TableDO extends DurableObject<Env> {
             FROM table_event_outbox
             WHERE status = 'in_flight' AND attempt_count >= 8
               AND lease_deadline IS NOT NULL
+              AND NOT EXISTS (
+                SELECT 1 FROM table_event_relay_attempts AS r
+                WHERE r.event_id=table_event_outbox.event_id
+                  AND r.generation=table_event_outbox.subscription_generation
+                  AND r.lease_token=table_event_outbox.lease_token
+                  AND r.ordinal=table_event_outbox.attempt_count
+                  AND r.state='completed'
+              )
           )`,
           OUTBOX_RETRY_HORIZON_MS,
         )
@@ -728,6 +753,8 @@ export class TableDO extends DurableObject<Env> {
       );
     }
     this.privateSql.exec("DELETE FROM table_delete_confirmations");
+    this.privateSql.exec("DELETE FROM table_event_relay_verifications");
+    this.privateSql.exec("DELETE FROM table_event_relay_attempts");
     this.privateSql.exec("DELETE FROM table_event_outbox");
     this.privateSql.exec("DELETE FROM table_event_candidates");
     this.privateSql.exec("DELETE FROM table_event_subscriptions");
@@ -953,6 +980,7 @@ export class TableDO extends DurableObject<Env> {
           ? "expired"
           : "active";
     const available =
+      productionRelayReadiness(this.env).enabled ||
       testNativeEventsAllowed(this.env) ||
       privatePilotRecipientAllowed(
         this.env,
@@ -1009,9 +1037,11 @@ export class TableDO extends DurableObject<Env> {
     return {
       available,
       reason: available
-        ? testNativeEventsAllowed(this.env)
-          ? ("test_native_risk_accepted" as const)
-          : ("private_pilot_only" as const)
+        ? productionRelayReadiness(this.env).enabled
+          ? ("production_relay_ready" as const)
+          : testNativeEventsAllowed(this.env)
+            ? ("test_native_risk_accepted" as const)
+            : ("private_pilot_only" as const)
         : ("delivery_not_ready" as const),
       status,
       pendingCount: counts.pending_count,
@@ -1345,6 +1375,11 @@ export class TableDO extends DurableObject<Env> {
             nextFence,
             deadline,
           );
+          if (productionRelayProfileSelected(this.env))
+            this.privateSql.exec(
+              "UPDATE table_event_candidates SET verification_mode='relay' WHERE candidate_id=?",
+              candidateId,
+            );
           return { ok: true, value: { candidateId, subscriptionId } } as const;
         }),
       );
@@ -1354,6 +1389,196 @@ export class TableDO extends DurableObject<Env> {
     } catch {
       return { ok: false, code: "TEMPORARILY_UNAVAILABLE" };
     }
+  }
+
+  /** Internal trusted service RPC. Bind exact challenge operation before I/O. */
+  async prepareRelayVerification(
+    actor: VerifiedConnectionActor,
+    candidateId: string,
+    operation: RelayVerificationOperation,
+  ): Promise<EventResult<{}>> {
+    if (!validRelayVerificationOperation(operation))
+      return { ok: false, code: "INVALID_REQUEST" };
+    const fresh = await this.freshEventActor(actor);
+    if (!fresh) return { ok: false, code: "TABLE_NOT_FOUND" };
+    return this.ctx.storage.transactionSync(() => {
+      const candidate = this.currentRelayVerificationCandidate(
+        fresh,
+        candidateId,
+      );
+      if (
+        !candidate ||
+        operation.issuedAt > Date.now() ||
+        operation.issuedAt >= candidate.expires_at ||
+        Date.now() >= operation.acceptanceExpiresAt
+      )
+        return { ok: false, code: "STALE" };
+      this.privateSql.exec(
+        "UPDATE table_event_candidates SET verification_mode='relay' WHERE candidate_id=?",
+        candidateId,
+      );
+      const old = this.privateSql
+        .exec<Record<string, SqlStorageValue>>(
+          "SELECT * FROM table_event_relay_verifications WHERE candidate_id=?",
+          candidateId,
+        )
+        .toArray()[0];
+      if (old)
+        return old.request_id === operation.requestId &&
+          old.operation_digest === operation.operationDigest &&
+          old.issued_at === operation.issuedAt &&
+          old.acceptance_expires_at === operation.acceptanceExpiresAt &&
+          old.caller_id === operation.callerId &&
+          old.audience === operation.audience
+          ? { ok: true, value: {} }
+          : { ok: false, code: "CONFLICT" };
+      this.privateSql.exec(
+        "INSERT INTO table_event_relay_verifications (candidate_id,membership_id,subscription_id,guest_id,connection_id,fence,candidate_expires_at,request_id,issued_at,acceptance_expires_at,audience,caller_id,operation_digest,state) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,'prepared')",
+        candidate.candidate_id,
+        candidate.membership_id,
+        candidate.subscription_id,
+        candidate.guest_id,
+        candidate.connection_id,
+        candidate.fence,
+        candidate.expires_at,
+        operation.requestId,
+        operation.issuedAt,
+        operation.acceptanceExpiresAt,
+        operation.audience,
+        operation.callerId,
+        operation.operationDigest,
+      );
+      return { ok: true, value: {} };
+    });
+  }
+
+  /** Rechecks local ownership/lifecycle/fence after fresh GuestDO authorization. */
+  private currentRelayVerificationCandidate(
+    actor: VerifiedConnectionActor,
+    candidateId: string,
+  ): EventCandidateRow | undefined {
+    const now = Date.now(),
+      member = this.memberFor(actor.guestId),
+      table = this.metadataRow();
+    if (
+      !member ||
+      !table ||
+      table.expires_at <= now ||
+      actor.expiresAt <= now ||
+      !["waiting", "open"].includes(table.state)
+    )
+      return;
+    const c = this.eventCandidate(member.membership_id),
+      subscription = this.eventSubscription(member.membership_id);
+    if (
+      !c ||
+      !subscription ||
+      c.candidate_id !== candidateId ||
+      c.guest_id !== actor.guestId ||
+      c.connection_id !== actor.connectionId ||
+      c.fence !== subscription.fence ||
+      c.expires_at <= now ||
+      !this.eventRegistrationAllowed(actor, table.table_id, c.callback_url, now)
+    )
+      return;
+    return c;
+  }
+
+  async authorizeRelayVerification(
+    actor: VerifiedConnectionActor,
+    candidateId: string,
+    operation: RelayVerificationOperation,
+    reserve: boolean,
+  ): Promise<boolean> {
+    if (
+      !validRelayVerificationOperation(operation) ||
+      typeof reserve !== "boolean"
+    )
+      return false;
+    const fresh = await this.freshEventActor(actor);
+    if (!fresh) return false;
+    return this.ctx.storage.transactionSync(() => {
+      if (
+        !this.currentRelayVerificationCandidate(fresh, candidateId) ||
+        !this.outboxDispatchEnabled()
+      )
+        return false;
+      const row = this.privateSql
+        .exec<Record<string, SqlStorageValue>>(
+          "SELECT * FROM table_event_relay_verifications WHERE candidate_id=?",
+          candidateId,
+        )
+        .toArray()[0];
+      if (
+        !row ||
+        row.request_id !== operation.requestId ||
+        row.operation_digest !== operation.operationDigest ||
+        row.issued_at !== operation.issuedAt ||
+        row.acceptance_expires_at !== operation.acceptanceExpiresAt ||
+        row.audience !== operation.audience ||
+        row.caller_id !== operation.callerId
+      )
+        return false;
+      if (!reserve) return true;
+      if (
+        row.state !== "prepared" ||
+        Date.now() >= operation.acceptanceExpiresAt
+      )
+        return false;
+      this.privateSql.exec(
+        "UPDATE table_event_relay_verifications SET state='dispatched' WHERE candidate_id=? AND state='prepared'",
+        candidateId,
+      );
+      return true;
+    });
+  }
+
+  async recordRelayVerification(
+    actor: VerifiedConnectionActor,
+    candidateId: string,
+    operation: RelayVerificationOperation,
+    result: unknown,
+  ): Promise<EventResult<{}>> {
+    if (!validRelayVerificationOperation(operation))
+      return { ok: false, code: "INVALID_REQUEST" };
+    const outcome = result === null ? null : parseRelayChallengeOutcome(result);
+    if (result !== null && !outcome)
+      return { ok: false, code: "INVALID_REQUEST" };
+    const fresh = await this.freshEventActor(actor);
+    if (!fresh) return { ok: false, code: "TABLE_NOT_FOUND" };
+    return this.ctx.storage.transactionSync(() => {
+      if (!this.currentRelayVerificationCandidate(fresh, candidateId))
+        return { ok: false, code: "STALE" };
+      const row = this.privateSql
+        .exec<Record<string, SqlStorageValue>>(
+          "SELECT * FROM table_event_relay_verifications WHERE candidate_id=?",
+          candidateId,
+        )
+        .toArray()[0];
+      if (
+        !row ||
+        row.request_id !== operation.requestId ||
+        row.operation_digest !== operation.operationDigest ||
+        row.issued_at !== operation.issuedAt ||
+        row.acceptance_expires_at !== operation.acceptanceExpiresAt ||
+        row.audience !== operation.audience ||
+        row.caller_id !== operation.callerId
+      )
+        return { ok: false, code: "STALE" };
+      const state = outcome?.verification ?? "unknown";
+      if (row.state === "verified" || row.state === "failed")
+        return row.state === state
+          ? { ok: true, value: {} }
+          : { ok: false, code: "CONFLICT" };
+      if (row.state !== "dispatched" && row.state !== "unknown")
+        return { ok: false, code: "STALE" };
+      this.privateSql.exec(
+        "UPDATE table_event_relay_verifications SET state=? WHERE candidate_id=?",
+        state,
+        candidateId,
+      );
+      return { ok: true, value: {} };
+    });
   }
 
   /**
@@ -1437,6 +1662,26 @@ export class TableDO extends DurableObject<Env> {
             )
           )
             return { ok: false, code: "TABLE_NOT_FOUND" } as const;
+          const relayProof = this.privateSql
+            .exec<Record<string, SqlStorageValue>>(
+              "SELECT * FROM table_event_relay_verifications WHERE candidate_id=?",
+              candidateId,
+            )
+            .toArray()[0];
+          if (
+            (relayProof ||
+              pending.verification_mode === "relay" ||
+              productionRelayProfileSelected(this.env)) &&
+            (!relayProof ||
+              relayProof.state !== "verified" ||
+              relayProof.membership_id !== currentMember.membership_id ||
+              relayProof.subscription_id !== pending.subscription_id ||
+              relayProof.guest_id !== fresh.guestId ||
+              relayProof.connection_id !== fresh.connectionId ||
+              relayProof.fence !== pending.fence ||
+              relayProof.candidate_expires_at !== pending.expires_at)
+          )
+            return { ok: false, code: "STALE" } as const;
           // A pending refresh cannot resurrect an active subscription that expired
           // before the external verification returned, even before alarm cleanup.
           if (current.status === "active" && (current.expires_at ?? 0) <= now) {
@@ -1615,7 +1860,8 @@ export class TableDO extends DurableObject<Env> {
   ): Promise<boolean> {
     if (
       !allowOutboundNotifications(this.env) ||
-      (!callbackTransportReadiness().enabled &&
+      (!productionRelayReadiness(this.env).enabled &&
+        !callbackTransportReadiness().enabled &&
         !testNativeEventsAllowed(this.env) &&
         !privatePilotRecipientAllowed(
           this.env,
@@ -3200,7 +3446,7 @@ export class TableDO extends DurableObject<Env> {
       : committed.value;
   }
 
-  /** Public readiness and the protected staging-only trial remain distinct. */
+  /** Public readiness and the protected bounded private trial remain distinct. */
   private outboxDispatchEnabled(): boolean {
     if (this.accessQuarantined()) return false;
     if (this.env.RELEASE_PROFILE === PRIVATE_PILOT_PROFILE) {
@@ -3212,8 +3458,14 @@ export class TableDO extends DurableObject<Env> {
       this.env.ENABLE_OPENAI_EVENTS === "true" &&
       allowOutboundNotifications(this.env) &&
       (callbackTransportReadiness().enabled ||
-        testNativeEventsAllowed(this.env))
+        testNativeEventsAllowed(this.env) ||
+        productionRelayReadiness(this.env).enabled)
     );
+  }
+
+  /** Selected only from strict protected-deployment bindings, not an RPC flag. */
+  private relayOutboxTransport(): RelayOutboxAdapter | null {
+    return selectProductionRelayAdapters(this.env)?.outbox ?? null;
   }
 
   /** Native transport seam; synthetic tests replace it only inside Workerd. */
@@ -3223,6 +3475,11 @@ export class TableDO extends DurableObject<Env> {
     observer?: CallbackTransportObserver,
   ): Promise<CallbackTransportOutcome> {
     if (this.accessQuarantined())
+      return Promise.resolve({
+        ok: false,
+        reason: "connection-boundary-unverified",
+      });
+    if (productionRelayProfileSelected(this.env))
       return Promise.resolve({
         ok: false,
         reason: "connection-boundary-unverified",
@@ -3310,8 +3567,9 @@ export class TableDO extends DurableObject<Env> {
       .exec<{ event_id: string }>(
         `SELECT event_id FROM table_event_outbox
        WHERE (status = 'pending' AND next_attempt_at <= ?)
-          OR (status = 'in_flight' AND lease_deadline <= ?)
+          OR (status = 'in_flight' AND lease_deadline <= ? AND COALESCE(relay_reconcile_after,0) <= ?)
        ORDER BY COALESCE(next_attempt_at, lease_deadline), event_id LIMIT ?`,
+        started,
         started,
         started,
         OUTBOX_DISPATCH_BATCH,
@@ -3381,6 +3639,36 @@ export class TableDO extends DurableObject<Env> {
         !this.dispatchWork(row.event_id, Date.now())
       )
         continue;
+      const relay = this.relayOutboxTransport();
+      if (
+        relay &&
+        (await recoverRelayOutbox(
+          this.privateSql,
+          (fn) => this.ctx.storage.transactionSync(fn),
+          relay,
+          work.event_id,
+          async () => {
+            const fresh = await authorizeGuestConnection(
+              this.env,
+              work.guest_id as string,
+              work.connection_id as string,
+              "events:subscribe",
+            );
+            const current = this.dispatchWork(work.event_id, Date.now());
+            return (
+              fresh.allowed &&
+              fresh.actor.expiresAt > Date.now() &&
+              this.outboxDispatchEnabled() &&
+              !!current &&
+              current.generation === work.generation &&
+              current.subscription_id === work.subscription_id
+            );
+          },
+        ))
+      ) {
+        processed++;
+        continue;
+      }
       // Alarm and reservation commit together, before the next external await.
       const { value: lease } = await this.deadlines.commitWithWakeup(
         Date.now() + OUTBOX_LEASE_MS,
@@ -3464,13 +3752,59 @@ export class TableDO extends DurableObject<Env> {
         );
         recordFutureMetric({ name: "outbox.attempt", value: 1 });
         try {
-          outcome = await this.sendOutboxWebhook(
-            work.callback_url as string,
-            { method: "POST", ...signed },
-            observation,
-          );
+          if (relay) {
+            const result = await dispatchRelayOutbox(
+              this.privateSql,
+              (fn) => this.ctx.storage.transactionSync(fn),
+              relay,
+              lease,
+              work.subscription_id as string,
+              work.callback_url as string,
+              { method: "POST", ...signed },
+              async () => {
+                const fresh = await authorizeGuestConnection(
+                  this.env,
+                  work.guest_id as string,
+                  work.connection_id as string,
+                  "events:subscribe",
+                );
+                const current = this.dispatchWork(work.event_id, Date.now());
+                return (
+                  fresh.allowed &&
+                  fresh.actor.expiresAt > Date.now() &&
+                  this.outboxDispatchEnabled() &&
+                  !!current &&
+                  current.generation === work.generation &&
+                  current.lease_token === lease.leaseToken &&
+                  current.callback_url === work.callback_url &&
+                  current.secret_envelope === work.secret_envelope &&
+                  current.previous_secret_envelope ===
+                    work.previous_secret_envelope &&
+                  (!work.previous_secret_envelope ||
+                    (work.rotation_until ?? 0) > Date.now()) &&
+                  Date.now() < lease.leaseDeadline
+                );
+              },
+            );
+            if (!result) {
+              processed++;
+              continue;
+            }
+            outcome = result;
+          } else {
+            outcome = await this.sendOutboxWebhook(
+              work.callback_url as string,
+              { method: "POST", ...signed },
+              observation,
+            );
+          }
         } catch {
-          // Ambiguous transport failures keep their persisted attempt charge.
+          // Relay uncertainty retains its original ledger and execution lease.
+          if (relay) {
+            processed++;
+            continue;
+          }
+          // Ambiguous native failures keep their persisted attempt charge.
           outcome = { ok: false, reason: "transport-error" };
         }
       } catch {
@@ -3511,6 +3845,25 @@ export class TableDO extends DurableObject<Env> {
   }
 
   private deferOutboxWork(work: DispatchWork, cancelled: boolean): void {
+    // Operational unavailability must not erase a relay lease's definitive or
+    // uncertain evidence before reconciliation. Revocation still cancels it.
+    const retained = work.lease_token
+      ? latestRelayAttempt(this.privateSql, work.event_id)
+      : null;
+    if (
+      !cancelled &&
+      retained?.leaseToken === work.lease_token &&
+      work.lease_token
+    ) {
+      this.privateSql.exec(
+        "UPDATE table_event_outbox SET relay_reconcile_after=? WHERE event_id=? AND status='in_flight' AND lease_token=? AND subscription_generation=?",
+        Date.now() + OUTBOX_AUTHORITY_RETRY_MS,
+        work.event_id,
+        work.lease_token,
+        work.generation,
+      );
+      return;
+    }
     this.privateSql.exec(
       `UPDATE table_event_outbox SET status = ?, next_attempt_at = ?,
          lease_token = NULL, lease_deadline = NULL, last_error_category = ?

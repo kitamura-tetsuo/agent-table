@@ -582,3 +582,97 @@ test("predeploy manual readback is allowed but postdeploy requires exact policy 
     /provider-deployed-private-pilot-policy-mismatch/,
   );
 });
+
+test("relay provider readback binds exact public config and secret type without granting activation", async () => {
+  const make = () => {
+    const candidate = makeConfig("production"),
+      peer = makeConfig("staging");
+    Object.assign(candidate.vars, {
+      RELEASE_PROFILE: "production-relay-events",
+      ENABLE_MCP_SUBSCRIPTIONS: "true",
+      ENABLE_OPENAI_EVENTS: "true",
+      ALLOW_OUTBOUND_NOTIFICATIONS: "false",
+      EVENTS_REVIEWED_CALLBACK_TARGETS: JSON.stringify([
+        { origin: "https://events.example.org", pathPrefix: "/callbacks/" },
+      ]),
+      EVENTS_RELAY_CONFIGURATION: JSON.stringify({
+        version: 1,
+        environment: "production",
+        buildSha: candidate.vars.RELEASE_BUILD_SHA,
+        origin: "https://relay.example.org",
+        callerId: "synthetic_caller_123",
+        audience: "production:agent-table",
+        signingPublicKeySha256: "b".repeat(64),
+      }),
+    });
+    const mock = makeProviderMock(candidate, peer),
+      prefix = `/client/v4/accounts/${candidate.account_id}/workers/scripts/${candidate.name}`;
+    const settings = mock.routes.get(`${prefix}/settings`).bindings;
+    const version = mock.routes.get(
+      `${prefix}/versions/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb`,
+    ).resources.bindings;
+    const secrets = mock.routes.get(`${prefix}/secrets`);
+    for (const rows of [settings, version, secrets])
+      rows.push({
+        name: "EVENTS_RELAY_SIGNING_KEY_PKCS8",
+        type: "secret_text",
+        text: "NEVER_ECHO_RELAY_KEY",
+      });
+    return { candidate, peer, mock, settings, version, secrets };
+  };
+  const f = make();
+  const actual = await readCloudflareDeployment(
+    f.candidate,
+    f.peer,
+    f.mock.read,
+  );
+  verifyDeployedConfiguration(actual.targetState, f.candidate);
+  const receipt = redactedProviderReceipt(
+    actual.targetState,
+    "production",
+    new Date().toISOString(),
+  );
+  assert.doesNotMatch(
+    JSON.stringify(receipt),
+    /NEVER_ECHO|synthetic_caller|relay.example/,
+  );
+  const changed = structuredClone(f.candidate);
+  changed.vars.EVENTS_RELAY_CONFIGURATION += " ";
+  assert.throws(
+    () => verifyDeployedConfiguration(actual.targetState, changed),
+    /binding-mismatch/,
+  );
+  for (const mutation of [
+    (f) => {
+      f.version.find((b) => b.name === "EVENTS_RELAY_CONFIGURATION").text +=
+        " ";
+    },
+    (f) => {
+      f.settings.find((b) => b.name === "EVENTS_RELAY_SIGNING_KEY_PKCS8").type =
+        "plain_text";
+    },
+    (f) => {
+      f.version.splice(
+        f.version.findIndex((b) => b.name === "EVENTS_RELAY_SIGNING_KEY_PKCS8"),
+        1,
+      );
+    },
+    (f) => {
+      f.secrets.push({
+        name: "EVENTS_RELAY_SIGNING_KEY_PKCS8",
+        type: "secret_text",
+      });
+    },
+    (f) => {
+      for (const rows of [f.settings, f.version])
+        rows.find((b) => b.name === "EVENTS_RELAY_CONFIGURATION").text = "{}";
+    },
+  ]) {
+    const bad = make();
+    mutation(bad);
+    await assert.rejects(
+      readCloudflareDeployment(bad.candidate, bad.peer, bad.mock.read),
+      ProviderVerificationError,
+    );
+  }
+});

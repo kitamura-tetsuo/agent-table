@@ -593,6 +593,9 @@ test("operator disclosures must be current, exact-target and independently revie
     (value) => (value.retention.logs.source = "http://unverified.invalid"),
     (value) => (value.restore.type = "snapshot-restore"),
     (value) => (value.schema.nonDestructiveRollback = false),
+    (value) => (value.schema.testedVersion = 12),
+    (value) => (value.schema.testedVersion = 13),
+    (value) => (value.schema.testedVersion = 15),
     (value) => (value.cost.usageObserved = false),
     (value) => (value.configSha256 = "f".repeat(64)),
   ]) {

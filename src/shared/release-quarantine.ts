@@ -1,4 +1,5 @@
 import { privatePilotConfiguration } from "./private-pilot";
+import { productionRelayAccessAllowed } from "./production-relay-events";
 import { recoveryEnvironmentDenied } from "./recovery";
 import { testNativeEventsAllowed } from "./test-native-events";
 
@@ -30,6 +31,8 @@ export function isRestoreQuarantined(
       | "PUBLIC_ORIGIN"
       | "TEST_NATIVE_EVENTS_RISK_ACCEPTANCE"
       | "EVENTS_REVIEWED_CALLBACK_TARGETS"
+      | "EVENTS_RELAY_CONFIGURATION"
+      | "EVENTS_RELAY_SIGNING_KEY_PKCS8"
     >
   >,
 ): boolean {
@@ -40,7 +43,11 @@ export function isRestoreQuarantined(
     env.RELEASE_ENVIRONMENT === "production";
   if (!knownEnvironment || env.RESTORE_QUARANTINE !== "false") return true;
   if (env.RELEASE_ENVIRONMENT === "local") return false;
-  if (privatePilotConfiguration(env) || testNativeEventsAllowed(env))
+  if (
+    (env.RELEASE_ENVIRONMENT === "staging" && privatePilotConfiguration(env)) ||
+    testNativeEventsAllowed(env) ||
+    productionRelayAccessAllowed(env)
+  )
     return false;
   // The initial public profile is manual-only. A feature flag or old Worker
   // configuration must not promote unverified live or autonomous capability.

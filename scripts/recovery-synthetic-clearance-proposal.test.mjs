@@ -62,6 +62,8 @@ function testEnvironment(proposal) {
     proposal.intendedServingConfiguration.configuration,
   );
   // Only this in-memory copy uses the ephemeral key. Neither proposal is signed.
+  // The schema-14 claims below are new synthetic gate fixtures, not historical
+  // schema-12 proposal approval or proof that its pinned old build supports 14.
   config.vars.RECOVERY_VERIFICATION_KEY = publicPem;
   const signed = signedRecoveryConfiguration(
     config,
@@ -73,7 +75,7 @@ function testEnvironment(proposal) {
       environment: "staging",
       buildSha: SOURCE,
       configSha256: "0".repeat(64),
-      schemaVersion: 12,
+      schemaVersion: 14,
       namespaceIdentity: proposal.subject.namespaceIdentity,
       planSha256: "a".repeat(64),
       evidenceSha256: proposal.evidence.canonicalSha256,

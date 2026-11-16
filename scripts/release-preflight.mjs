@@ -7,10 +7,16 @@ import {
   privatePilotConfiguration,
 } from "../src/shared/private-pilot.ts";
 import {
+  PRODUCTION_RELAY_EVENTS_PROFILE,
+  productionRelayConfiguration,
+} from "../src/shared/production-relay-events.ts";
+import {
   TEST_NATIVE_EVENTS_PROFILE,
   testNativeEventsAllowed,
   testNativeEventsInspectable,
 } from "../src/shared/test-native-events.ts";
+
+import { pendingProductionRelayAcceptance } from "./release-relay-decision.mjs";
 
 const EXPECTED_DOS = new Map([
   ["TABLES", "TableDO"],
@@ -90,6 +96,7 @@ const REQUIRED_SECRETS = [
 const ACCOUNT_ID = /^[a-f0-9]{32}$/i;
 const BUILD_SHA = /^[a-f0-9]{40}$/;
 const RELEASE_PROFILES = new Set([
+  PRODUCTION_RELAY_EVENTS_PROFILE,
   TEST_NATIVE_EVENTS_PROFILE,
   "manual",
   "live",
@@ -98,6 +105,19 @@ const RELEASE_PROFILES = new Set([
   PRIVATE_PILOT_PROFILE,
 ]);
 const EVIDENCE_CHECKS = {
+  [PRODUCTION_RELAY_EVENTS_PROFILE]: [
+    "application",
+    "security",
+    "browser",
+    "egress",
+    "provider",
+    "delivery",
+    "real_host",
+  ],
+  // #22 REQ-003: pending output metadata is not a runtime isolation policy.
+  // Keep the full public production-relay evidence gate. A first-host candidate
+  // needs a separately approved, enforced isolated operation before this gate
+  // can honestly be satisfied; an all-table enabled config is not that path.
   // Staging evidence-collection activation: real-host outcomes are obtained
   // after deployment, never asserted as a precondition or production readiness.
   // Authenticated provider readback and protected owner approval remain mandatory.
@@ -257,7 +277,11 @@ function verifyEvidence(
       evidence?.configSha256 === configSha256,
     "evidence-target-mismatch",
   );
-  for (const check of EVIDENCE_CHECKS[profile]) {
+  const checks =
+    profile === PRIVATE_PILOT_PROFILE && environment === "production"
+      ? [...EVIDENCE_CHECKS[profile], "egress", "provider"]
+      : EVIDENCE_CHECKS[profile];
+  for (const check of checks) {
     const record = evidence?.checks?.[check];
     requireCondition(
       record?.status === "passed" &&
@@ -367,6 +391,7 @@ export function validateRelease({
     ["staging", "production"].includes(environment),
     "invalid-environment",
   );
+
   requireCondition(Object.hasOwn(EVIDENCE_CHECKS, profile), "invalid-profile");
   requireCondition(/^[a-f0-9]{40}$/i.test(buildSha), "invalid-build-sha");
 
@@ -431,6 +456,20 @@ export function validateRelease({
   );
 
   validateSecretInventory(secrets, environment, config.name);
+  requireCondition(
+    !(
+      profile === PRODUCTION_RELAY_EVENTS_PROFILE ||
+      (profile === PRIVATE_PILOT_PROFILE && environment === "production")
+    ) ||
+      (environment === "production" &&
+        productionRelayConfiguration(vars) !== null &&
+        secrets.bindings.includes("EVENTS_RELAY_SIGNING_KEY_PKCS8")),
+    "production-relay-configuration-unverified",
+  );
+  requireCondition(
+    vars.EVENTS_RELAY_SIGNING_KEY_PKCS8 === undefined,
+    "relay-secret-in-plain-config",
+  );
   // A runtime switch cannot assert readiness for a profile lacking independent evidence.
   const enabledLive = vars.ENABLE_MCP_SUBSCRIPTIONS === "true";
   const enabledEvents =
@@ -448,7 +487,10 @@ export function validateRelease({
   );
   if (profile === PRIVATE_PILOT_PROFILE) {
     requireCondition(
-      environment === "staging" && privatePilotConfiguration(vars),
+      privatePilotConfiguration(vars) &&
+        (environment === "staging" ||
+          (environment === "production" &&
+            productionRelayConfiguration(vars) !== null)),
       "invalid-private-pilot-configuration",
     );
   } else {
@@ -459,9 +501,13 @@ export function validateRelease({
   }
   requireCondition(
     !enabledLive ||
-      ["live", "events", "autonomous", TEST_NATIVE_EVENTS_PROFILE].includes(
-        profile,
-      ),
+      [
+        "live",
+        "events",
+        "autonomous",
+        TEST_NATIVE_EVENTS_PROFILE,
+        PRODUCTION_RELAY_EVENTS_PROFILE,
+      ].includes(profile),
     "live-switch-without-live-evidence",
   );
   requireCondition(
@@ -471,6 +517,7 @@ export function validateRelease({
         "autonomous",
         PRIVATE_PILOT_PROFILE,
         TEST_NATIVE_EVENTS_PROFILE,
+        PRODUCTION_RELAY_EVENTS_PROFILE,
       ].includes(profile),
     "events-switch-without-events-evidence",
   );
@@ -478,6 +525,10 @@ export function validateRelease({
   return {
     preflightValid: true,
     deploymentApproved: false,
+    ...(profile === PRODUCTION_RELAY_EVENTS_PROFILE ||
+    (profile === PRIVATE_PILOT_PROFILE && environment === "production")
+      ? { productionAcceptance: pendingProductionRelayAcceptance() }
+      : {}),
     environment,
     profile,
     buildSha,

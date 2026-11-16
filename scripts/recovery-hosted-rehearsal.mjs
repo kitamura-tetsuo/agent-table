@@ -124,14 +124,14 @@ export function rehearsalPlan(sourceSha, runId) {
         {
           workerName,
           kvTitle: `${workerName}-oauth-${runId}`,
-          schemaVersion: 12,
+          schemaVersion: 14,
         },
       ]),
     ),
     publicRoutes: false,
     certificatePhase: "reset",
     finalState: "verified-quarantine",
-    retainedFutureSchemaVersion: 13,
+    retainedFutureSchemaVersion: 15,
     productionJournal: false,
     permitsClearance: false,
   };
@@ -523,7 +523,7 @@ function assertIdentity(state, target, current) {
   ensure(
     current?.buildSha === state.sourceSha &&
       current.environment === "staging" &&
-      current.schemaVersion === 12 &&
+      current.schemaVersion === 14 &&
       Object.keys(current.commitments ?? {})
         .sort()
         .join(",") === [...RECOVERY_DO_BINDINGS].sort().join(",") &&
@@ -693,7 +693,7 @@ async function configuration(state, target, main, signed = false) {
       environment: "staging",
       buildSha: state.sourceSha,
       configSha256: "0".repeat(64),
-      schemaVersion: 12,
+      schemaVersion: 14,
       namespaceIdentity: target.identity,
       planSha256: recoveryDigest({
         plan: state.plan,
@@ -1275,7 +1275,7 @@ async function schemaRefused(call) {
   } catch (error) {
     ensure(
       error?.name === "UnsupportedApplicationSchemaError" ||
-        /Application schema version 13 is newer than supported 12/.test(
+        /Application schema version 15 is newer than supported 14/.test(
           String(error?.message ?? ""),
         ),
       "future-schema-refusal-cause-unverified",
@@ -1306,7 +1306,7 @@ async function future(path, state, client) {
       }),
     );
     ensure(
-      target.future?.schemaVersion === 13 &&
+      target.future?.schemaVersion === 15 &&
         target.future.constructorValidatorRefused &&
         target.future.inspectionRefused &&
         target.future.resetRefused &&
@@ -1349,7 +1349,7 @@ async function future(path, state, client) {
         target,
         plainRecoveryMetadata(await CONTROL.identity()),
       );
-      return { inspection, reset, schemaVersion: 13 };
+      return { inspection, reset, schemaVersion: 15 };
     },
   );
   await saveState(path, state);
@@ -1361,7 +1361,7 @@ async function future(path, state, client) {
     }),
   );
   ensure(
-    target.forensic?.schemaVersion === 13 &&
+    target.forensic?.schemaVersion === 15 &&
       target.forensic.objectId === target.future.objectId &&
       target.forensic.canonicalSha256 === target.future.canonicalSha256 &&
       canonicalJson(target.forensic.counts) ===
@@ -1375,7 +1375,7 @@ async function future(path, state, client) {
   record(state, "future-schema-retained-quarantined", {
     workerName: target.workerName,
     objectId: target.future.objectId,
-    schemaVersion: 13,
+    schemaVersion: 15,
     canonicalSha256: target.forensic.canonicalSha256,
     constructorRefused: true,
     inspectionRefused: true,
@@ -1411,7 +1411,7 @@ export function publicRehearsalEvidence(state) {
       "Manual isolated synthetic approval; no protected workflow approval is asserted.",
       "KV deletion is observed inventory coverage, not a global cache-empty proof.",
       "Only reset certificates are issued; quarantine stays active after expiry.",
-      "The schema13 namespace is retained, never reset, renamed, or deleted.",
+      "The schema15 namespace is retained, never reset, renamed, or deleted.",
       "This synthetic record is separate from the production recovery journal.",
     ],
   };

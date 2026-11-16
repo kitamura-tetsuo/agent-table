@@ -24,6 +24,7 @@ export type SafeTableMetadata = {
     available: boolean;
     reason:
       | "delivery_not_ready"
+      | "production_relay_ready"
       | "private_pilot_only"
       | "test_native_risk_accepted";
     status: "active" | "expired" | "disabled";

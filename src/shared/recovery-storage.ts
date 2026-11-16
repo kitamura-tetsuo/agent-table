@@ -103,7 +103,15 @@ function validateSchema(
   const inventory = sqlInventory(storage);
   if (recoverySchemaCatalogSha256(inventory) !== descriptor.schemaSha256)
     unavailable();
-  if (inventory.some((item) => item.type !== "table" && item.type !== "index"))
+  // The catalog hash above binds exact DDL; only explicitly owned triggers qualify.
+  if (
+    inventory.some(
+      (item) =>
+        item.type !== "table" &&
+        item.type !== "index" &&
+        !(item.type === "trigger" && descriptor.triggers?.includes(item.name)),
+    )
+  )
     unavailable();
   const names = inventory
     .filter((item) => item.type === "table")

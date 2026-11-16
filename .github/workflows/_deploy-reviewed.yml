@@ -60,8 +60,14 @@ jobs:
           [[ "$EXPECTED_SHA" =~ ^[a-f0-9]{40}$ ]]
           [[ "$EXPECTED_SHA" == "$CHECKED_OUT_SHA" ]]
           [[ "$(git rev-parse HEAD)" == "$CHECKED_OUT_SHA" ]]
-          if [[ "$RELEASE_PROFILE" != "manual" ]]; then
-            [[ "$RELEASE_PROFILE" == "private-pilot-a-only" || "$RELEASE_PROFILE" == "test-native-events" ]]
+          if [[ "$RELEASE_PROFILE" == "production-relay-events" ]]; then
+            [[ "$TARGET_ENVIRONMENT" == "production" ]]
+            [[ "$BOOTSTRAP_STAGING" == "false" ]]
+          elif [[ "$RELEASE_PROFILE" == "private-pilot-a-only" ]]; then
+            [[ "$TARGET_ENVIRONMENT" == "staging" || "$TARGET_ENVIRONMENT" == "production" ]]
+            [[ "$BOOTSTRAP_STAGING" == "false" ]]
+          elif [[ "$RELEASE_PROFILE" != "manual" ]]; then
+            [[ "$RELEASE_PROFILE" == "test-native-events" ]]
             [[ "$TARGET_ENVIRONMENT" == "staging" ]]
             [[ "$BOOTSTRAP_STAGING" == "false" ]]
           fi

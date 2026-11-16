@@ -582,7 +582,7 @@ export function verifyObjectInspectionReceipts(
       matches(expected.operationId, UUID) &&
       matches(expected.generation, DIGEST) &&
       matches(expected.requestNonce, DIGEST) &&
-      expected.schemaVersion === 12 &&
+      expected.schemaVersion === 14 &&
       canonicalRecoveryJson(expected.namespaceIdentity) ===
         canonicalRecoveryJson(inventory.namespaceIdentity),
     "recovery-inspection-subject-invalid",

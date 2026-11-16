@@ -6,8 +6,13 @@ import {
 import {
   inspectEventSubscriptionParams,
   parseEventSubscriptionParams,
+  signWebhook,
   verifyCallbackControl,
 } from "../notifications/openai-events";
+import { selectProductionRelayAdapters } from "../notifications/production-relay-adapters";
+import { relayOperationDigest } from "../notifications/relay-operation";
+import { parseRelayChallengeOutcome } from "../notifications/relay-outcome";
+import type { RelayVerificationAdapter } from "../notifications/relay-verification";
 import type { VerifiedConnectionActor } from "../shared/auth";
 import {
   activePrivatePilotDiscoveryPolicy,
@@ -16,6 +21,7 @@ import {
   privatePilotConfiguration,
   privatePilotRecipientMatches,
 } from "../shared/private-pilot";
+import { productionRelayProfileSelected } from "../shared/production-relay-events";
 
 export type EventServiceFailure =
   | "invalid"
@@ -59,6 +65,7 @@ export async function subscribeEvent(
   actor: VerifiedConnectionActor,
   input: unknown,
   diagnostics?: EventDiagnosticTrace,
+  relay: RelayVerificationAdapter | null = null,
 ): Promise<
   EventServiceResult<{
     id: string;
@@ -67,6 +74,10 @@ export async function subscribeEvent(
     truncated: false;
   }>
 > {
+  relay ??= selectProductionRelayAdapters(env)?.verification ?? null;
+  // An unavailable production relay is not permission to fall back to native fetch.
+  if (productionRelayProfileSelected(env) && !relay)
+    return { ok: false, reason: "unavailable" };
   const inspected = inspectEventSubscriptionParams(input, "subscribe");
   if (!inspected.ok) {
     diagnostics?.record(
@@ -149,12 +160,110 @@ export async function subscribeEvent(
       }
       verificationTargets = currentPilot.callbackTargets;
     }
-    const checked = await verifyCallbackControl(
-      parsed.delivery.url,
-      verificationTargets,
-      parsed.delivery.secret as string,
-      candidate.value.subscriptionId,
-    );
+    let checked: "verified" | "challenge-failed" | "transport-failed";
+    if (relay) {
+      const configuration = structuredClone(relay.configuration);
+      const issuedAt = Date.now(),
+        requestId = crypto.randomUUID();
+      const challenge = crypto.randomUUID();
+      const signed = signWebhook(
+        { type: "verification", challenge },
+        `msg_verification_${crypto.randomUUID().replace(/-/g, "")}`,
+        candidate.value.subscriptionId,
+        [parsed.delivery.secret as string],
+        new Date(issuedAt),
+      );
+      const request = { method: "POST" as const, ...signed };
+      const operation = {
+        requestId,
+        issuedAt,
+        acceptanceExpiresAt: issuedAt + 60000,
+        audience: configuration.audience,
+        callerId: configuration.callerId,
+        operationDigest: await relayOperationDigest({
+          kind: "challenge",
+          audience: configuration.audience,
+          callerId: configuration.callerId,
+          requestId,
+          destination: parsed.delivery.url,
+          headers: { ...signed.headers },
+          payload: btoa(String.fromCharCode(...new Uint8Array(signed.body))),
+        }),
+      };
+      const prepared = await table.prepareRelayVerification(
+        actor,
+        candidate.value.candidateId,
+        operation,
+      );
+      if (!prepared.ok) return failed(prepared.code);
+      // An exception/ambiguous result retains its original record, never creates
+      // a replacement challenge ID or discards the uncertain candidate.
+      const result = await relay.send(
+        configuration,
+        { requestId, timestamp: issuedAt },
+        parsed.delivery.url,
+        request,
+        () =>
+          table.authorizeRelayVerification(
+            actor,
+            candidate.value.candidateId,
+            operation,
+            true,
+          ),
+      );
+      let outcome = result.ok ? result.outcome : null;
+      // One bounded status read for this exact operation only. A fresh read
+      // timestamp never extends the original candidate or transport deadline.
+      if (
+        !result.ok &&
+        (await table.authorizeRelayVerification(
+          actor,
+          candidate.value.candidateId,
+          operation,
+          false,
+        ))
+      ) {
+        try {
+          const readback = await relay.read(
+            configuration,
+            {
+              requestId,
+              operationDigest: operation.operationDigest,
+              timestamp: Date.now(),
+            },
+            () =>
+              table.authorizeRelayVerification(
+                actor,
+                candidate.value.candidateId,
+                operation,
+                false,
+              ),
+          );
+          if (readback.ok && readback.state === "completed") {
+            outcome = parseRelayChallengeOutcome(readback.outcome);
+          }
+        } catch {
+          // Readback errors preserve the original unknown record.
+        }
+      }
+      const recorded = await table.recordRelayVerification(
+        actor,
+        candidate.value.candidateId,
+        operation,
+        outcome,
+      );
+      if (!recorded.ok) return failed(recorded.code);
+      if (!outcome) return { ok: false, reason: "callback_transport_failed" };
+      checked =
+        outcome.verification === "verified" ? "verified" : "challenge-failed";
+    } else {
+      checked = await verifyCallbackControl(
+        parsed.delivery.url,
+        verificationTargets,
+        parsed.delivery.secret as string,
+        candidate.value.subscriptionId,
+      );
+    }
     if (checked !== "verified") {
       await table.discardEventCandidate(actor, candidate.value.candidateId);
       return {

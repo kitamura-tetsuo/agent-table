@@ -43,7 +43,7 @@ function record(environment = "staging") {
     generation: "a".repeat(64),
     buildSha: "b".repeat(40),
     configSha256: "c".repeat(64),
-    schemaVersion: 12,
+    schemaVersion: 14,
     namespaceIdentity: {
       ...structuredClone(identity),
       workerName: `agent-table-${environment}`,
@@ -269,7 +269,7 @@ test("strict metadata schema and canonical digests exclude malformed phase autho
       delete value.planSha256;
     },
     (value) => {
-      value.schemaVersion = 13;
+      value.schemaVersion = 15;
     },
     (value) => {
       value.namespaceIdentity.namespaces.GUESTS =
@@ -682,3 +682,48 @@ test("superseding a pending operation cannot replay any earlier abandoned genera
     "resetting",
   );
 });
+
+for (const historicalVersion of [12, 13])
+  test(`schema ${historicalVersion} journal history remains readable and hashed unchanged but cannot be newly written`, async () => {
+    const mock = fakeGit();
+    const historical = { ...record(), schemaVersion: historicalVersion };
+    const digest = recoveryRecordDigest(historical);
+    const blob = mock.blob(canonicalRecoveryJson(historical) + "\n");
+    mock.head = mock.commit(
+      mock.tree(
+        new Map([
+          ["staging.json", blob],
+          [`history/staging/1-${digest}.json`, blob],
+        ]),
+      ),
+      [],
+    );
+    const observed = await readRecoveryJournal("staging", mock.client);
+    assert.deepEqual(observed.record, historical);
+    assert.equal(observed.recordSha256, digest);
+    const before = mock.calls.length;
+    await assert.rejects(
+      writeRecoveryJournalCAS(
+        historical,
+        { headSha: observed.headSha, recordSha256: digest },
+        mock.client,
+      ),
+      /current-schema-required/,
+    );
+    assert.equal(mock.calls.length, before);
+    const replacement = next(historical, "prepared", {
+      schemaVersion: 14,
+      operationId: "22222222-2222-4222-8222-222222222222",
+      generation: "3".repeat(64),
+      buildSha: "4".repeat(40),
+    });
+    await persist(mock, replacement);
+    const latest = await readRecoveryJournal("staging", mock.client);
+    assert.equal(latest.record.schemaVersion, 14);
+    assert.equal(latest.record.previousRecordSha256, digest);
+    assert.equal(latest.history[0].digest, digest);
+    await assert.rejects(
+      persist(mock, next(replacement, "quarantined", { schemaVersion: 12 })),
+      /current-schema-required/,
+    );
+  });

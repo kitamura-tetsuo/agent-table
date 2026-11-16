@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { recoveryGenerationSchema } from "../../schema/012_recovery_generation.ts";
 import type { RecoveryDoBinding } from "./recovery.ts";
 
-const APPLICATION_SCHEMA_VERSION = 12;
+const APPLICATION_SCHEMA_VERSION = 14;
 
 export const RECOVERY_MARKER_SQL =
   recoveryGenerationSchema.statements[0].replace(
@@ -25,6 +25,7 @@ export interface RecoveryStorageDescriptor {
   schemaVersion: number;
   tables: readonly { name: string; columns: readonly string[] }[];
   applicationSchema: boolean;
+  triggers?: readonly string[];
   schemaSha256: string;
 }
 
@@ -66,7 +67,7 @@ export const GUEST_RECOVERY_STORAGE: RecoveryStorageDescriptor = {
   binding: "GUESTS",
   schemaVersion: APPLICATION_SCHEMA_VERSION,
   applicationSchema: true,
-  // Applying migrations 1..12 to a virgin guest SQLite database produces this
+  // Applying migrations 1..14 to a virgin guest SQLite database produces this
   // catalog. Recovery tests verify the same catalog in the pinned Workerd.
   schemaSha256:
     "9586006bff9ab0daee6130c49eeede14bb4a78d88804717ff6aec4ee1975539a",
@@ -94,15 +95,29 @@ export const TABLE_RECOVERY_STORAGE: RecoveryStorageDescriptor = {
   schemaVersion: APPLICATION_SCHEMA_VERSION,
   applicationSchema: true,
   schemaSha256:
-    "b32cb9770b0184126645b4f692053ea54c522ecd5592e190a781ebf786adb55f",
+    "bc3817646623bedeffb46b0dace8b9c4507060d6263825712954f35494137bd2",
+  triggers: [
+    "table_event_relay_attempt_identity_immutable",
+    "table_event_relay_attempt_outcome_immutable",
+    "table_event_relay_verification_identity_immutable",
+    "table_event_relay_verification_result_immutable",
+  ],
   tables: [
     table(
+      "table_event_relay_verifications",
+      "candidate_id,membership_id,subscription_id,guest_id,connection_id,fence,candidate_expires_at,request_id,issued_at,acceptance_expires_at,audience,caller_id,operation_digest,state",
+    ),
+    table(
+      "table_event_relay_attempts",
+      "request_id,event_id,subscription_id,generation,ordinal,lease_token,first_attempt_at,lease_deadline,audience,caller_id,issued_at,acceptance_expires_at,operation_digest,transport_reserved,state,outcome_kind,http_status,outcome_json",
+    ),
+    table(
       "table_event_outbox",
-      "event_id,message_id,message_seq,recipient_membership_id,subscription_id,subscription_generation,status,attempt_count,first_attempt_at,next_attempt_at,lease_token,lease_deadline,created_at,expires_at,last_error_category",
+      "event_id,message_id,message_seq,recipient_membership_id,subscription_id,subscription_generation,status,attempt_count,first_attempt_at,next_attempt_at,lease_token,lease_deadline,created_at,expires_at,last_error_category,relay_reconcile_after",
     ),
     table(
       "table_event_candidates",
-      "membership_id,candidate_id,subscription_id,guest_id,connection_id,callback_url,secret_envelope,requested_ttl_ms,fence,expires_at",
+      "membership_id,candidate_id,subscription_id,guest_id,connection_id,callback_url,secret_envelope,requested_ttl_ms,fence,expires_at,verification_mode",
     ),
     table(
       "table_event_subscriptions",

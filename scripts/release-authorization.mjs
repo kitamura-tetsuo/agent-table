@@ -8,6 +8,10 @@ import {
   privatePilotConfiguration,
 } from "../src/shared/private-pilot.ts";
 import {
+  PRODUCTION_RELAY_EVENTS_PROFILE,
+  productionRelayConfiguration,
+} from "../src/shared/production-relay-events.ts";
+import {
   TEST_NATIVE_EVENTS_PROFILE,
   TEST_NATIVE_EVENTS_RISK,
   testNativeEventsAllowed,
@@ -25,6 +29,7 @@ import {
   receiptDigest,
   redactedProviderReceipt,
 } from "./release-provider.mjs";
+import { verifyProductionRelayDecision } from "./release-relay-decision.mjs";
 
 const REPOSITORY = "kitamura-tetsuo/agent-table";
 const CI_STEPS = [
@@ -204,7 +209,7 @@ export function verifyOperationalDecision(
     );
   }
   requireDecision(
-    record?.schema?.testedVersion === 12 &&
+    record?.schema?.testedVersion === 14 &&
       record.schema.nonDestructiveRollback === !bootstrapStaging &&
       (!bootstrapStaging ||
         (environment === "staging" &&
@@ -254,7 +259,9 @@ export function verifyPrivatePilotDecision(record, vars, now) {
         ? decision.callbackDiscoveryReviewed === true &&
           decision.noOutboundReviewed === true
         : decision.callbackControlReviewed === true &&
-          decision.nativeFetchRiskAccepted === true) &&
+          (vars.RELEASE_ENVIRONMENT === "production"
+            ? decision.nativeFetchRiskAccepted === false
+            : decision.nativeFetchRiskAccepted === true)) &&
       (policy.observationMode === undefined ||
         decision.privateObservationReviewed === true) &&
       decision.boundedCanaryReviewed === true &&
@@ -316,8 +323,11 @@ export async function authorizeRelease({
   );
   requireDecision(
     profile === "manual" ||
-      ([PRIVATE_PILOT_PROFILE, TEST_NATIVE_EVENTS_PROFILE].includes(profile) &&
-        environment === "staging"),
+      (profile === PRODUCTION_RELAY_EVENTS_PROFILE &&
+        environment === "production") ||
+      (profile === PRIVATE_PILOT_PROFILE &&
+        ["staging", "production"].includes(environment)) ||
+      (profile === TEST_NATIVE_EVENTS_PROFILE && environment === "staging"),
     "profile-real-host-evidence-not-verified",
   );
   requireDecision(
@@ -347,7 +357,8 @@ export async function authorizeRelease({
     "cloudflare-account-mismatch",
   );
   requireDecision(
-    testNativeEventsAllowed(config.vars) ||
+    productionRelayConfiguration(config.vars) !== null ||
+      testNativeEventsAllowed(config.vars) ||
       (config.vars.RESTORE_QUARANTINE === "false" &&
         config.vars.ENABLE_MCP_SUBSCRIPTIONS === "false" &&
         config.vars.ENABLE_OPENAI_EVENTS === "false" &&
@@ -372,6 +383,11 @@ export async function authorizeRelease({
     now,
     bootstrapStaging,
   });
+  const productionRelay =
+    profile === PRODUCTION_RELAY_EVENTS_PROFILE ||
+    (profile === PRIVATE_PILOT_PROFILE && environment === "production")
+      ? verifyProductionRelayDecision(operations, config.vars)
+      : undefined;
   const testNativeEvents =
     profile === TEST_NATIVE_EVENTS_PROFILE
       ? verifyTestNativeEventsDecision(operations, config.vars)
@@ -435,6 +451,7 @@ export async function authorizeRelease({
   );
   return {
     ...offline,
+    ...(productionRelay ? { productionRelay } : {}),
     ...(privatePilot ? { privatePilot } : {}),
     ...(testNativeEvents ? { testNativeEvents } : {}),
     bootstrapStaging,
