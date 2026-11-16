@@ -1332,4 +1332,37 @@ describe("Reusable private channel/session contract in SQLite Workerd", () => {
     ).toBe(true);
     expect(await counts(f)).toMatchObject({ table_event_outbox: 1 });
   });
+  it("counts resume rate limits using server admission time rather than backdated client timestamps", async () => {
+    const f = await fixture(),
+      peer = await f.peer.actor("tables:write"),
+      now = Date.now();
+    for (let i = 0; i < 10; i++) {
+      const request = {
+        request_id: crypto.randomUUID(),
+        generation: 0,
+        requested_at: now - 240_000,
+      };
+      expect((await f.stub.requestTableResume(f.writer, request)).ok).toBe(
+        true,
+      );
+      expect(
+        (
+          await f.stub.respondTableResume(peer, {
+            request_id: request.request_id,
+            generation: 0,
+            decision: "reject",
+          })
+        ).ok,
+      ).toBe(true);
+    }
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(now + 56 * 60_000 + 1000);
+    expect(
+      await f.stub.requestTableResume(f.writer, {
+        request_id: crypto.randomUUID(),
+        generation: 0,
+        requested_at: Date.now(),
+      }),
+    ).toEqual({ ok: false, code: "RATE_LIMITED" });
+  });
 });

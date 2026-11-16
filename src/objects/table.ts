@@ -870,8 +870,8 @@ export class TableDO extends DurableObject<Env> {
         if (
           this.privateSql
             .exec<{ n: number }>(
-              "SELECT COUNT(*) n FROM table_resume_requests WHERE requested_at>?",
-              now - 3_600_000,
+              "SELECT COUNT(*) n FROM table_resume_requests WHERE retain_until>?",
+              now + SESSION_MARKER_RETENTION_MS - 3_600_000,
             )
             .one().n >= 10
         )
