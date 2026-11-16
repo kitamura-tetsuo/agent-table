@@ -457,6 +457,11 @@ export function validateRelease({
 
   validateSecretInventory(secrets, environment, config.name);
   requireCondition(
+    profile !== TEST_NATIVE_EVENTS_PROFILE ||
+      !secrets.bindings.includes("EVENTS_RELAY_SIGNING_KEY_PKCS8"),
+    "relay-secret-in-test-native-profile",
+  );
+  requireCondition(
     !(
       profile === PRODUCTION_RELAY_EVENTS_PROFILE ||
       (profile === PRIVATE_PILOT_PROFILE && environment === "production")

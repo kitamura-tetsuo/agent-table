@@ -318,6 +318,11 @@ export async function inspectWorker(
     settings.bindings.some((b) => b?.name === relaySecret) ||
     versionBindings.some((b) => b?.name === relaySecret) ||
     secretNames.has(relaySecret);
+  ensure(
+    textBindings.RELEASE_PROFILE !== TEST_NATIVE_EVENTS_PROFILE ||
+      !relaySecretPresent,
+    "provider-test-native-relay-secret-present",
+  );
   if (relaySecretPresent || productionRelayProfileSelected(textBindings)) {
     readBinding(settings.bindings, relaySecret, "secret_text");
     readBinding(versionBindings, relaySecret, "secret_text");
@@ -422,6 +427,14 @@ export function verifyDeployedConfiguration(observed, config) {
       "provider-deployed-test-native-binding-mismatch",
     );
   }
+  ensure(
+    config.vars.RELEASE_PROFILE !== TEST_NATIVE_EVENTS_PROFILE ||
+      (testNativeEventsInspectable(config.vars) &&
+        testNativeEventsInspectable(observed.textBindings) &&
+        Array.isArray(observed.secretNames) &&
+        !observed.secretNames.includes("EVENTS_RELAY_SIGNING_KEY_PKCS8")),
+    "provider-deployed-test-native-profile-unverified",
+  );
   if (productionRelayProfileSelected(config.vars)) {
     ensure(
       productionRelayInspectable(config.vars) &&

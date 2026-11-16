@@ -64,6 +64,18 @@ describe("explicit staging native-transport exception", () => {
       );
     }
   });
+  it("refuses stale pilot or production relay bindings instead of selecting native", () => {
+    for (const key of [
+      "PRIVATE_PILOT_POLICY",
+      "EVENTS_RELAY_CONFIGURATION",
+      "EVENTS_RELAY_SIGNING_KEY_PKCS8",
+    ]) {
+      for (const value of ["", "invalid", "{}"])
+        expect(testNativeEventsAllowed({ ...bindings(), [key]: value })).toBe(
+          false,
+        );
+    }
+  });
   it("retains reviewed destination requirements rather than allowing arbitrary URLs", () => {
     for (const target of [
       "[]",
