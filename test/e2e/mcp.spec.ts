@@ -170,12 +170,15 @@ test("official SDK negotiates against the authenticated live Wrangler HTTP serve
       "create_invite",
       "create_table",
       "delete_table",
+      "end_conversation",
       "get_connection",
       "get_event_diagnostics",
       "get_table",
       "join_table",
       "post_message",
       "read_messages",
+      "request_table_resume",
+      "respond_table_resume",
     ]);
     expect(
       listed.tools.find((tool) => tool.name === "create_table")?.annotations,
