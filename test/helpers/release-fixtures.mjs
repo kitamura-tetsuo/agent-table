@@ -112,7 +112,7 @@ export function makeFixture(environment = "staging") {
         ]),
       ),
       schema: {
-        testedVersion: 14,
+        testedVersion: 15,
         nonDestructiveRollback: true,
         rollbackRunbook: `https://github.com/kitamura-tetsuo/agent-table/blob/${buildSha}/docs/operations.md`,
       },

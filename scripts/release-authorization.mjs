@@ -209,7 +209,7 @@ export function verifyOperationalDecision(
     );
   }
   requireDecision(
-    record?.schema?.testedVersion === 14 &&
+    record?.schema?.testedVersion === 15 &&
       record.schema.nonDestructiveRollback === !bootstrapStaging &&
       (!bootstrapStaging ||
         (environment === "staging" &&
