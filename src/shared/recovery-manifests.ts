@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { recoveryGenerationSchema } from "../../schema/012_recovery_generation.ts";
 import type { RecoveryDoBinding } from "./recovery.ts";
 
-const APPLICATION_SCHEMA_VERSION = 14;
+const APPLICATION_SCHEMA_VERSION = 15;
 
 export const RECOVERY_MARKER_SQL =
   recoveryGenerationSchema.statements[0].replace(
@@ -95,7 +95,7 @@ export const TABLE_RECOVERY_STORAGE: RecoveryStorageDescriptor = {
   schemaVersion: APPLICATION_SCHEMA_VERSION,
   applicationSchema: true,
   schemaSha256:
-    "bc3817646623bedeffb46b0dace8b9c4507060d6263825712954f35494137bd2",
+    "a7b375f0e9ca7430a6fce75b884bcc22a4a064713bd5796ba17966556e663dd6",
   triggers: [
     "table_event_relay_attempt_identity_immutable",
     "table_event_relay_attempt_outcome_immutable",
@@ -103,6 +103,18 @@ export const TABLE_RECOVERY_STORAGE: RecoveryStorageDescriptor = {
     "table_event_relay_verification_result_immutable",
   ],
   tables: [
+    table(
+      "table_session_terminals",
+      "session_id,generation,ended_at,retain_until",
+    ),
+    table(
+      "table_resume_requests",
+      "request_id,requester,recipient,generation,requested_at,expires_at,status,session_id,session_generation,retain_until",
+    ),
+    table(
+      "table_channel",
+      "singleton,generation,session_id,started_at,deadline",
+    ),
     table(
       "table_event_relay_verifications",
       "candidate_id,membership_id,subscription_id,guest_id,connection_id,fence,candidate_expires_at,request_id,issued_at,acceptance_expires_at,audience,caller_id,operation_digest,state",
@@ -113,15 +125,15 @@ export const TABLE_RECOVERY_STORAGE: RecoveryStorageDescriptor = {
     ),
     table(
       "table_event_outbox",
-      "event_id,message_id,message_seq,recipient_membership_id,subscription_id,subscription_generation,status,attempt_count,first_attempt_at,next_attempt_at,lease_token,lease_deadline,created_at,expires_at,last_error_category,relay_reconcile_after",
+      "event_id,relay_reconcile_after,event_name,session_id,session_generation,message_id,message_seq,recipient_membership_id,subscription_id,subscription_generation,status,attempt_count,first_attempt_at,next_attempt_at,lease_token,lease_deadline,created_at,expires_at,last_error_category",
     ),
     table(
       "table_event_candidates",
-      "membership_id,candidate_id,subscription_id,guest_id,connection_id,callback_url,secret_envelope,requested_ttl_ms,fence,expires_at,verification_mode",
+      "membership_id,event_name,session_id,session_generation,candidate_id,subscription_id,guest_id,connection_id,callback_url,secret_envelope,requested_ttl_ms,fence,expires_at,verification_mode",
     ),
     table(
       "table_event_subscriptions",
-      "membership_id,generation,fence,status,guest_id,connection_id,subscription_id,callback_url,secret_envelope,previous_secret_envelope,rotation_until,expires_at",
+      "membership_id,event_name,session_id,session_generation,generation,fence,status,guest_id,connection_id,subscription_id,callback_url,secret_envelope,previous_secret_envelope,rotation_until,expires_at",
     ),
     table("table_delete_confirmations", "guest_id,request_id,expires_at,state"),
     table("table_tombstone_delete_receipts", "guest_id,request_id"),

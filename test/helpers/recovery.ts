@@ -20,7 +20,7 @@ export function recoveryFixture(
     environment: "local",
     buildSha: "a".repeat(40),
     configSha256: "b".repeat(64),
-    schemaVersion: 14,
+    schemaVersion: 15,
     namespaceIdentity: {
       accountId: "f".repeat(32),
       workerName: "agent-table-local",

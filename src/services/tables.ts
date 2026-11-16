@@ -1,5 +1,11 @@
 import { allowNewTables } from "../shared/admission";
 import type { VerifiedConnectionActor } from "../shared/auth";
+import type {
+  EndConversationInput,
+  ResumeDecision,
+  ResumeInput,
+  ResumeReceipt,
+} from "../shared/conversation";
 import type { CreationActor } from "../shared/creation";
 import {
   InvalidCreationRequestError,
@@ -299,6 +305,52 @@ export async function requestTableDeletion(
     return await env.TABLES.get(env.TABLES.idFromName(tableId)).requestDeletion(
       actor,
       requestId,
+    );
+  } catch {
+    return { ok: false, code: "TEMPORARILY_UNAVAILABLE" };
+  }
+}
+
+export async function requestTableResume(
+  env: Env,
+  actor: VerifiedConnectionActor,
+  tableId: string,
+  input: ResumeInput,
+): Promise<TableResult<ResumeReceipt>> {
+  try {
+    return await env.TABLES.get(
+      env.TABLES.idFromName(tableId),
+    ).requestTableResume(actor, input);
+  } catch {
+    return { ok: false, code: "TEMPORARILY_UNAVAILABLE" };
+  }
+}
+export async function respondTableResume(
+  env: Env,
+  actor: VerifiedConnectionActor,
+  tableId: string,
+  input: ResumeDecision,
+): Promise<TableResult<ResumeReceipt>> {
+  try {
+    return await env.TABLES.get(
+      env.TABLES.idFromName(tableId),
+    ).respondTableResume(actor, input);
+  } catch {
+    return { ok: false, code: "TEMPORARILY_UNAVAILABLE" };
+  }
+}
+export async function endConversation(
+  env: Env,
+  actor: VerifiedConnectionActor,
+  tableId: string,
+  input: EndConversationInput,
+): Promise<
+  TableResult<{ sessionId: string; generation: number; state: "ended" }>
+> {
+  try {
+    return await env.TABLES.get(env.TABLES.idFromName(tableId)).endConversation(
+      actor,
+      input,
     );
   } catch {
     return { ok: false, code: "TEMPORARILY_UNAVAILABLE" };

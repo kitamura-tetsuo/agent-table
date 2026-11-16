@@ -13,6 +13,8 @@ import { recoveryGenerationSchema } from "./012_recovery_generation";
 import { relayAttemptLedgerSchema } from "./013_relay_attempt_ledger";
 import { relayVerificationSchema } from "./014_relay_verification";
 
+import { conversationSessionsSchema } from "./015_conversation_sessions";
+
 export const migrations = [
   initialSchema,
   guestSessionsSchema,
@@ -28,6 +30,7 @@ export const migrations = [
   recoveryGenerationSchema,
   relayAttemptLedgerSchema,
   relayVerificationSchema,
+  conversationSessionsSchema,
 ] as const;
 
 export const APPLICATION_SCHEMA_VERSION = migrations.at(-1)?.version ?? 0;

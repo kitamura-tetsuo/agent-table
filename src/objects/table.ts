@@ -31,6 +31,8 @@ import {
   grantedSubscriptionTtlMs,
   messageCreatedEvent,
   parseEventSubscriptionParams,
+  RESUME_EVENT_NAME,
+  resumeRequestedEvent,
   signWebhook,
   subscriptionIdentity,
 } from "../notifications/openai-events";
@@ -62,6 +64,20 @@ import {
   type ConnectionScope,
   type VerifiedConnectionActor,
 } from "../shared/auth";
+import {
+  type ChannelRow,
+  type EndConversationInput,
+  RESUME_REQUEST_MS,
+  type ResumeDecision,
+  type ResumeInput,
+  type ResumeReceipt,
+  type ResumeRow,
+  SESSION_MARKER_RETENTION_MS,
+  SESSION_MAX_MS,
+  validEndInput,
+  validResumeDecision,
+  validResumeInput,
+} from "../shared/conversation";
 import {
   type CreationActor,
   creationRequestDigest,
@@ -212,6 +228,9 @@ type JoinReceiptRow = {
 };
 
 type EventSubscriptionRow = {
+  event_name: string;
+  session_id: string | null;
+  session_generation: number;
   membership_id: string;
   generation: number;
   fence: number;
@@ -227,6 +246,9 @@ type EventSubscriptionRow = {
 };
 
 type EventCandidateRow = {
+  event_name: string;
+  session_id: string | null;
+  session_generation: number;
   verification_mode: "native" | "relay";
   membership_id: string;
   candidate_id: string;
@@ -259,6 +281,10 @@ type DispatchWork = EventSubscriptionRow & {
   created_at: number;
   table_id: string;
   table_expires_at: number;
+  requester: string | null;
+  request_expires_at: number | null;
+  work_session_id: string | null;
+  work_session_generation: number;
   lease_token: string | null;
 };
 
@@ -621,6 +647,507 @@ export class TableDO extends DurableObject<Env> {
     };
   }
 
+  private channel(): ChannelRow | undefined {
+    return this.privateSql
+      .exec<ChannelRow>("SELECT * FROM table_channel WHERE singleton=1")
+      .toArray()[0];
+  }
+
+  /** Admission expires as before. Only a verified two-member reusable channel survives it. */
+  private tableDeadline(table: MetadataRow): number {
+    return table.state === "open" &&
+      this.channel() &&
+      this.memberships().length === 2
+      ? 8_640_000_000_000_000
+      : table.expires_at;
+  }
+
+  private safeSession() {
+    const channel = this.channel();
+    return channel?.session_id &&
+      channel.deadline !== null &&
+      channel.deadline > Date.now()
+      ? {
+          sessionId: channel.session_id,
+          generation: channel.generation,
+          startedAt: new Date(channel.started_at as number).toISOString(),
+          expiresAt: new Date(channel.deadline).toISOString(),
+        }
+      : null;
+  }
+
+  private sessionFence(input: {
+    session_id?: string;
+    generation?: number;
+  }): TableResult<{}> {
+    const channel = this.channel();
+    if (!channel)
+      return input.session_id === undefined && input.generation === undefined
+        ? { ok: true, value: {} }
+        : { ok: false, code: "STALE_SESSION" };
+    if (!input.session_id || input.generation === undefined)
+      return { ok: false, code: "SESSION_REQUIRED" };
+    if (
+      !channel.session_id ||
+      channel.session_id !== input.session_id ||
+      channel.generation !== input.generation ||
+      channel.deadline === null ||
+      channel.deadline <= Date.now()
+    ) {
+      this.expireSession(Date.now());
+      return { ok: false, code: "STALE_SESSION" };
+    }
+    return { ok: true, value: {} };
+  }
+
+  /** No session body, receipt, delivery credential or watermark survives this transaction. */
+  private purgeSession(now: number): void {
+    const channel = this.channel();
+    if (!channel?.session_id) return;
+    this.inboxStreams.closeAll();
+    this.privateSql.exec(
+      "INSERT INTO table_session_terminals VALUES(?,?,?,?)",
+      channel.session_id,
+      channel.generation,
+      now,
+      now + SESSION_MARKER_RETENTION_MS,
+    );
+    this.privateSql.exec(
+      "DELETE FROM table_event_relay_attempts WHERE event_id IN (SELECT event_id FROM table_event_outbox WHERE event_name='table.message.created')",
+    );
+    this.privateSql.exec(
+      "DELETE FROM table_event_outbox WHERE event_name='table.message.created'",
+    );
+    this.privateSql.exec(
+      "DELETE FROM table_event_relay_verifications WHERE subscription_id NOT IN (SELECT subscription_id FROM table_event_subscriptions WHERE event_name='table.resume.requested' AND subscription_id IS NOT NULL)",
+    );
+    this.privateSql.exec(
+      "DELETE FROM table_event_candidates WHERE event_name='table.message.created'",
+    );
+    for (const member of this.memberships())
+      this.invalidateEventSubscription(member.membership_id, "inactive");
+    this.privateSql.exec(
+      "UPDATE table_event_subscriptions SET session_id=NULL,session_generation=0,guest_id=NULL,connection_id=NULL,subscription_id=NULL WHERE event_name='table.message.created'",
+    );
+    this.privateSql.exec("DELETE FROM table_post_receipts");
+    this.privateSql.exec("DELETE FROM table_messages");
+    this.privateSql.exec("UPDATE table_transcript_usage SET body_bytes=0");
+    this.privateSql.exec("UPDATE table_memberships SET latest_peer_seq=0");
+    this.privateSql.exec(
+      "UPDATE table_metadata SET title='',purpose=NULL,request_digest='0000000000000000000000000000000000000000000000000000000000000000',last_seq=0",
+    );
+    this.privateSql.exec(
+      "UPDATE table_channel SET session_id=NULL,started_at=NULL,deadline=NULL WHERE singleton=1",
+    );
+  }
+
+  private expireSession(now: number): void {
+    this.ctx.storage.transactionSync(() => this.expireSessionRows(now));
+  }
+
+  private expireSessionRows(now: number): void {
+    const channel = this.channel();
+    if (
+      channel?.deadline !== null &&
+      channel?.deadline !== undefined &&
+      channel.deadline <= now
+    )
+      this.purgeSession(now);
+    this.privateSql.exec(
+      "DELETE FROM table_event_relay_attempts WHERE event_id IN (SELECT o.event_id FROM table_event_outbox o JOIN table_resume_requests r ON r.request_id=o.message_id WHERE o.event_name='table.resume.requested' AND (r.status<>'pending' OR r.expires_at<=?))",
+      now,
+    );
+    this.privateSql.exec(
+      "DELETE FROM table_event_outbox WHERE event_name='table.resume.requested' AND message_id IN (SELECT request_id FROM table_resume_requests WHERE status<>'pending' OR expires_at<=?)",
+      now,
+    );
+    this.privateSql.exec(
+      "UPDATE table_resume_requests SET status='expired' WHERE status='pending' AND expires_at<=?",
+      now,
+    );
+    this.privateSql.exec(
+      "DELETE FROM table_resume_requests WHERE retain_until<=?",
+      now,
+    );
+    this.privateSql.exec(
+      "DELETE FROM table_session_terminals WHERE retain_until<=?",
+      now,
+    );
+    if (channel) {
+      this.privateSql.exec(
+        "DELETE FROM table_join_receipts WHERE invite_id IN (SELECT invite_id FROM table_invitations WHERE expires_at+?<=?)",
+        SESSION_MARKER_RETENTION_MS,
+        now,
+      );
+      this.privateSql.exec(
+        "DELETE FROM table_invitations WHERE expires_at+?<=?",
+        SESSION_MARKER_RETENTION_MS,
+        now,
+      );
+      this.privateSql.exec(
+        "DELETE FROM table_delete_confirmations WHERE expires_at+?<=?",
+        SESSION_MARKER_RETENTION_MS,
+        now,
+      );
+    }
+    this.privateSql.exec(
+      "DELETE FROM table_event_relay_verifications WHERE acceptance_expires_at<=? AND NOT EXISTS (SELECT 1 FROM table_event_candidates c WHERE c.candidate_id=table_event_relay_verifications.candidate_id)",
+      now,
+    );
+  }
+
+  async requestTableResume(
+    actor: VerifiedConnectionActor,
+    input: ResumeInput,
+  ): Promise<TableResult<ResumeReceipt>> {
+    if (!validResumeInput(input)) return { ok: false, code: "INVALID_REQUEST" };
+    const grant = await authorizeGuestConnection(
+      this.env,
+      actor?.guestId,
+      actor?.connectionId,
+      "tables:write",
+    );
+    if (
+      actor?.kind !== "verified-connection" ||
+      actor.scope !== "tables:write" ||
+      !grant.allowed ||
+      this.accessQuarantined()
+    )
+      return { ok: false, code: "TABLE_NOT_FOUND" };
+    let mutationAllowed = false;
+    const committed = await this.deadlines.commitWithWakeup(
+      Date.now() + 1_000,
+      () => {
+        const now = Date.now(),
+          table = this.metadataRow(),
+          member = this.memberFor(grant.actor.guestId);
+        if (
+          !mutationAllowed ||
+          !table ||
+          !member ||
+          grant.actor.expiresAt <= now
+        )
+          return { ok: false, code: "TABLE_NOT_FOUND" } as const;
+        this.expireSession(now);
+        const channel = this.channel();
+        if (
+          !channel ||
+          table.state !== "open" ||
+          this.memberships().length !== 2
+        )
+          return { ok: false, code: "TABLE_TERMINAL" } as const;
+        const old = this.privateSql
+          .exec<ResumeRow>(
+            "SELECT * FROM table_resume_requests WHERE request_id=?",
+            input.request_id,
+          )
+          .toArray()[0];
+        if (old) {
+          if (
+            old.requester !== member.membership_id ||
+            old.generation !== input.generation ||
+            old.requested_at !== input.requested_at
+          )
+            return { ok: false, code: "IDEMPOTENCY_CONFLICT" } as const;
+          return { ok: true, value: this.resumeReceipt(old) } as const;
+        }
+        if (
+          input.requested_at > now + 15_000 ||
+          input.requested_at + RESUME_REQUEST_MS <= now
+        )
+          return { ok: false, code: "RESUME_EXPIRED" } as const;
+        if (channel.generation !== input.generation)
+          return { ok: false, code: "STALE_SESSION" } as const;
+        if (
+          channel.session_id ||
+          this.privateSql
+            .exec(
+              "SELECT request_id FROM table_resume_requests WHERE status='pending'",
+            )
+            .toArray().length
+        )
+          return { ok: false, code: "RESUME_CONFLICT" } as const;
+        if (
+          this.privateSql
+            .exec<{ n: number }>(
+              "SELECT COUNT(*) n FROM table_resume_requests WHERE requested_at>?",
+              now - 3_600_000,
+            )
+            .one().n >= 10
+        )
+          return { ok: false, code: "RATE_LIMITED" } as const;
+        const peer = this.memberships().find(
+          (item) => item.membership_id !== member.membership_id,
+        );
+        if (!peer) return { ok: false, code: "TABLE_NOT_FOUND" } as const;
+        const expires = Math.min(
+          now + RESUME_REQUEST_MS,
+          input.requested_at + RESUME_REQUEST_MS,
+        );
+        this.privateSql.exec(
+          "INSERT INTO table_resume_requests(request_id,requester,recipient,generation,requested_at,expires_at,status,retain_until) VALUES(?,?,?,?,?,?,'pending',?)",
+          input.request_id,
+          member.membership_id,
+          peer.membership_id,
+          channel.generation,
+          input.requested_at,
+          expires,
+          now + SESSION_MARKER_RETENTION_MS,
+        );
+        const subscription = this.eventSubscription(
+          peer.membership_id,
+          RESUME_EVENT_NAME,
+        );
+        if (
+          subscription?.status === "active" &&
+          subscription.subscription_id &&
+          (subscription.expires_at ?? 0) > now
+        ) {
+          this.privateSql.exec(
+            "DELETE FROM table_event_relay_attempts WHERE event_id IN (SELECT event_id FROM table_event_outbox WHERE event_name=?)",
+            RESUME_EVENT_NAME,
+          );
+          this.privateSql.exec(
+            "DELETE FROM table_event_outbox WHERE event_name=?",
+            RESUME_EVENT_NAME,
+          );
+          this.privateSql.exec(
+            "INSERT INTO table_event_outbox(event_id,event_name,message_id,message_seq,recipient_membership_id,subscription_id,subscription_generation,session_generation,next_attempt_at,created_at,expires_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            crypto.randomUUID(),
+            RESUME_EVENT_NAME,
+            input.request_id,
+            -1,
+            peer.membership_id,
+            subscription.subscription_id,
+            subscription.generation,
+            channel.generation,
+            now + 1_000,
+            now,
+            Math.min(expires, subscription.expires_at as number),
+          );
+        }
+        const row = this.privateSql
+          .exec<ResumeRow>(
+            "SELECT * FROM table_resume_requests WHERE request_id=?",
+            input.request_id,
+          )
+          .one();
+        return { ok: true, value: this.resumeReceipt(row) } as const;
+      },
+      async () => {
+        mutationAllowed =
+          (
+            await authorizeGuestConnection(
+              this.env,
+              actor.guestId,
+              actor.connectionId,
+              "tables:write",
+            )
+          ).allowed && !this.accessQuarantined();
+      },
+    );
+    return this.accessQuarantined()
+      ? { ok: false, code: "TEMPORARILY_UNAVAILABLE" }
+      : committed.value;
+  }
+
+  private resumeReceipt(row: ResumeRow): ResumeReceipt {
+    return {
+      requestId: row.request_id,
+      state: row.status,
+      generation: row.generation,
+      expiresAt: new Date(row.expires_at).toISOString(),
+      ...(row.session_id
+        ? {
+            sessionId: row.session_id,
+            sessionGeneration: row.session_generation as number,
+          }
+        : {}),
+    };
+  }
+
+  async respondTableResume(
+    actor: VerifiedConnectionActor,
+    input: ResumeDecision,
+  ): Promise<TableResult<ResumeReceipt>> {
+    if (!validResumeDecision(input))
+      return { ok: false, code: "INVALID_REQUEST" };
+    const grant = await authorizeGuestConnection(
+      this.env,
+      actor?.guestId,
+      actor?.connectionId,
+      "tables:write",
+    );
+    if (
+      actor?.kind !== "verified-connection" ||
+      actor.scope !== "tables:write" ||
+      !grant.allowed ||
+      this.accessQuarantined()
+    )
+      return { ok: false, code: "TABLE_NOT_FOUND" };
+    let mutationAllowed = false;
+    const committed = await this.deadlines.commitWithWakeup(
+      Date.now() + 1_000,
+      () => {
+        const now = Date.now(),
+          table = this.metadataRow(),
+          member = this.memberFor(grant.actor.guestId);
+        if (
+          !mutationAllowed ||
+          !table ||
+          !member ||
+          grant.actor.expiresAt <= now
+        )
+          return { ok: false, code: "TABLE_NOT_FOUND" } as const;
+        this.expireSession(now);
+        const channel = this.channel(),
+          row = this.privateSql
+            .exec<ResumeRow>(
+              "SELECT * FROM table_resume_requests WHERE request_id=?",
+              input.request_id,
+            )
+            .toArray()[0];
+        if (!channel || table.state !== "open")
+          return { ok: false, code: "TABLE_TERMINAL" } as const;
+        if (!row || row.recipient !== member.membership_id)
+          return { ok: false, code: "NOT_AUTHORIZED" } as const;
+        if (row.generation !== input.generation)
+          return { ok: false, code: "STALE_SESSION" } as const;
+        if (row.status !== "pending") {
+          if (row.status === "expired")
+            return { ok: false, code: "RESUME_EXPIRED" } as const;
+          if ((row.status === "accepted") !== (input.decision === "accept"))
+            return { ok: false, code: "IDEMPOTENCY_CONFLICT" } as const;
+          return { ok: true, value: this.resumeReceipt(row) } as const;
+        }
+        if (row.expires_at <= now)
+          return { ok: false, code: "RESUME_EXPIRED" } as const;
+        if (channel.generation !== row.generation || channel.session_id)
+          return { ok: false, code: "STALE_SESSION" } as const;
+        const sessionId =
+          input.decision === "accept" ? crypto.randomUUID() : null;
+        if (sessionId)
+          this.privateSql.exec(
+            "UPDATE table_channel SET generation=generation+1,session_id=?,started_at=?,deadline=? WHERE singleton=1",
+            sessionId,
+            now,
+            now + SESSION_MAX_MS,
+          );
+        this.privateSql.exec(
+          "UPDATE table_resume_requests SET status=?,session_id=?,session_generation=? WHERE request_id=?",
+          sessionId ? "accepted" : "rejected",
+          sessionId,
+          sessionId ? channel.generation + 1 : null,
+          input.request_id,
+        );
+        this.expireSession(now);
+        return {
+          ok: true,
+          value: this.resumeReceipt(
+            this.privateSql
+              .exec<ResumeRow>(
+                "SELECT * FROM table_resume_requests WHERE request_id=?",
+                input.request_id,
+              )
+              .one(),
+          ),
+        } as const;
+      },
+      async () => {
+        mutationAllowed =
+          (
+            await authorizeGuestConnection(
+              this.env,
+              actor.guestId,
+              actor.connectionId,
+              "tables:write",
+            )
+          ).allowed && !this.accessQuarantined();
+      },
+    );
+    return this.accessQuarantined()
+      ? { ok: false, code: "TEMPORARILY_UNAVAILABLE" }
+      : committed.value;
+  }
+
+  async endConversation(
+    actor: VerifiedConnectionActor,
+    input: EndConversationInput,
+  ): Promise<
+    TableResult<{ sessionId: string; generation: number; state: "ended" }>
+  > {
+    if (!validEndInput(input)) return { ok: false, code: "INVALID_REQUEST" };
+    const grant = await authorizeGuestConnection(
+      this.env,
+      actor?.guestId,
+      actor?.connectionId,
+      "tables:write",
+    );
+    if (
+      actor?.kind !== "verified-connection" ||
+      actor.scope !== "tables:write" ||
+      !grant.allowed ||
+      this.accessQuarantined()
+    )
+      return { ok: false, code: "TABLE_NOT_FOUND" };
+    let mutationAllowed = false;
+    const committed = await this.deadlines.commitWithWakeup(
+      Date.now() + 1_000,
+      () => {
+        const now = Date.now(),
+          table = this.metadataRow(),
+          member = this.memberFor(grant.actor.guestId);
+        if (
+          !mutationAllowed ||
+          !table ||
+          !member ||
+          grant.actor.expiresAt <= now
+        )
+          return { ok: false, code: "TABLE_NOT_FOUND" } as const;
+        this.expireSession(now);
+        const channel = this.channel();
+        if (!channel || table.state !== "open")
+          return { ok: false, code: "TABLE_TERMINAL" } as const;
+        const terminal = this.privateSql
+          .exec<{ generation: number }>(
+            "SELECT generation FROM table_session_terminals WHERE session_id=?",
+            input.session_id,
+          )
+          .toArray()[0];
+        if (terminal?.generation !== input.generation) {
+          if (
+            channel.session_id !== input.session_id ||
+            channel.generation !== input.generation
+          )
+            return { ok: false, code: "STALE_SESSION" } as const;
+          this.purgeSession(now);
+        }
+        return {
+          ok: true,
+          value: {
+            sessionId: input.session_id,
+            generation: input.generation,
+            state: "ended",
+          },
+        } as const;
+      },
+      async () => {
+        mutationAllowed =
+          (
+            await authorizeGuestConnection(
+              this.env,
+              actor.guestId,
+              actor.connectionId,
+              "tables:write",
+            )
+          ).allowed && !this.accessQuarantined();
+      },
+    );
+    return this.accessQuarantined()
+      ? { ok: false, code: "TEMPORARILY_UNAVAILABLE" }
+      : committed.value;
+  }
+
   private metadataRow(): MetadataRow | undefined {
     return this.privateSql
       .exec<MetadataRow>(
@@ -713,15 +1240,48 @@ export class TableDO extends DurableObject<Env> {
           OUTBOX_RETRY_HORIZON_MS,
         )
         .one().deadline;
-      return Math.min(
-        table.expires_at,
-        pending ?? table.expires_at,
-        candidate ?? table.expires_at,
-        subscription ?? table.expires_at,
-        rotation ?? table.expires_at,
-        outbox ?? table.expires_at,
-        dispatch ?? table.expires_at,
+      const earliest = Math.min(
+        this.tableDeadline(table),
+        this.channel()?.deadline ?? this.tableDeadline(table),
+        this.channel()
+          ? (this.privateSql
+              .exec<{ deadline: number | null }>(
+                "SELECT MIN(expires_at+?) deadline FROM table_invitations",
+                SESSION_MARKER_RETENTION_MS,
+              )
+              .one().deadline ?? this.tableDeadline(table))
+          : this.tableDeadline(table),
+        this.channel()
+          ? (this.privateSql
+              .exec<{ deadline: number | null }>(
+                "SELECT MIN(expires_at+?) deadline FROM table_delete_confirmations",
+                SESSION_MARKER_RETENTION_MS,
+              )
+              .one().deadline ?? this.tableDeadline(table))
+          : this.tableDeadline(table),
+        this.privateSql
+          .exec<{ deadline: number | null }>(
+            "SELECT MIN(acceptance_expires_at) deadline FROM table_event_relay_verifications WHERE NOT EXISTS (SELECT 1 FROM table_event_candidates c WHERE c.candidate_id=table_event_relay_verifications.candidate_id)",
+          )
+          .one().deadline ?? this.tableDeadline(table),
+        this.privateSql
+          .exec<{ deadline: number | null }>(
+            "SELECT MIN(CASE WHEN status='pending' THEN expires_at ELSE retain_until END) deadline FROM table_resume_requests",
+          )
+          .one().deadline ?? this.tableDeadline(table),
+        this.privateSql
+          .exec<{ deadline: number | null }>(
+            "SELECT MIN(retain_until) deadline FROM table_session_terminals",
+          )
+          .one().deadline ?? this.tableDeadline(table),
+        pending ?? this.tableDeadline(table),
+        candidate ?? this.tableDeadline(table),
+        subscription ?? this.tableDeadline(table),
+        rotation ?? this.tableDeadline(table),
+        outbox ?? this.tableDeadline(table),
+        dispatch ?? this.tableDeadline(table),
       );
+      return earliest === 8_640_000_000_000_000 ? null : earliest;
     }
     return this.tombstoneRow()?.retain_until ?? null;
   }
@@ -737,7 +1297,9 @@ export class TableDO extends DurableObject<Env> {
     const table = this.metadataRow();
     if (!table) return null;
     this.inboxStreams.closeAll();
-    const retainUntil = table.expires_at + 24 * 60 * 60_000;
+    const retainUntil = this.channel()
+      ? Math.max(now, table.expires_at) + SESSION_MARKER_RETENTION_MS
+      : table.expires_at + 24 * 60 * 60_000;
     this.privateSql.exec(
       "INSERT INTO table_tombstones (table_id, terminal_state, expires_at, terminal_at, retain_until) VALUES (?, ?, ?, ?, ?)",
       table.table_id,
@@ -752,6 +1314,9 @@ export class TableDO extends DurableObject<Env> {
         member.guest_id,
       );
     }
+    this.privateSql.exec("DELETE FROM table_resume_requests");
+    this.privateSql.exec("DELETE FROM table_session_terminals");
+    this.privateSql.exec("DELETE FROM table_channel");
     this.privateSql.exec("DELETE FROM table_delete_confirmations");
     this.privateSql.exec("DELETE FROM table_event_relay_verifications");
     this.privateSql.exec("DELETE FROM table_event_relay_attempts");
@@ -770,8 +1335,9 @@ export class TableDO extends DurableObject<Env> {
 
   private cleanupDueLifecycle(now: number, budget: number): number {
     if (budget <= 0) return 0;
+    this.expireSession(now);
     const table = this.metadataRow();
-    if (table && table.expires_at <= now) {
+    if (table && this.tableDeadline(table) <= now) {
       this.purgeContent(now, "expired");
       return 1;
     }
@@ -823,11 +1389,13 @@ export class TableDO extends DurableObject<Env> {
     }
     const table = this.metadataRow();
     if (table) {
-      const expired = table.expires_at <= Date.now();
+      const expired = this.tableDeadline(table) <= Date.now();
       return {
         state: expired ? "expired" : table.state,
         canDispatch:
-          !expired && (table.state === "waiting" || table.state === "open"),
+          !expired &&
+          (table.state === "waiting" || table.state === "open") &&
+          (!this.channel() || !!this.safeSession()),
       };
     }
     return {
@@ -859,20 +1427,26 @@ export class TableDO extends DurableObject<Env> {
 
   private eventSubscription(
     membershipId: string,
+    eventName = "table.message.created",
   ): EventSubscriptionRow | undefined {
     return this.privateSql
       .exec<EventSubscriptionRow>(
-        "SELECT * FROM table_event_subscriptions WHERE membership_id = ?",
+        "SELECT * FROM table_event_subscriptions WHERE membership_id = ? AND event_name = ?",
         membershipId,
+        eventName,
       )
       .toArray()[0];
   }
 
-  private eventCandidate(membershipId: string): EventCandidateRow | undefined {
+  private eventCandidate(
+    membershipId: string,
+    eventName = "table.message.created",
+  ): EventCandidateRow | undefined {
     return this.privateSql
       .exec<EventCandidateRow>(
-        "SELECT * FROM table_event_candidates WHERE membership_id = ?",
+        "SELECT * FROM table_event_candidates WHERE membership_id = ? AND event_name = ?",
         membershipId,
+        eventName,
       )
       .toArray()[0];
   }
@@ -881,6 +1455,7 @@ export class TableDO extends DurableObject<Env> {
   private invalidateEventSubscription(
     membershipId: string,
     status: "inactive" | "expired",
+    eventName = "table.message.created",
   ): void {
     this.privateSql.exec(
       `UPDATE table_event_subscriptions
@@ -888,14 +1463,16 @@ export class TableDO extends DurableObject<Env> {
            callback_url = NULL, secret_envelope = NULL,
            previous_secret_envelope = NULL, rotation_until = NULL,
            expires_at = NULL
-       WHERE membership_id = ?`,
+       WHERE membership_id = ? AND event_name = ?`,
       status,
       membershipId,
+      eventName,
     );
     // Terminal subscription authority also fences any undelivered work.
     this.privateSql.exec(
-      "UPDATE table_event_outbox SET status = 'cancelled', next_attempt_at = NULL, lease_token = NULL, lease_deadline = NULL WHERE recipient_membership_id = ? AND status IN ('pending', 'in_flight')",
+      "UPDATE table_event_outbox SET status = 'cancelled', next_attempt_at = NULL, lease_token = NULL, lease_deadline = NULL WHERE recipient_membership_id = ? AND event_name = ? AND status IN ('pending', 'in_flight')",
       membershipId,
+      eventName,
     );
   }
 
@@ -903,27 +1480,29 @@ export class TableDO extends DurableObject<Env> {
     if (budget <= 0) return 0;
     let processed = 0;
     const candidates = this.privateSql
-      .exec<{ membership_id: string }>(
-        "SELECT membership_id FROM table_event_candidates WHERE expires_at <= ? LIMIT ?",
+      .exec<{ membership_id: string; event_name: string }>(
+        "SELECT membership_id,event_name FROM table_event_candidates WHERE expires_at <= ? LIMIT ?",
         now,
         budget,
       )
       .toArray();
     for (const candidate of candidates) {
       this.privateSql.exec(
-        "DELETE FROM table_event_candidates WHERE membership_id = ?",
+        "DELETE FROM table_event_candidates WHERE membership_id = ? AND event_name = ?",
         candidate.membership_id,
+        candidate.event_name,
       );
       this.privateSql.exec(
-        "UPDATE table_event_subscriptions SET fence = fence + 1 WHERE membership_id = ?",
+        "UPDATE table_event_subscriptions SET fence = fence + 1 WHERE membership_id = ? AND event_name = ?",
         candidate.membership_id,
+        candidate.event_name,
       );
       processed++;
     }
     if (processed >= budget) return processed;
     const expired = this.privateSql
-      .exec<{ membership_id: string }>(
-        `SELECT membership_id FROM table_event_subscriptions
+      .exec<{ membership_id: string; event_name: string }>(
+        `SELECT membership_id,event_name FROM table_event_subscriptions
          WHERE status = 'active' AND expires_at <= ? LIMIT ?`,
         now,
         budget - processed,
@@ -931,16 +1510,21 @@ export class TableDO extends DurableObject<Env> {
       .toArray();
     for (const subscription of expired) {
       this.privateSql.exec(
-        "DELETE FROM table_event_candidates WHERE membership_id = ?",
+        "DELETE FROM table_event_candidates WHERE membership_id = ? AND event_name = ?",
         subscription.membership_id,
+        subscription.event_name,
       );
-      this.invalidateEventSubscription(subscription.membership_id, "expired");
+      this.invalidateEventSubscription(
+        subscription.membership_id,
+        "expired",
+        subscription.event_name,
+      );
       processed++;
     }
     if (processed >= budget) return processed;
     const rotations = this.privateSql
-      .exec<{ membership_id: string }>(
-        "SELECT membership_id FROM table_event_subscriptions WHERE previous_secret_envelope IS NOT NULL AND rotation_until <= ? LIMIT ?",
+      .exec<{ membership_id: string; event_name: string }>(
+        "SELECT membership_id,event_name FROM table_event_subscriptions WHERE previous_secret_envelope IS NOT NULL AND rotation_until <= ? LIMIT ?",
         now,
         budget - processed,
       )
@@ -948,8 +1532,9 @@ export class TableDO extends DurableObject<Env> {
     for (const rotation of rotations) {
       // Removing the old key is itself a dispatch-generation invalidation.
       this.privateSql.exec(
-        "UPDATE table_event_subscriptions SET previous_secret_envelope = NULL, rotation_until = NULL, generation = generation + 1, fence = fence + 1 WHERE membership_id = ?",
+        "UPDATE table_event_subscriptions SET previous_secret_envelope = NULL, rotation_until = NULL, generation = generation + 1, fence = fence + 1 WHERE membership_id = ? AND event_name = ?",
         rotation.membership_id,
+        rotation.event_name,
       );
       // Keep pending identity and original attempt budgets while fencing
       // in-flight results signed with an obsolete generation.
@@ -957,11 +1542,13 @@ export class TableDO extends DurableObject<Env> {
         `UPDATE table_event_outbox
          SET subscription_generation = (
            SELECT generation FROM table_event_subscriptions
-           WHERE membership_id = ?
+           WHERE membership_id = ? AND event_name = ?
          )
-         WHERE recipient_membership_id = ? AND status IN ('pending', 'in_flight')`,
+         WHERE recipient_membership_id = ? AND event_name = ? AND status IN ('pending', 'in_flight')`,
         rotation.membership_id,
+        rotation.event_name,
         rotation.membership_id,
+        rotation.event_name,
       );
       processed++;
     }
@@ -1054,6 +1641,26 @@ export class TableDO extends DurableObject<Env> {
     };
   }
 
+  private pendingResumeMetadata() {
+    const row = this.privateSql
+      .exec<ResumeRow>(
+        "SELECT * FROM table_resume_requests WHERE status='pending' AND expires_at>? LIMIT 1",
+        Date.now(),
+      )
+      .toArray()[0];
+    return row
+      ? {
+          resumeRequest: {
+            requestId: row.request_id,
+            requesterMembershipId: row.requester,
+            recipientMembershipId: row.recipient,
+            generation: row.generation,
+            expiresAt: new Date(row.expires_at).toISOString(),
+          },
+        }
+      : {};
+  }
+
   private publicMetadata(
     table: MetadataRow,
     own: MembershipRow,
@@ -1062,7 +1669,18 @@ export class TableDO extends DurableObject<Env> {
       tableId: table.table_id,
       title: table.title,
       ...(table.purpose === null ? {} : { purpose: table.purpose }),
-      state: table.state,
+      state:
+        this.channel() && table.state === "open" && !this.safeSession()
+          ? "dormant"
+          : table.state,
+      ...(this.channel()
+        ? {
+            channelMode: "reusable" as const,
+            generation: this.channel()?.generation,
+            session: this.safeSession(),
+            ...this.pendingResumeMetadata(),
+          }
+        : {}),
       createdAt: new Date(table.created_at).toISOString(),
       expiresAt: new Date(table.expires_at).toISOString(),
       memberships: this.memberships().map((member) => ({
@@ -1072,7 +1690,11 @@ export class TableDO extends DurableObject<Env> {
         joinedAt: new Date(member.joined_at).toISOString(),
       })),
       ownMembershipId: own.membership_id,
-      ownInboxUri: ownInboxUri(table.table_id, own.membership_id),
+      ownInboxUri: ownInboxUri(
+        table.table_id,
+        own.membership_id,
+        this.safeSession(),
+      ),
       limits: EFFECTIVE_TABLE_LIMITS,
     };
   }
@@ -1197,7 +1819,7 @@ export class TableDO extends DurableObject<Env> {
         return { ok: false, code: "TABLE_NOT_FOUND" };
       if (
         fresh.expiresAt <= now ||
-        table.expires_at <= now ||
+        this.tableDeadline(table) <= now ||
         (table.state !== "waiting" && table.state !== "open")
       )
         return { ok: false, code: "TABLE_TERMINAL" };
@@ -1268,10 +1890,19 @@ export class TableDO extends DurableObject<Env> {
     if (!table || !member || table.table_id !== parsed.arguments.table_id)
       return { ok: false, code: "TABLE_NOT_FOUND" };
     if (
-      table.expires_at <= Date.now() ||
+      this.tableDeadline(table) <= Date.now() ||
       (table.state !== "waiting" && table.state !== "open")
     )
       return { ok: false, code: "TABLE_TERMINAL" };
+    if (parsed.name === RESUME_EVENT_NAME) {
+      if (
+        !this.channel() ||
+        this.memberships().length !== 2 ||
+        table.state !== "open"
+      )
+        return { ok: false, code: "TABLE_TERMINAL" };
+    } else if (!this.sessionFence(parsed.arguments).ok)
+      return { ok: false, code: "STALE" };
     const subscriptionId = await subscriptionIdentity(fresh, parsed);
     const candidateId = crypto.randomUUID();
     let envelope: string;
@@ -1287,101 +1918,137 @@ export class TableDO extends DurableObject<Env> {
     }
     const deadline = Math.min(
       Date.now() + EVENT_CANDIDATE_WINDOW_MS,
-      table.expires_at,
+      parsed.name === RESUME_EVENT_NAME
+        ? this.tableDeadline(table)
+        : (this.channel()?.deadline ?? this.tableDeadline(table)),
+      this.tableDeadline(table),
       fresh.expiresAt,
       this.eventPilotDeadline(),
     );
     if (deadline <= Date.now()) return { ok: false, code: "STALE" };
+    let mutationAllowed = false;
     try {
-      const committed = await this.deadlines.commitWithWakeup(deadline, () =>
-        this.ctx.storage.transactionSync(() => {
-          const now = Date.now();
-          const currentTable = this.metadataRow();
-          const currentMember = this.memberFor(fresh.guestId);
-          if (
-            !currentTable ||
-            !currentMember ||
-            currentTable.table_id !== parsed.arguments.table_id
-          )
-            return { ok: false, code: "TABLE_NOT_FOUND" } as const;
-          if (
-            !this.eventRegistrationAllowed(
-              fresh,
-              parsed.arguments.table_id,
-              parsed.delivery.url,
-              now,
+      const committed = await this.deadlines.commitWithWakeup(
+        deadline,
+        () =>
+          this.ctx.storage.transactionSync(() => {
+            if (!mutationAllowed)
+              return { ok: false, code: "TABLE_NOT_FOUND" } as const;
+            const now = Date.now();
+            const currentTable = this.metadataRow();
+            const currentMember = this.memberFor(fresh.guestId);
+            if (
+              !currentTable ||
+              !currentMember ||
+              currentTable.table_id !== parsed.arguments.table_id
             )
-          )
-            return { ok: false, code: "TABLE_NOT_FOUND" } as const;
-          if (
-            currentTable.expires_at <= now ||
-            fresh.expiresAt <= now ||
-            deadline <= now ||
-            (currentTable.state !== "waiting" && currentTable.state !== "open")
-          )
-            return { ok: false, code: "TABLE_TERMINAL" } as const;
-          let row = this.eventSubscription(currentMember.membership_id);
-          if (row?.status === "active" && (row.expires_at ?? 0) <= now) {
-            this.invalidateEventSubscription(
+              return { ok: false, code: "TABLE_NOT_FOUND" } as const;
+            if (
+              !this.eventRegistrationAllowed(
+                fresh,
+                parsed.arguments.table_id,
+                parsed.delivery.url,
+                now,
+              )
+            )
+              return { ok: false, code: "TABLE_NOT_FOUND" } as const;
+            if (
+              this.tableDeadline(currentTable) <= now ||
+              fresh.expiresAt <= now ||
+              deadline <= now ||
+              (currentTable.state !== "waiting" &&
+                currentTable.state !== "open")
+            )
+              return { ok: false, code: "TABLE_TERMINAL" } as const;
+            if (
+              parsed.name !== RESUME_EVENT_NAME &&
+              !this.sessionFence(parsed.arguments).ok
+            )
+              return { ok: false, code: "STALE" } as const;
+            let row = this.eventSubscription(
               currentMember.membership_id,
-              "expired",
+              parsed.name,
             );
-            row = this.eventSubscription(currentMember.membership_id);
-          }
-          if (
-            row?.status === "active" &&
-            (row.subscription_id !== subscriptionId ||
-              row.guest_id !== fresh.guestId ||
-              row.connection_id !== fresh.connectionId ||
-              row.callback_url !== parsed.delivery.url)
-          )
-            return { ok: false, code: "CONFLICT" } as const;
-          const pending = this.eventCandidate(currentMember.membership_id);
-          if (
-            pending &&
-            pending.expires_at > now &&
-            (pending.guest_id !== fresh.guestId ||
-              pending.connection_id !== fresh.connectionId)
-          )
-            return { ok: false, code: "CONFLICT" } as const;
-          const nextFence = (row?.fence ?? 0) + 1;
-          if (row) {
-            this.privateSql.exec(
-              "UPDATE table_event_subscriptions SET fence = ? WHERE membership_id = ?",
-              nextFence,
+            if (row?.status === "active" && (row.expires_at ?? 0) <= now) {
+              this.invalidateEventSubscription(
+                currentMember.membership_id,
+                "expired",
+                parsed.name,
+              );
+              row = this.eventSubscription(
+                currentMember.membership_id,
+                parsed.name,
+              );
+            }
+            if (
+              row?.status === "active" &&
+              (row.subscription_id !== subscriptionId ||
+                row.guest_id !== fresh.guestId ||
+                row.connection_id !== fresh.connectionId ||
+                row.callback_url !== parsed.delivery.url)
+            )
+              return { ok: false, code: "CONFLICT" } as const;
+            const pending = this.eventCandidate(
               currentMember.membership_id,
+              parsed.name,
             );
-          } else {
+            if (
+              pending &&
+              pending.expires_at > now &&
+              (pending.guest_id !== fresh.guestId ||
+                pending.connection_id !== fresh.connectionId)
+            )
+              return { ok: false, code: "CONFLICT" } as const;
+            const nextFence = (row?.fence ?? 0) + 1;
+            if (row) {
+              this.privateSql.exec(
+                "UPDATE table_event_subscriptions SET fence = ? WHERE membership_id = ? AND event_name = ?",
+                nextFence,
+                currentMember.membership_id,
+                parsed.name,
+              );
+            } else {
+              this.privateSql.exec(
+                "INSERT INTO table_event_subscriptions (membership_id, generation, fence, status,event_name) VALUES (?, 0, ?, 'inactive',?)",
+                currentMember.membership_id,
+                nextFence,
+                parsed.name,
+              );
+            }
             this.privateSql.exec(
-              "INSERT INTO table_event_subscriptions (membership_id, generation, fence, status) VALUES (?, 0, ?, 'inactive')",
+              "DELETE FROM table_event_candidates WHERE membership_id = ? AND event_name = ?",
               currentMember.membership_id,
-              nextFence,
+              parsed.name,
             );
-          }
-          this.privateSql.exec(
-            "DELETE FROM table_event_candidates WHERE membership_id = ?",
-            currentMember.membership_id,
-          );
-          this.privateSql.exec(
-            "INSERT INTO table_event_candidates (membership_id, candidate_id, subscription_id, guest_id, connection_id, callback_url, secret_envelope, requested_ttl_ms, fence, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            currentMember.membership_id,
-            candidateId,
-            subscriptionId,
-            fresh.guestId,
-            fresh.connectionId,
-            parsed.delivery.url,
-            envelope,
-            parsed.ttlMs,
-            nextFence,
-            deadline,
-          );
-          if (productionRelayProfileSelected(this.env))
             this.privateSql.exec(
-              "UPDATE table_event_candidates SET verification_mode='relay' WHERE candidate_id=?",
+              "INSERT INTO table_event_candidates (membership_id, candidate_id, subscription_id, guest_id, connection_id, callback_url, secret_envelope, requested_ttl_ms, fence, expires_at,event_name,session_id,session_generation) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+              currentMember.membership_id,
               candidateId,
+              subscriptionId,
+              fresh.guestId,
+              fresh.connectionId,
+              parsed.delivery.url,
+              envelope,
+              parsed.ttlMs,
+              nextFence,
+              deadline,
+              parsed.name,
+              parsed.arguments.session_id ?? null,
+              parsed.arguments.generation ?? 0,
             );
-          return { ok: true, value: { candidateId, subscriptionId } } as const;
-        }),
+            if (productionRelayProfileSelected(this.env))
+              this.privateSql.exec(
+                "UPDATE table_event_candidates SET verification_mode='relay' WHERE candidate_id=?",
+                candidateId,
+              );
+            return {
+              ok: true,
+              value: { candidateId, subscriptionId },
+            } as const;
+          }),
+        async () => {
+          mutationAllowed = !!(await this.freshEventActor(actor));
+        },
       );
       return this.accessQuarantined()
         ? { ok: false, code: "TEMPORARILY_UNAVAILABLE" }
@@ -1463,13 +2130,21 @@ export class TableDO extends DurableObject<Env> {
     if (
       !member ||
       !table ||
-      table.expires_at <= now ||
+      this.tableDeadline(table) <= now ||
       actor.expiresAt <= now ||
       !["waiting", "open"].includes(table.state)
     )
       return;
-    const c = this.eventCandidate(member.membership_id),
-      subscription = this.eventSubscription(member.membership_id);
+    const c = this.privateSql
+        .exec<EventCandidateRow>(
+          "SELECT * FROM table_event_candidates WHERE membership_id=? AND candidate_id=?",
+          member.membership_id,
+          candidateId,
+        )
+        .toArray()[0],
+      subscription = c
+        ? this.eventSubscription(member.membership_id, c.event_name)
+        : undefined;
     if (
       !c ||
       !subscription ||
@@ -1478,6 +2153,11 @@ export class TableDO extends DurableObject<Env> {
       c.connection_id !== actor.connectionId ||
       c.fence !== subscription.fence ||
       c.expires_at <= now ||
+      (c.event_name !== RESUME_EVENT_NAME &&
+        !this.sessionFence({
+          session_id: c.session_id ?? undefined,
+          generation: c.session_id ? c.session_generation : undefined,
+        }).ok) ||
       !this.eventRegistrationAllowed(actor, table.table_id, c.callback_url, now)
     )
       return;
@@ -1599,7 +2279,13 @@ export class TableDO extends DurableObject<Env> {
     const member = this.memberFor(fresh.guestId);
     const table = this.metadataRow();
     if (!member || !table) return { ok: false, code: "TABLE_NOT_FOUND" };
-    const candidate = this.eventCandidate(member.membership_id);
+    const candidate = this.privateSql
+      .exec<EventCandidateRow>(
+        "SELECT * FROM table_event_candidates WHERE membership_id=? AND candidate_id=?",
+        member.membership_id,
+        candidateId,
+      )
+      .toArray()[0];
     if (
       !candidate ||
       candidate.candidate_id !== candidateId ||
@@ -1617,140 +2303,184 @@ export class TableDO extends DurableObject<Env> {
       return { ok: false, code: "TABLE_NOT_FOUND" };
     const granted = grantedSubscriptionTtlMs(
       candidate.requested_ttl_ms,
-      Math.min(table.expires_at, this.eventPilotDeadline()) - Date.now(),
+      Math.min(this.tableDeadline(table), this.eventPilotDeadline()) -
+        Date.now(),
       fresh.expiresAt - Date.now(),
     );
     if (granted < 1000) return { ok: false, code: "STALE" };
     const deadline = Math.min(
-      table.expires_at,
+      this.tableDeadline(table),
       fresh.expiresAt,
       Date.now() + granted,
     );
+    let mutationAllowed = false;
     try {
-      const committed = await this.deadlines.commitWithWakeup(deadline, () =>
-        this.ctx.storage.transactionSync(() => {
-          const now = Date.now();
-          const currentTable = this.metadataRow();
-          const currentMember = this.memberFor(fresh.guestId);
-          if (
-            !currentTable ||
-            !currentMember ||
-            currentTable.table_id !== table.table_id ||
-            currentTable.expires_at <= now ||
-            fresh.expiresAt <= now ||
-            (currentTable.state !== "waiting" && currentTable.state !== "open")
-          )
-            return { ok: false, code: "TABLE_TERMINAL" } as const;
-          const pending = this.eventCandidate(currentMember.membership_id);
-          const current = this.eventSubscription(currentMember.membership_id);
-          if (
-            !pending ||
-            !current ||
-            pending.candidate_id !== candidateId ||
-            pending.fence !== current.fence ||
-            pending.expires_at <= now ||
-            pending.guest_id !== fresh.guestId ||
-            pending.connection_id !== fresh.connectionId
-          )
-            return { ok: false, code: "STALE" } as const;
-          if (
-            !this.eventRegistrationAllowed(
-              fresh,
-              table.table_id,
-              pending.callback_url,
-              now,
+      const committed = await this.deadlines.commitWithWakeup(
+        deadline,
+        () =>
+          this.ctx.storage.transactionSync(() => {
+            if (!mutationAllowed)
+              return { ok: false, code: "TABLE_NOT_FOUND" } as const;
+            const now = Date.now();
+            const currentTable = this.metadataRow();
+            const currentMember = this.memberFor(fresh.guestId);
+            if (
+              !currentTable ||
+              !currentMember ||
+              currentTable.table_id !== table.table_id ||
+              this.tableDeadline(currentTable) <= now ||
+              fresh.expiresAt <= now ||
+              (currentTable.state !== "waiting" &&
+                currentTable.state !== "open")
             )
-          )
-            return { ok: false, code: "TABLE_NOT_FOUND" } as const;
-          const relayProof = this.privateSql
-            .exec<Record<string, SqlStorageValue>>(
-              "SELECT * FROM table_event_relay_verifications WHERE candidate_id=?",
-              candidateId,
+              return { ok: false, code: "TABLE_TERMINAL" } as const;
+            const pending = this.eventCandidate(
+              currentMember.membership_id,
+              candidate.event_name,
+            );
+            const current = this.eventSubscription(
+              currentMember.membership_id,
+              candidate.event_name,
+            );
+            if (
+              !pending ||
+              !current ||
+              pending.candidate_id !== candidateId ||
+              pending.fence !== current.fence ||
+              pending.expires_at <= now ||
+              pending.guest_id !== fresh.guestId ||
+              pending.connection_id !== fresh.connectionId
             )
-            .toArray()[0];
-          if (
-            (relayProof ||
-              pending.verification_mode === "relay" ||
-              productionRelayProfileSelected(this.env)) &&
-            (!relayProof ||
-              relayProof.state !== "verified" ||
-              relayProof.membership_id !== currentMember.membership_id ||
-              relayProof.subscription_id !== pending.subscription_id ||
-              relayProof.guest_id !== fresh.guestId ||
-              relayProof.connection_id !== fresh.connectionId ||
-              relayProof.fence !== pending.fence ||
-              relayProof.candidate_expires_at !== pending.expires_at)
-          )
-            return { ok: false, code: "STALE" } as const;
-          // A pending refresh cannot resurrect an active subscription that expired
-          // before the external verification returned, even before alarm cleanup.
-          if (current.status === "active" && (current.expires_at ?? 0) <= now) {
+              return { ok: false, code: "STALE" } as const;
+            if (
+              !this.eventRegistrationAllowed(
+                fresh,
+                table.table_id,
+                pending.callback_url,
+                now,
+              )
+            )
+              return { ok: false, code: "TABLE_NOT_FOUND" } as const;
+            const relayProof = this.privateSql
+              .exec<Record<string, SqlStorageValue>>(
+                "SELECT * FROM table_event_relay_verifications WHERE candidate_id=?",
+                candidateId,
+              )
+              .toArray()[0];
+            if (
+              (relayProof ||
+                pending.verification_mode === "relay" ||
+                productionRelayProfileSelected(this.env)) &&
+              (!relayProof ||
+                relayProof.state !== "verified" ||
+                relayProof.membership_id !== currentMember.membership_id ||
+                relayProof.subscription_id !== pending.subscription_id ||
+                relayProof.guest_id !== fresh.guestId ||
+                relayProof.connection_id !== fresh.connectionId ||
+                relayProof.fence !== pending.fence ||
+                relayProof.candidate_expires_at !== pending.expires_at)
+            )
+              return { ok: false, code: "STALE" } as const;
+            if (
+              pending.event_name !== RESUME_EVENT_NAME &&
+              !this.sessionFence({
+                session_id: pending.session_id ?? undefined,
+                generation: pending.session_id
+                  ? pending.session_generation
+                  : undefined,
+              }).ok
+            )
+              return { ok: false, code: "STALE" } as const;
+            // A pending refresh cannot resurrect an active subscription that expired
+            // before the external verification returned, even before alarm cleanup.
+            if (
+              current.status === "active" &&
+              (current.expires_at ?? 0) <= now
+            ) {
+              this.privateSql.exec(
+                "DELETE FROM table_event_candidates WHERE membership_id = ? AND event_name = ?",
+                currentMember.membership_id,
+                candidate.event_name,
+              );
+              this.invalidateEventSubscription(
+                currentMember.membership_id,
+                "expired",
+                candidate.event_name,
+              );
+              return { ok: false, code: "STALE" } as const;
+            }
+            if (
+              current.status === "active" &&
+              (current.expires_at ?? 0) > now &&
+              (current.subscription_id !== pending.subscription_id ||
+                current.connection_id !== fresh.connectionId ||
+                current.callback_url !== pending.callback_url)
+            )
+              return { ok: false, code: "CONFLICT" } as const;
+            const actualTtl = grantedSubscriptionTtlMs(
+              pending.requested_ttl_ms,
+              Math.min(
+                this.tableDeadline(currentTable),
+                this.eventPilotDeadline(),
+              ) - now,
+              fresh.expiresAt - now,
+            );
+            if (actualTtl < 1000) return { ok: false, code: "STALE" } as const;
+            const expiresAt = Math.min(
+              now + actualTtl,
+              pending.event_name === RESUME_EVENT_NAME
+                ? this.tableDeadline(currentTable)
+                : (this.channel()?.deadline ??
+                    this.tableDeadline(currentTable)),
+            );
+            const rotate =
+              current.status === "active" &&
+              current.subscription_id === pending.subscription_id &&
+              (current.expires_at ?? 0) > now &&
+              current.secret_envelope !== null;
+            const previous = rotate ? current.secret_envelope : null;
+            const rotationUntil = rotate
+              ? Math.min(now + EVENT_ROTATION_WINDOW_MS, expiresAt)
+              : null;
+            const generation = current.generation + 1;
             this.privateSql.exec(
-              "DELETE FROM table_event_candidates WHERE membership_id = ?",
+              "UPDATE table_event_subscriptions SET generation = ?, status = 'active', guest_id = ?, connection_id = ?, subscription_id = ?, callback_url = ?, secret_envelope = ?, previous_secret_envelope = ?, rotation_until = ?, expires_at = ?,session_id=?,session_generation=? WHERE membership_id = ? AND event_name = ?",
+              generation,
+              fresh.guestId,
+              fresh.connectionId,
+              pending.subscription_id,
+              pending.callback_url,
+              pending.secret_envelope,
+              previous,
+              rotationUntil,
+              expiresAt,
+              pending.session_id,
+              pending.session_generation,
               currentMember.membership_id,
+              candidate.event_name,
             );
-            this.invalidateEventSubscription(
+            // Refresh retains the original event identity and retry budget.
+            // The generation change fences any pre-refresh completion.
+            this.privateSql.exec(
+              "UPDATE table_event_outbox SET subscription_generation = ?, expires_at = MIN(expires_at,?) WHERE recipient_membership_id = ? AND subscription_id = ? AND status IN ('pending', 'in_flight')",
+              generation,
+              expiresAt,
               currentMember.membership_id,
-              "expired",
+              pending.subscription_id,
             );
-            return { ok: false, code: "STALE" } as const;
-          }
-          if (
-            current.status === "active" &&
-            (current.expires_at ?? 0) > now &&
-            (current.subscription_id !== pending.subscription_id ||
-              current.connection_id !== fresh.connectionId ||
-              current.callback_url !== pending.callback_url)
-          )
-            return { ok: false, code: "CONFLICT" } as const;
-          const actualTtl = grantedSubscriptionTtlMs(
-            pending.requested_ttl_ms,
-            Math.min(currentTable.expires_at, this.eventPilotDeadline()) - now,
-            fresh.expiresAt - now,
-          );
-          if (actualTtl < 1000) return { ok: false, code: "STALE" } as const;
-          const expiresAt = now + actualTtl;
-          const rotate =
-            current.status === "active" &&
-            current.subscription_id === pending.subscription_id &&
-            (current.expires_at ?? 0) > now &&
-            current.secret_envelope !== null;
-          const previous = rotate ? current.secret_envelope : null;
-          const rotationUntil = rotate
-            ? Math.min(now + EVENT_ROTATION_WINDOW_MS, expiresAt)
-            : null;
-          const generation = current.generation + 1;
-          this.privateSql.exec(
-            "UPDATE table_event_subscriptions SET generation = ?, status = 'active', guest_id = ?, connection_id = ?, subscription_id = ?, callback_url = ?, secret_envelope = ?, previous_secret_envelope = ?, rotation_until = ?, expires_at = ? WHERE membership_id = ?",
-            generation,
-            fresh.guestId,
-            fresh.connectionId,
-            pending.subscription_id,
-            pending.callback_url,
-            pending.secret_envelope,
-            previous,
-            rotationUntil,
-            expiresAt,
-            currentMember.membership_id,
-          );
-          // Refresh retains the original event identity and retry budget.
-          // The generation change fences any pre-refresh completion.
-          this.privateSql.exec(
-            "UPDATE table_event_outbox SET subscription_generation = ?, expires_at = ? WHERE recipient_membership_id = ? AND subscription_id = ? AND status IN ('pending', 'in_flight')",
-            generation,
-            expiresAt,
-            currentMember.membership_id,
-            pending.subscription_id,
-          );
-          this.privateSql.exec(
-            "DELETE FROM table_event_candidates WHERE membership_id = ?",
-            currentMember.membership_id,
-          );
-          return {
-            ok: true,
-            value: { id: pending.subscription_id, expiresAt, generation },
-          } as const;
-        }),
+            this.privateSql.exec(
+              "DELETE FROM table_event_candidates WHERE membership_id = ? AND event_name = ?",
+              currentMember.membership_id,
+              candidate.event_name,
+            );
+            return {
+              ok: true,
+              value: { id: pending.subscription_id, expiresAt, generation },
+            } as const;
+          }),
+        async () => {
+          mutationAllowed = !!(await this.freshEventActor(actor));
+        },
       );
       return this.accessQuarantined()
         ? { ok: false, code: "TEMPORARILY_UNAVAILABLE" }
@@ -1775,7 +2505,13 @@ export class TableDO extends DurableObject<Env> {
     this.ctx.storage.transactionSync(() => {
       const member = this.memberFor(actor.guestId);
       if (!member) return;
-      const candidate = this.eventCandidate(member.membership_id);
+      const candidate = this.privateSql
+        .exec<EventCandidateRow>(
+          "SELECT * FROM table_event_candidates WHERE membership_id=? AND candidate_id=?",
+          member.membership_id,
+          candidateId,
+        )
+        .toArray()[0];
       if (
         candidate?.candidate_id !== candidateId ||
         candidate.guest_id !== actor.guestId ||
@@ -1783,12 +2519,14 @@ export class TableDO extends DurableObject<Env> {
       )
         return;
       this.privateSql.exec(
-        "DELETE FROM table_event_candidates WHERE membership_id = ?",
+        "DELETE FROM table_event_candidates WHERE membership_id = ? AND event_name = ?",
         member.membership_id,
+        candidate.event_name,
       );
       this.privateSql.exec(
-        "UPDATE table_event_subscriptions SET fence = fence + 1 WHERE membership_id = ?",
+        "UPDATE table_event_subscriptions SET fence = fence + 1 WHERE membership_id = ? AND event_name = ?",
         member.membership_id,
+        candidate.event_name,
       );
     });
   }
@@ -1819,7 +2557,10 @@ export class TableDO extends DurableObject<Env> {
       const currentMember = this.memberFor(fresh.guestId);
       if (!currentMember || !this.metadataRow())
         return { ok: false, code: "TABLE_NOT_FOUND" } as const;
-      const current = this.eventSubscription(currentMember.membership_id);
+      const current = this.eventSubscription(
+        currentMember.membership_id,
+        parsed.name,
+      );
       if (
         current?.status === "active" &&
         current.subscription_id === identity &&
@@ -1829,20 +2570,26 @@ export class TableDO extends DurableObject<Env> {
         this.invalidateEventSubscription(
           currentMember.membership_id,
           "inactive",
+          parsed.name,
         );
-      const pending = this.eventCandidate(currentMember.membership_id);
+      const pending = this.eventCandidate(
+        currentMember.membership_id,
+        parsed.name,
+      );
       if (
         pending?.subscription_id === identity &&
         pending.guest_id === fresh.guestId &&
         pending.connection_id === fresh.connectionId
       ) {
         this.privateSql.exec(
-          "DELETE FROM table_event_candidates WHERE membership_id = ?",
+          "DELETE FROM table_event_candidates WHERE membership_id = ? AND event_name = ?",
           currentMember.membership_id,
+          parsed.name,
         );
         this.privateSql.exec(
-          "UPDATE table_event_subscriptions SET fence = fence + 1 WHERE membership_id = ?",
+          "UPDATE table_event_subscriptions SET fence = fence + 1 WHERE membership_id = ? AND event_name = ?",
           currentMember.membership_id,
+          parsed.name,
         );
       }
       return { ok: true, value: {} } as const;
@@ -1877,13 +2624,24 @@ export class TableDO extends DurableObject<Env> {
     if (
       !table ||
       !member ||
-      table.expires_at <= Date.now() ||
+      this.tableDeadline(table) <= Date.now() ||
       (table.state !== "waiting" && table.state !== "open")
     )
       return false;
-    const row = this.eventSubscription(member.membership_id);
+    const row = this.privateSql
+      .exec<EventSubscriptionRow>(
+        "SELECT * FROM table_event_subscriptions WHERE membership_id=? AND subscription_id=?",
+        member.membership_id,
+        subscriptionId,
+      )
+      .toArray()[0];
     return (
       !!row &&
+      (row.event_name === RESUME_EVENT_NAME ||
+        this.sessionFence({
+          session_id: row.session_id ?? undefined,
+          generation: row.session_id ? row.session_generation : undefined,
+        }).ok) &&
       (this.env.RELEASE_PROFILE !== PRIVATE_PILOT_PROFILE ||
         privatePilotRecipientAllowed(this.env, fresh, table.table_id)) &&
       row.status === "active" &&
@@ -1944,16 +2702,19 @@ export class TableDO extends DurableObject<Env> {
     ) {
       return { ok: false, code: "TABLE_NOT_FOUND" };
     }
-    if (table.expires_at <= now || table.state === "expired") {
+    if (this.tableDeadline(table) <= now || table.state === "expired") {
       return { ok: false, code: "TABLE_EXPIRED" };
     }
     if (table.state !== "waiting" && table.state !== "open") {
       return { ok: false, code: "TABLE_TERMINAL" };
     }
+    const epochFence = this.sessionFence(filter);
+    if (!epochFence.ok) return epochFence;
     const expiresAt = Math.min(
+      this.channel()?.deadline ?? this.tableDeadline(table),
       tokenExpiresAtMs,
       decision.actor.expiresAt,
-      table.expires_at,
+      this.tableDeadline(table),
       now + MAX_INBOX_STREAM_LIFETIME_MS,
     );
     if (!Number.isSafeInteger(expiresAt) || expiresAt <= now) {
@@ -1997,6 +2758,7 @@ export class TableDO extends DurableObject<Env> {
       const filter = parseCanonicalInboxFilter(requested);
       if (!filter) return { ok: false, code: "INVALID_REQUEST" };
       const canonical = { resourceSubscriptions: [filter.uri] };
+      const epoch = this.channel()?.generation;
       const check = () =>
         this.checkInboxSubscription(identity, canonical, tokenExpiresAtMs);
       const admitted = await check();
@@ -2009,8 +2771,10 @@ export class TableDO extends DurableObject<Env> {
         !table ||
         !member ||
         member.membership_id !== admitted.value.membershipId ||
+        this.channel()?.generation !== epoch ||
+        !this.sessionFence(filter).ok ||
         (table.state !== "waiting" && table.state !== "open") ||
-        table.expires_at <= Date.now() ||
+        this.tableDeadline(table) <= Date.now() ||
         admitted.value.expiresAt <= Date.now()
       )
         return { ok: false, code: "TABLE_NOT_FOUND" };
@@ -2019,7 +2783,11 @@ export class TableDO extends DurableObject<Env> {
         admitted.value,
         async () => {
           const result = await check();
-          return !this.accessQuarantined() && result.ok ? result.value : null;
+          return !this.accessQuarantined() &&
+            this.channel()?.generation === epoch &&
+            result.ok
+            ? result.value
+            : null;
         },
         cancellationId,
       );
@@ -2155,6 +2923,10 @@ export class TableDO extends DurableObject<Env> {
             } as const;
           }
 
+          if (parsed.arguments.reusable)
+            this.privateSql.exec(
+              "INSERT INTO table_channel(singleton) VALUES(1)",
+            );
           const membershipId = crypto.randomUUID();
           this.privateSql.exec(
             `INSERT INTO table_metadata
@@ -2283,7 +3055,7 @@ export class TableDO extends DurableObject<Env> {
         return { kind: "error", code: "TABLE_NOT_FOUND" } as const;
       }
       if (
-        current.expires_at <= now ||
+        this.tableDeadline(current) <= now ||
         current.state !== "waiting" ||
         this.memberships().length !== 1
       ) {
@@ -2414,7 +3186,7 @@ export class TableDO extends DurableObject<Env> {
       if (
         !table ||
         table.table_id !== parts.tableId ||
-        table.expires_at <= now ||
+        this.tableDeadline(table) <= now ||
         table.state === "deleted" ||
         table.state === "expired"
       ) {
@@ -2444,6 +3216,19 @@ export class TableDO extends DurableObject<Env> {
         return { ok: false, code: "INVITATION_INVALID" } as const;
       }
       const existing = this.memberFor(guestId);
+      if (
+        this.channel() &&
+        invitation.expires_at + SESSION_MARKER_RETENTION_MS <= now
+      )
+        return { ok: false, code: "INVITATION_INVALID" } as const;
+      if (
+        this.channel() &&
+        !receipt &&
+        this.privateSql
+          .exec<{ n: number }>("SELECT COUNT(*) n FROM table_join_receipts")
+          .one().n >= 64
+      )
+        return { ok: false, code: "LIMIT_REACHED" } as const;
       if (
         invitation.state === "consumed" &&
         invitation.consumed_by === guestId &&
@@ -2528,10 +3313,17 @@ export class TableDO extends DurableObject<Env> {
     if (table.state === "deleted") {
       return { ok: false, code: "TABLE_NOT_FOUND" };
     }
-    if (table.expires_at <= Date.now() || table.state === "expired") {
+    if (this.tableDeadline(table) <= Date.now() || table.state === "expired") {
       return { ok: false, code: "TABLE_EXPIRED" };
     }
-    return { ok: true, value: { table, member } };
+    this.ctx.storage.transactionSync(() => this.expireSession(Date.now()));
+    return {
+      ok: true,
+      value: {
+        table: this.metadataRow() as MetadataRow,
+        member: this.memberFor(actor.guestId) as MembershipRow,
+      },
+    };
   }
 
   async getMetadata(
@@ -2603,7 +3395,8 @@ export class TableDO extends DurableObject<Env> {
         lifecycle: {
           state: table.state,
           expiresAt: new Date(table.expires_at).toISOString(),
-          expired: table.state === "expired" || table.expires_at <= now,
+          expired:
+            table.state === "expired" || this.tableDeadline(table) <= now,
         },
         notifications: this.ownEventStatus(member, fresh.connectionId),
       },
@@ -2644,7 +3437,7 @@ export class TableDO extends DurableObject<Env> {
     ) {
       return { ok: false, code: "TABLE_NOT_FOUND" };
     }
-    if (table.state === "expired" || table.expires_at <= Date.now()) {
+    if (table.state === "expired" || this.tableDeadline(table) <= Date.now()) {
       return { ok: false, code: "TABLE_EXPIRED" };
     }
     return { ok: true, value: this.publicMetadata(table, member) };
@@ -2666,10 +3459,15 @@ export class TableDO extends DurableObject<Env> {
     ) {
       return { ok: false, code: "TABLE_NOT_FOUND" };
     }
+    const fence = this.sessionFence(parsed);
+    if (!fence.ok) return fence;
     return {
       ok: true,
       value: {
         tableId: table.table_id,
+        ...(this.channel()
+          ? { session_id: parsed.session_id, generation: parsed.generation }
+          : {}),
         membershipId: member.membership_id,
         state: table.state,
         lastSeq: table.last_seq,
@@ -2717,22 +3515,37 @@ export class TableDO extends DurableObject<Env> {
         this.transcriptCommitBarrierReleaseForTest?.();
       }
     }
+    // Hashing, test barriers and alarm scheduling may yield. Refresh the actual
+    // connection after the precommit work; never use the caller's expiry.
+    const commitGrant = await authorizeGuestConnection(
+      this.env,
+      actor.guestId,
+      actor.connectionId,
+      "tables:write",
+    );
+    if (!commitGrant.allowed || this.accessQuarantined())
+      return { ok: false, code: "TABLE_NOT_FOUND" };
+    let mutationAllowed = false;
     let newlyCommitted = false;
     const mutation = () => {
       const table = this.metadataRow();
       const member = this.memberFor(actor.guestId);
       const now = Date.now();
       if (
+        !mutationAllowed ||
         !table ||
         !member ||
+        commitGrant.actor.expiresAt <= now ||
         member.table_id !== table.table_id ||
         table.state === "deleted"
       ) {
         return { ok: false, code: "TABLE_NOT_FOUND" } as const;
       }
-      if (table.state === "expired" || table.expires_at <= now) {
+      if (table.state === "expired" || this.tableDeadline(table) <= now) {
         return { ok: false, code: "TABLE_EXPIRED" } as const;
       }
+      const fence = this.sessionFence(input);
+      if (!fence.ok) return fence;
       const previous = this.privateSql
         .exec<PostReceiptRow>(
           "SELECT * FROM table_post_receipts WHERE guest_id = ? AND request_id = ?",
@@ -2850,8 +3663,19 @@ export class TableDO extends DurableObject<Env> {
             subscription.generation,
             now + 1_000,
             now,
-            Math.min(subscription.expires_at, table.expires_at),
+            Math.min(
+              subscription.expires_at,
+              this.tableDeadline(table),
+              this.channel()?.deadline ?? this.tableDeadline(table),
+            ),
           );
+          if (this.channel())
+            this.privateSql.exec(
+              "UPDATE table_event_outbox SET session_id=?,session_generation=? WHERE event_id=?",
+              this.channel()?.session_id ?? null,
+              this.channel()?.generation ?? 0,
+              eventId,
+            );
         }
       }
       newlyCommitted = true;
@@ -2882,6 +3706,17 @@ export class TableDO extends DurableObject<Env> {
     const { value: result } = await this.deadlines.commitWithWakeup(
       Date.now() + 1_000,
       mutation,
+      async () => {
+        mutationAllowed =
+          (
+            await authorizeGuestConnection(
+              this.env,
+              actor.guestId,
+              actor.connectionId,
+              "tables:write",
+            )
+          ).allowed && !this.accessQuarantined();
+      },
     );
     if (this.accessQuarantined()) {
       this.inboxStreams.closeAll();
@@ -2911,6 +3746,12 @@ export class TableDO extends DurableObject<Env> {
   private postReceipt(tableId: string, row: MessageRow): PostReceipt {
     return {
       table_id: tableId,
+      ...(this.channel()
+        ? {
+            session_id: this.channel()?.session_id ?? undefined,
+            generation: this.channel()?.generation,
+          }
+        : {}),
       message_id: row.message_id,
       seq: row.seq,
       sender_membership_id: row.sender_membership_id,
@@ -2958,9 +3799,14 @@ export class TableDO extends DurableObject<Env> {
       ) {
         return { ok: false, code: "TABLE_NOT_FOUND" } as const;
       }
-      if (table.state === "expired" || table.expires_at <= Date.now()) {
+      if (
+        table.state === "expired" ||
+        this.tableDeadline(table) <= Date.now()
+      ) {
         return { ok: false, code: "TABLE_EXPIRED" } as const;
       }
+      const fence = this.sessionFence(input);
+      if (!fence.ok) return fence;
       const after = input.after_seq ?? 0;
       const through = input.through_seq ?? table.last_seq;
       const limit = input.limit ?? 50;
@@ -2981,6 +3827,9 @@ export class TableDO extends DurableObject<Env> {
       return {
         ok: true,
         value: {
+          ...(this.channel()
+            ? { session_id: input.session_id, generation: input.generation }
+            : {}),
           messages: slice.map((row) => ({
             seq: row.seq,
             message_id: row.message_id,
@@ -2994,7 +3843,11 @@ export class TableDO extends DurableObject<Env> {
           next_after_seq: slice.at(-1)?.seq ?? after,
           through_seq: through,
           has_more: more,
-          own_inbox_uri: ownInboxUri(table.table_id, member.membership_id),
+          own_inbox_uri: ownInboxUri(
+            table.table_id,
+            member.membership_id,
+            this.safeSession(),
+          ),
           latest_peer_seq: member.latest_peer_seq,
         },
       } as const;
@@ -3040,7 +3893,7 @@ export class TableDO extends DurableObject<Env> {
     const existing = this.metadataRow();
     if (!existing || !this.memberFor(guestId))
       return { ok: false, code: "TABLE_NOT_FOUND" };
-    if (existing.expires_at <= Date.now())
+    if (this.tableDeadline(existing) <= Date.now())
       return { ok: false, code: "TABLE_EXPIRED" };
     const committed = await this.deadlines.commitWithWakeup(
       existing.expires_at,
@@ -3051,7 +3904,7 @@ export class TableDO extends DurableObject<Env> {
           const member = this.memberFor(guestId);
           if (!table || !member)
             return { ok: false, code: "TABLE_NOT_FOUND" } as const;
-          if (table.expires_at <= now || table.state === "expired") {
+          if (this.tableDeadline(table) <= now || table.state === "expired") {
             return { ok: false, code: "TABLE_EXPIRED" } as const;
           }
           if (table.state === "deleted") {
@@ -3079,11 +3932,15 @@ export class TableDO extends DurableObject<Env> {
           // Closed tables cannot acquire or retain event dispatch authority.
           this.privateSql.exec("DELETE FROM table_event_candidates");
           for (const row of this.privateSql
-            .exec<{ membership_id: string }>(
-              "SELECT membership_id FROM table_event_subscriptions",
+            .exec<{ membership_id: string; event_name: string }>(
+              "SELECT membership_id,event_name FROM table_event_subscriptions",
             )
             .toArray()) {
-            this.invalidateEventSubscription(row.membership_id, "inactive");
+            this.invalidateEventSubscription(
+              row.membership_id,
+              "inactive",
+              row.event_name,
+            );
           }
           return {
             ok: true,
@@ -3117,7 +3974,7 @@ export class TableDO extends DurableObject<Env> {
     const existing = this.metadataRow();
     if (!existing || !this.memberFor(actor.guestId))
       return { ok: false, code: "TABLE_NOT_FOUND" };
-    if (existing.expires_at <= Date.now())
+    if (this.tableDeadline(existing) <= Date.now())
       return { ok: false, code: "TABLE_EXPIRED" };
     const committed = await this.deadlines.commitWithWakeup(
       existing.expires_at + 24 * 60 * 60_000,
@@ -3127,7 +3984,7 @@ export class TableDO extends DurableObject<Env> {
           if (!current || !this.memberFor(actor.guestId)) {
             return { ok: false, code: "TABLE_NOT_FOUND" } as const;
           }
-          if (current.expires_at <= Date.now()) {
+          if (this.tableDeadline(current) <= Date.now()) {
             return { ok: false, code: "TABLE_EXPIRED" } as const;
           }
           const purged = this.purgeContent(Date.now(), "deleted");
@@ -3229,7 +4086,7 @@ export class TableDO extends DurableObject<Env> {
       return { ok: false, code: "TABLE_NOT_FOUND" };
     }
     const due = Math.min(
-      current.expires_at,
+      this.tableDeadline(current),
       Date.now() + DELETE_CONFIRMATION_MS,
     );
     const committed = await this.deadlines.commitWithWakeup(due, () =>
@@ -3239,7 +4096,7 @@ export class TableDO extends DurableObject<Env> {
         if (!table || !this.memberFor(guestId)) {
           return { ok: false, code: "TABLE_NOT_FOUND" } as const;
         }
-        if (table.expires_at <= now || table.state === "expired") {
+        if (this.tableDeadline(table) <= now || table.state === "expired") {
           return { ok: false, code: "TABLE_EXPIRED" } as const;
         }
         if (table.state === "deleted") {
@@ -3261,6 +4118,15 @@ export class TableDO extends DurableObject<Env> {
             },
           } as const;
         }
+        if (
+          this.channel() &&
+          this.privateSql
+            .exec<{ n: number }>(
+              "SELECT COUNT(*) n FROM table_delete_confirmations",
+            )
+            .one().n >= 64
+        )
+          return { ok: false, code: "LIMIT_REACHED" } as const;
         const expiresAt = now + DELETE_CONFIRMATION_MS;
         this.privateSql.exec(
           "INSERT INTO table_delete_confirmations (guest_id, request_id, expires_at, state) VALUES (?, ?, ?, 'pending')",
@@ -3314,7 +4180,7 @@ export class TableDO extends DurableObject<Env> {
       return { ok: false, code: "INVALID_REQUEST" };
     }
     const table = this.metadataRow();
-    if (table && table.expires_at <= Date.now()) {
+    if (table && this.tableDeadline(table) <= Date.now()) {
       return { ok: false, code: "TABLE_EXPIRED" };
     }
     if (table && this.memberFor(guestId)) {
@@ -3412,7 +4278,7 @@ export class TableDO extends DurableObject<Env> {
           if (!this.memberFor(guestId)) {
             return { ok: false, code: "NOT_FOUND" } as const;
           }
-          if (table.expires_at <= now || table.state === "expired") {
+          if (this.tableDeadline(table) <= now || table.state === "expired") {
             return { ok: false, code: "TABLE_EXPIRED" } as const;
           }
           const pending = this.deleteConfirmation(guestId, requestId);
@@ -3504,16 +4370,22 @@ export class TableDO extends DurableObject<Env> {
     const work = this.privateSql
       .exec<DispatchWork>(
         `SELECT s.*, o.event_id, o.message_id, o.message_seq, o.created_at,
-              o.lease_token, t.table_id, t.expires_at AS table_expires_at
+              o.lease_token, t.table_id,
+              CASE WHEN ch.singleton=1 AND t.state='open' THEN 8640000000000000 ELSE t.expires_at END AS table_expires_at,
+              o.session_id AS work_session_id,o.session_generation AS work_session_generation,
+              r.requester,r.expires_at AS request_expires_at
        FROM table_event_outbox AS o
        JOIN table_event_subscriptions AS s
          ON s.membership_id = o.recipient_membership_id
          AND s.subscription_id = o.subscription_id
          AND s.generation = o.subscription_generation
+         AND s.event_name = o.event_name
        JOIN table_memberships AS m ON m.membership_id = s.membership_id
          AND m.guest_id = s.guest_id
        JOIN table_metadata AS t ON t.table_id = m.table_id
-       JOIN table_messages AS msg ON msg.seq = o.message_seq
+       LEFT JOIN table_channel ch ON ch.singleton=1
+       LEFT JOIN table_resume_requests r ON r.request_id=o.message_id AND r.recipient=m.membership_id
+       LEFT JOIN table_messages AS msg ON msg.seq = o.message_seq
          AND msg.message_id = o.message_id
          AND msg.sender_membership_id <> m.membership_id
        WHERE o.event_id = ? AND o.status IN ('pending', 'in_flight')
@@ -3522,10 +4394,16 @@ export class TableDO extends DurableObject<Env> {
          AND s.status = 'active' AND s.expires_at > ?
          AND s.callback_url IS NOT NULL AND s.secret_envelope IS NOT NULL
          AND s.guest_id IS NOT NULL AND s.connection_id IS NOT NULL
-         AND t.state IN ('waiting', 'open') AND t.expires_at > ?`,
+         AND t.state IN ('waiting', 'open') AND (t.expires_at > ? OR (ch.singleton=1 AND t.state='open'))
+         AND ((o.event_name='table.message.created' AND msg.message_id IS NOT NULL AND
+            (ch.singleton IS NULL OR (ch.session_id=o.session_id AND ch.generation=o.session_generation AND ch.deadline>? AND s.session_id=ch.session_id AND s.session_generation=ch.generation)))
+           OR (o.event_name='table.resume.requested' AND ch.singleton=1 AND ch.session_id IS NULL AND
+             ch.generation=o.session_generation AND r.generation=ch.generation AND r.status='pending' AND r.expires_at>? AND r.requester<>m.membership_id))`,
         eventId,
         now,
         OUTBOX_RETRY_HORIZON_MS,
+        now,
+        now,
         now,
         now,
         now,
@@ -3737,14 +4615,39 @@ export class TableDO extends DurableObject<Env> {
       let outcome: CallbackTransportOutcome;
       try {
         const signed = signWebhook(
-          messageCreatedEvent({
-            eventId: work.event_id,
-            tableId: work.table_id,
-            messageId: work.message_id,
-            seq: work.message_seq,
-            inboxUri: ownInboxUri(work.table_id, work.membership_id),
-            occurredAt: new Date(work.created_at),
-          }),
+          work.event_name === RESUME_EVENT_NAME
+            ? resumeRequestedEvent({
+                eventId: work.event_id,
+                tableId: work.table_id,
+                requestId: work.message_id,
+                requesterMembershipId: work.requester as string,
+                generation: work.work_session_generation,
+                expiresAt: work.request_expires_at as number,
+                createdAt: work.created_at,
+              })
+            : messageCreatedEvent({
+                eventId: work.event_id,
+                tableId: work.table_id,
+                messageId: work.message_id,
+                ...(work.work_session_id
+                  ? {
+                      sessionId: work.work_session_id,
+                      generation: work.work_session_generation,
+                    }
+                  : {}),
+                seq: work.message_seq,
+                inboxUri: ownInboxUri(
+                  work.table_id,
+                  work.membership_id,
+                  work.work_session_id
+                    ? {
+                        sessionId: work.work_session_id,
+                        generation: work.work_session_generation,
+                      }
+                    : null,
+                ),
+                occurredAt: new Date(work.created_at),
+              }),
           work.event_id,
           work.subscription_id as string,
           secrets,

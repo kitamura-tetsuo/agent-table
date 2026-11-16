@@ -439,7 +439,7 @@ function authority(baseConfig, identity) {
         environment: "local",
         buildSha: config.vars.RELEASE_BUILD_SHA,
         configSha256: "0".repeat(64),
-        schemaVersion: 14,
+        schemaVersion: 15,
         namespaceIdentity: identity,
         planSha256: sha256({
           generation,
@@ -483,7 +483,7 @@ async function resetTargets(mf, list, operationId, generation) {
   );
   const { RECOVERY } = await mf.getBindings(CLIENT);
   const identity = plain(await RECOVERY.identity());
-  assert.equal(identity.schemaVersion, 14);
+  assert.equal(identity.schemaVersion, 15);
   assert.deepEqual(
     identity.commitments,
     context.claims.namespaceIdentity.commitments,

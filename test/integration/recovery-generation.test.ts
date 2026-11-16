@@ -114,7 +114,7 @@ describe("source-bound recovery certificate", () => {
     for (const claims of [
       { schemaVersion: 12 },
       { schemaVersion: 13 },
-      { schemaVersion: 15 },
+      { schemaVersion: 16 },
       { evidenceSha256: null },
       { expiresAt: new Date(Date.now() + 60_000).toISOString() },
       { issuedAt: new Date(Date.now() + 60_000).toISOString() },
@@ -637,7 +637,7 @@ describe("relay ledger schema recovery boundary", () => {
           const result = await reset.resetRecovery(request);
           expect(result.counts.table_event_relay_attempts).toBe(0);
           expect(result.counts.table_event_relay_verifications).toBe(0);
-          expect(result.schemaVersion).toBe(14);
+          expect(result.schemaVersion).toBe(15);
           expect(
             sql
               .exec("SELECT name FROM sqlite_master WHERE type='trigger'")

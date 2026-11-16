@@ -668,7 +668,10 @@ describe("production MCP Events registration, OAuth and TableDO", () => {
     try {
       expect(client.getServerCapabilities()).not.toHaveProperty("events");
       expect(await callEvent(client, "events/list")).toMatchObject({
-        events: [{ name: "table.message.created", delivery: ["webhook"] }],
+        events: [
+          { name: "table.message.created", delivery: ["webhook"] },
+          { name: "table.resume.requested", delivery: ["webhook"] },
+        ],
       });
       expect(
         await callEvent(client, "events/list", {
@@ -676,7 +679,10 @@ describe("production MCP Events registration, OAuth and TableDO", () => {
           _meta: { progressToken: "synthetic" },
         }),
       ).toMatchObject({
-        events: [{ name: "table.message.created" }],
+        events: [
+          { name: "table.message.created" },
+          { name: "table.resume.requested" },
+        ],
       });
       await expect(
         callEvent(client, "events/list", { cursor: "forged" }),

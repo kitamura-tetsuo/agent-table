@@ -866,7 +866,7 @@ export class TableDO extends ApplicationTableDO {
         "INSERT INTO future_recovery_payload VALUES (1, 'retained synthetic future schema')",
       );
       this.ctx.storage.sql.exec(
-        "UPDATE __agent_table_schema SET version = 15 WHERE singleton = 1",
+        "UPDATE __agent_table_schema SET version = 16 WHERE singleton = 1",
       );
     });
     await this.ctx.storage.put(FIXTURE_KV, {
@@ -900,7 +900,7 @@ export class TableDO extends ApplicationTableDO {
     return {
       binding: "TABLES" as const,
       objectId: this.ctx.id.toString(),
-      schemaVersion: 15,
+      schemaVersion: 16,
       constructorValidatorRefused,
       inspectionRefused,
       resetRefused,
@@ -943,7 +943,7 @@ export class FutureSchemaReadback extends DurableObject<FixtureEnv> {
         "SELECT version FROM __agent_table_schema WHERE singleton = 1",
       )
       .one();
-    requireFixture(schema.version === 15);
+    requireFixture(schema.version === 16);
     return {
       binding: "TABLES" as const,
       objectId: this.ctx.id.toString(),

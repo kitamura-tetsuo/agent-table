@@ -16,6 +16,7 @@ export type CreationRequest = {
   title: string;
   purpose?: string;
   ttl_seconds?: number;
+  reusable?: boolean;
 };
 
 export type ParsedCreationRequest = {
@@ -24,6 +25,7 @@ export type ParsedCreationRequest = {
     title: string;
     purpose?: string;
     ttl_seconds: number;
+    reusable?: true;
   };
 };
 
@@ -61,8 +63,12 @@ export function parseCreationRequest(value: unknown): ParsedCreationRequest {
   const keys = Object.keys(value);
   if (
     keys.some(
-      (key) => !["request_id", "title", "purpose", "ttl_seconds"].includes(key),
+      (key) =>
+        !["request_id", "title", "purpose", "ttl_seconds", "reusable"].includes(
+          key,
+        ),
     ) ||
+    (value.reusable !== undefined && typeof value.reusable !== "boolean") ||
     !validCreationRequestId(value.request_id) ||
     !validText(value.title, CREATION_LIMITS.maxTitleCodePoints) ||
     value.title.trim().length === 0 ||
@@ -87,6 +93,7 @@ export function parseCreationRequest(value: unknown): ParsedCreationRequest {
       title: value.title,
       ...(value.purpose === undefined ? {} : { purpose: value.purpose }),
       ttl_seconds: ttl,
+      ...(value.reusable === true ? { reusable: true as const } : {}),
     },
   };
 }
@@ -95,7 +102,7 @@ export function parseCreationRequest(value: unknown): ParsedCreationRequest {
 export async function creationRequestDigest(
   args: ParsedCreationRequest["arguments"],
 ): Promise<string> {
-  const sorted: Record<string, string | number> = {};
+  const sorted: Record<string, string | number | boolean> = {};
   for (const key of Object.keys(args).sort()) {
     const value = args[key as keyof typeof args];
     if (value !== undefined) sorted[key] = value;

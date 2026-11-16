@@ -120,7 +120,7 @@ async function inspected() {
     configSha256: "c".repeat(64),
     operationId: "11111111-1111-4111-8111-111111111111",
     generation: "d".repeat(64),
-    schemaVersion: 14,
+    schemaVersion: 15,
     namespaceIdentity: identity,
     requestNonce: "e".repeat(64),
   };

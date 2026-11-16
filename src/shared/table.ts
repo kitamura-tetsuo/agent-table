@@ -1,6 +1,12 @@
 import { CREATION_LIMITS, TABLE_LIMITS } from "./limits";
 
-export type TableState = "waiting" | "open" | "closed" | "expired" | "deleted";
+export type TableState =
+  | "waiting"
+  | "open"
+  | "dormant"
+  | "closed"
+  | "expired"
+  | "deleted";
 
 export type SafeMembership = {
   membershipId: string;
@@ -11,6 +17,21 @@ export type SafeMembership = {
 
 export type SafeTableMetadata = {
   tableId: string;
+  channelMode?: "reusable";
+  generation?: number;
+  session?: {
+    sessionId: string;
+    generation: number;
+    startedAt: string;
+    expiresAt: string;
+  } | null;
+  resumeRequest?: {
+    requestId: string;
+    requesterMembershipId: string;
+    recipientMembershipId: string;
+    generation: number;
+    expiresAt: string;
+  };
   title: string;
   purpose?: string;
   state: TableState;
@@ -49,6 +70,8 @@ export type SafeTableMetadata = {
 };
 
 export type OwnInboxStatus = {
+  session_id?: string;
+  generation?: number;
   tableId: string;
   membershipId: string;
   state: TableState;
@@ -68,6 +91,10 @@ export type TableFailureCode =
   | "IDEMPOTENCY_CONFLICT"
   | "INVALID_RESERVATION"
   | "TEMPORARILY_UNAVAILABLE"
+  | "SESSION_REQUIRED"
+  | "STALE_SESSION"
+  | "RESUME_CONFLICT"
+  | "RESUME_EXPIRED"
   | "INVALID_REQUEST"
   | "INVALID_REPLY"
   | "INVALID_CURSOR"

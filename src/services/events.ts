@@ -89,6 +89,11 @@ export async function subscribeEvent(
     return { ok: false, reason: "invalid" };
   }
   const parsed = inspected.value;
+  if (
+    env.RELEASE_PROFILE === PRIVATE_PILOT_PROFILE &&
+    parsed.name !== "table.message.created"
+  )
+    return { ok: false, reason: "denied" };
   diagnostics?.record("events/subscribe", "parameters", "valid");
   const discovery = activePrivatePilotDiscoveryPolicy(env);
   if (discovery) {

@@ -469,12 +469,15 @@ describe("public SDK → OAuth Worker → GuestDO → TableDO composition", () =
         "create_invite",
         "create_table",
         "delete_table",
+        "end_conversation",
         "get_connection",
         "get_event_diagnostics",
         "get_table",
         "join_table",
         "post_message",
         "read_messages",
+        "request_table_resume",
+        "respond_table_resume",
       ]);
       const rejected = await client.callTool({
         name: "create_table",
@@ -2660,4 +2663,144 @@ describe("authenticated public SDK admission quota", () => {
       await second.close();
     }
   });
+});
+
+it("runs reusable conversations end-to-end through OAuth, the official SDK, MCP resources and TableDO", async () => {
+  const owner = await tokenForGuest("tables:read tables:write"),
+    peer = await tokenForGuest("tables:read tables:write");
+  const first = await sdk(owner.token),
+    second = await sdk(peer.token);
+  try {
+    const created = output(
+      await first.callTool({
+        name: "create_table",
+        arguments: {
+          ...input,
+          request_id: crypto.randomUUID(),
+          reusable: true,
+        },
+      }),
+    );
+    const tableId = String(created.tableId);
+    const invitation = output(
+      await first.callTool({
+        name: "create_invite",
+        arguments: { table_id: tableId, request_id: crypto.randomUUID() },
+      }),
+    );
+    expect(
+      output(
+        await second.callTool({
+          name: "join_table",
+          arguments: {
+            invitation: invitation.invitation,
+            request_id: crypto.randomUUID(),
+          },
+        }),
+      ),
+    ).toMatchObject({ state: "dormant", generation: 0 });
+    let oldUri = "";
+    for (let generation = 0; generation < 2; generation++) {
+      const request_id = crypto.randomUUID();
+      expect(
+        output(
+          await first.callTool({
+            name: "request_table_resume",
+            arguments: {
+              table_id: tableId,
+              request_id,
+              generation,
+              requested_at: Date.now(),
+            },
+          }),
+        ),
+      ).toMatchObject({ state: "pending" });
+      expect(
+        output(
+          await first.callTool({
+            name: "respond_table_resume",
+            arguments: {
+              table_id: tableId,
+              request_id,
+              generation,
+              decision: "accept",
+            },
+          }),
+        ),
+      ).toEqual({ error: { code: "NOT_AUTHORIZED" } });
+      const accepted = output(
+        await second.callTool({
+          name: "respond_table_resume",
+          arguments: {
+            table_id: tableId,
+            request_id,
+            generation,
+            decision: "accept",
+          },
+        }),
+      );
+      const fence = {
+        session_id: accepted.sessionId,
+        generation: accepted.sessionGeneration,
+      };
+      expect(
+        output(
+          await first.callTool({
+            name: "post_message",
+            arguments: {
+              table_id: tableId,
+              ...fence,
+              request_id: crypto.randomUUID(),
+              body: "SYNTHETIC SDK SESSION",
+            },
+          }),
+        ),
+      ).toMatchObject({ persisted: true, ...fence });
+      const metadata = output(
+        await second.callTool({
+          name: "get_table",
+          arguments: { table_id: tableId },
+        }),
+      );
+      const uri = String(metadata.ownInboxUri);
+      expect((await second.readResource({ uri })).contents).toHaveLength(1);
+      if (oldUri)
+        await expect(second.readResource({ uri: oldUri })).rejects.toThrow();
+      oldUri = uri;
+      expect(
+        output(
+          await second.callTool({
+            name: "read_messages",
+            arguments: { table_id: tableId, ...fence },
+          }),
+        ),
+      ).toMatchObject({
+        ...fence,
+        messages: [{ body: "SYNTHETIC SDK SESSION" }],
+      });
+      expect(
+        output(
+          await second.callTool({
+            name: "end_conversation",
+            arguments: {
+              table_id: tableId,
+              ...fence,
+              request_id: crypto.randomUUID(),
+            },
+          }),
+        ),
+      ).toMatchObject({ state: "ended" });
+      expect(
+        output(
+          await first.callTool({
+            name: "read_messages",
+            arguments: { table_id: tableId, ...fence },
+          }),
+        ),
+      ).toEqual({ error: { code: "STALE_SESSION" } });
+    }
+  } finally {
+    await first.close();
+    await second.close();
+  }
 });
