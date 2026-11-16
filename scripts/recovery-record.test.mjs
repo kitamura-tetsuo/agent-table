@@ -269,7 +269,7 @@ test("strict metadata schema and canonical digests exclude malformed phase autho
       delete value.planSha256;
     },
     (value) => {
-      value.schemaVersion = 15;
+      value.schemaVersion = 16;
     },
     (value) => {
       value.namespaceIdentity.namespaces.GUESTS =

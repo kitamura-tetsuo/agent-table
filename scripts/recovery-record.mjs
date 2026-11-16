@@ -110,7 +110,7 @@ export function validateRecoveryRecord(value) {
       matches(value.generation, DIGEST) &&
       matches(value.buildSha, SHA) &&
       matches(value.configSha256, DIGEST) &&
-      [12, 13, 14].includes(value.schemaVersion) &&
+      [12, 13, 14, 15].includes(value.schemaVersion) &&
       validateRecoveryNamespaceIdentity(value.namespaceIdentity) &&
       matches(value.planSha256, DIGEST) &&
       matches(value.previousRecordSha256, DIGEST) &&

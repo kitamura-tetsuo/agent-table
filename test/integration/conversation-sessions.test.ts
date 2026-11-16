@@ -1140,4 +1140,60 @@ describe("Reusable private channel/session contract in SQLite Workerd", () => {
       logs.mockRestore();
     }
   });
+  it("cannot consume the peer's browser deletion budget", async () => {
+    const f = await fixture(),
+      owner = {
+        guestId: f.owner.id,
+        sessionId: f.owner.session.sessionId,
+        secret: f.owner.session.secret,
+      };
+    const peer = {
+      guestId: f.peer.id,
+      sessionId: f.peer.session.sessionId,
+      secret: f.peer.session.secret,
+    };
+    for (let i = 0; i < 64; i++)
+      expect(
+        (await f.stub.requestBrowserDeletion(owner, crypto.randomUUID())).ok,
+      ).toBe(true);
+    expect(
+      await f.stub.requestBrowserDeletion(owner, crypto.randomUUID()),
+    ).toEqual({ ok: false, code: "LIMIT_REACHED" });
+    const id = crypto.randomUUID();
+    expect((await f.stub.requestBrowserDeletion(peer, id)).ok).toBe(true);
+    expect(await f.stub.resolveDeletion(peer, id, "approve")).toEqual({
+      ok: true,
+      value: { state: "deleted" },
+    });
+  });
+
+  it("rejects close revoked while the durable scheduler is arming its alarm", async () => {
+    const f = await fixture();
+    await start(f);
+    await runInDurableObject(f.stub, (instance) => {
+      const h = instance as unknown as {
+        deadlines: { checkpoint: (phase: string) => Promise<void> };
+      };
+      h.deadlines.checkpoint = async (phase) => {
+        if (phase === "after-arm")
+          await env.GUESTS.get(
+            env.GUESTS.idFromName(f.owner.id),
+          ).revokeConnection(
+            f.owner.session.sessionId,
+            f.owner.session.secret,
+            f.owner.grant.connectionId,
+          );
+      };
+    });
+    expect(await f.stub.closeTable(f.writer, crypto.randomUUID())).toEqual({
+      ok: false,
+      code: "TABLE_NOT_FOUND",
+    });
+    expect(
+      await f.stub.getMetadata(await f.peer.actor("tables:read")),
+    ).toMatchObject({
+      ok: true,
+      value: { state: "open", session: { generation: 1 } },
+    });
+  });
 });

@@ -2462,8 +2462,9 @@ export class TableDO extends DurableObject<Env> {
             // Refresh retains the original event identity and retry budget.
             // The generation change fences any pre-refresh completion.
             this.privateSql.exec(
-              "UPDATE table_event_outbox SET subscription_generation = ?, expires_at = MIN(expires_at,?) WHERE recipient_membership_id = ? AND subscription_id = ? AND status IN ('pending', 'in_flight')",
+              "UPDATE table_event_outbox SET subscription_generation = ?, expires_at = CASE WHEN event_name='table.resume.requested' THEN MIN(expires_at,?) ELSE ? END WHERE recipient_membership_id = ? AND subscription_id = ? AND status IN ('pending', 'in_flight')",
               generation,
+              expiresAt,
               expiresAt,
               currentMember.membership_id,
               pending.subscription_id,
@@ -2553,6 +2554,8 @@ export class TableDO extends DurableObject<Env> {
     if (!table || !member || table.table_id !== parsed.arguments.table_id)
       return { ok: false, code: "TABLE_NOT_FOUND" };
     const identity = await subscriptionIdentity(fresh, parsed);
+    if (!(await this.freshEventActor(actor)))
+      return { ok: false, code: "TABLE_NOT_FOUND" };
     return this.ctx.storage.transactionSync(() => {
       const currentMember = this.memberFor(fresh.guestId);
       if (!currentMember || !this.metadataRow())
@@ -2882,10 +2885,13 @@ export class TableDO extends DurableObject<Env> {
     }
 
     const trusted = authoritative.reservation;
+    let mutationAllowed = false;
     const committed = await this.deadlines.commitWithWakeup(
       trusted.expiresAt,
       () =>
         this.ctx.storage.transactionSync(() => {
+          if (!mutationAllowed)
+            return { ok: false, code: "INVALID_RESERVATION" } as const;
           // The original expiry remains authoritative even after the remote read.
           if (Date.now() >= trusted.expiresAt) {
             return { ok: false, code: "TABLE_EXPIRED" } as const;
@@ -2961,6 +2967,12 @@ export class TableDO extends DurableObject<Env> {
             value: this.publicMetadata(table, creator),
           } as const;
         }),
+      async () => {
+        mutationAllowed =
+          "kind" in actor
+            ? await this.verifyActor(actor, "tables:write")
+            : await this.verifyBrowserSession(actor);
+      },
     );
     return this.accessQuarantined()
       ? { ok: false, code: "TEMPORARILY_UNAVAILABLE" }
@@ -2991,7 +3003,9 @@ export class TableDO extends DurableObject<Env> {
     ) {
       return { ok: false, code: "NOT_AUTHORIZED" };
     }
-    return this.issueInviteForGuest(actor.guestId, requestId);
+    return this.issueInviteForGuest(actor.guestId, requestId, () =>
+      this.verifyActor(actor, "tables:write"),
+    );
   }
 
   /** Browser invitation authority is checked again inside TableDO. */
@@ -3005,13 +3019,16 @@ export class TableDO extends DurableObject<Env> {
     ) {
       return { ok: false, code: "NOT_AUTHORIZED" };
     }
-    return this.issueInviteForGuest(credential.guestId, requestId);
+    return this.issueInviteForGuest(credential.guestId, requestId, () =>
+      this.verifyBrowserSession(credential),
+    );
   }
 
   /** Both browser and MCP invitations use the identical durable receipt. */
   private async issueInviteForGuest(
     guestId: string,
     requestId: string,
+    authorize: () => Promise<boolean>,
   ): Promise<InvitationResult> {
     const inviteId = crypto.randomUUID();
     const secret = randomBase64Url(32);
@@ -3041,6 +3058,7 @@ export class TableDO extends DurableObject<Env> {
       return { ok: false, code: "TEMPORARILY_UNAVAILABLE" };
     }
     const digest = await digestSessionSecret(secret);
+    if (!(await authorize())) return { ok: false, code: "NOT_AUTHORIZED" };
     const snapshot = this.ctx.storage.transactionSync(() => {
       const now = Date.now();
       const current = this.metadataRow();
@@ -3147,7 +3165,9 @@ export class TableDO extends DurableObject<Env> {
     if (!(await this.verifyActor(actor, "tables:write"))) {
       return { ok: false, code: "INVITATION_INVALID" };
     }
-    return this.redeemInviteForGuest(actor.guestId, encoded, requestId);
+    return this.redeemInviteForGuest(actor.guestId, encoded, requestId, () =>
+      this.verifyActor(actor, "tables:write"),
+    );
   }
 
   /** Browser admission uses only the independently validated guest session. */
@@ -3159,7 +3179,12 @@ export class TableDO extends DurableObject<Env> {
     if (!(await this.verifyBrowserSession(credential))) {
       return { ok: false, code: "INVITATION_INVALID" };
     }
-    return this.redeemInviteForGuest(credential.guestId, encoded, requestId);
+    return this.redeemInviteForGuest(
+      credential.guestId,
+      encoded,
+      requestId,
+      () => this.verifyBrowserSession(credential),
+    );
   }
 
   /**
@@ -3170,6 +3195,7 @@ export class TableDO extends DurableObject<Env> {
     guestId: string,
     encoded: string,
     requestId: string,
+    authorize: () => Promise<boolean>,
   ): Promise<TableResult<SafeTableMetadata>> {
     const parts = parseInvitation(encoded);
     if (
@@ -3180,6 +3206,7 @@ export class TableDO extends DurableObject<Env> {
       return { ok: false, code: "INVITATION_INVALID" };
     }
     const digest = await digestSessionSecret(parts.secret);
+    if (!(await authorize())) return { ok: false, code: "INVITATION_INVALID" };
     return this.ctx.storage.transactionSync(() => {
       const table = this.metadataRow();
       const now = Date.now();
@@ -3869,7 +3896,9 @@ export class TableDO extends DurableObject<Env> {
     if (!(await this.verifyActor(actor, "tables:write"))) {
       return { ok: false, code: "TABLE_NOT_FOUND" };
     }
-    return this.closeTableForGuest(actor.guestId, requestId);
+    return this.closeTableForGuest(actor.guestId, requestId, () =>
+      this.verifyActor(actor, "tables:write"),
+    );
   }
 
   /** Browser terminal actions use the real current guest session. */
@@ -3881,12 +3910,15 @@ export class TableDO extends DurableObject<Env> {
       return { ok: false, code: "INVALID_REQUEST" };
     if (!(await this.verifyBrowserSession(credential)))
       return { ok: false, code: "TABLE_NOT_FOUND" };
-    return this.closeTableForGuest(credential.guestId, requestId);
+    return this.closeTableForGuest(credential.guestId, requestId, () =>
+      this.verifyBrowserSession(credential),
+    );
   }
 
   private async closeTableForGuest(
     guestId: string,
     _requestId: string,
+    authorize: () => Promise<boolean>,
   ): Promise<
     TableResult<CloseTableReceipt> & { terminalHint?: LifecycleInvalidation }
   > {
@@ -3895,10 +3927,13 @@ export class TableDO extends DurableObject<Env> {
       return { ok: false, code: "TABLE_NOT_FOUND" };
     if (this.tableDeadline(existing) <= Date.now())
       return { ok: false, code: "TABLE_EXPIRED" };
+    let mutationAllowed = false;
     const committed = await this.deadlines.commitWithWakeup(
       existing.expires_at,
       () =>
         this.ctx.storage.transactionSync(() => {
+          if (!mutationAllowed)
+            return { ok: false, code: "TABLE_NOT_FOUND" } as const;
           const now = Date.now();
           const table = this.metadataRow();
           const member = this.memberFor(guestId);
@@ -3953,6 +3988,9 @@ export class TableDO extends DurableObject<Env> {
             terminalHint: { tableId: table.table_id, state: "closed" as const },
           } as const;
         }),
+      async () => {
+        mutationAllowed = await authorize();
+      },
     );
     return this.accessQuarantined()
       ? { ok: false, code: "TEMPORARILY_UNAVAILABLE" }
@@ -3976,10 +4014,13 @@ export class TableDO extends DurableObject<Env> {
       return { ok: false, code: "TABLE_NOT_FOUND" };
     if (this.tableDeadline(existing) <= Date.now())
       return { ok: false, code: "TABLE_EXPIRED" };
+    let mutationAllowed = false;
     const committed = await this.deadlines.commitWithWakeup(
       existing.expires_at + 24 * 60 * 60_000,
       () =>
         this.ctx.storage.transactionSync(() => {
+          if (!mutationAllowed)
+            return { ok: false, code: "TABLE_NOT_FOUND" } as const;
           const current = this.metadataRow();
           if (!current || !this.memberFor(actor.guestId)) {
             return { ok: false, code: "TABLE_NOT_FOUND" } as const;
@@ -3998,6 +4039,9 @@ export class TableDO extends DurableObject<Env> {
             },
           } as const;
         }),
+      async () => {
+        mutationAllowed = await this.verifyActor(actor, "tables:write");
+      },
     );
     return this.accessQuarantined()
       ? { ok: false, code: "TEMPORARILY_UNAVAILABLE" }
@@ -4068,6 +4112,7 @@ export class TableDO extends DurableObject<Env> {
   private async startDeletion(
     guestId: string,
     requestId: string,
+    authorize: () => Promise<boolean>,
   ): Promise<TableResult<DeletionReceipt>> {
     if (!validInvitationOperationId(requestId)) {
       return { ok: false, code: "INVALID_REQUEST" };
@@ -4089,60 +4134,72 @@ export class TableDO extends DurableObject<Env> {
       this.tableDeadline(current),
       Date.now() + DELETE_CONFIRMATION_MS,
     );
-    const committed = await this.deadlines.commitWithWakeup(due, () =>
-      this.ctx.storage.transactionSync(() => {
-        const table = this.metadataRow();
-        const now = Date.now();
-        if (!table || !this.memberFor(guestId)) {
-          return { ok: false, code: "TABLE_NOT_FOUND" } as const;
-        }
-        if (this.tableDeadline(table) <= now || table.state === "expired") {
-          return { ok: false, code: "TABLE_EXPIRED" } as const;
-        }
-        if (table.state === "deleted") {
-          return { ok: false, code: "TABLE_NOT_FOUND" } as const;
-        }
-        const existing = this.deleteConfirmation(guestId, requestId);
-        if (existing) {
-          if (existing.state === "denied")
-            return { ok: false, code: "CONFIRMATION_DENIED" } as const;
-          if (existing.state === "expired" || existing.expires_at <= now) {
-            return { ok: false, code: "CONFIRMATION_EXPIRED" } as const;
+    let mutationAllowed = false;
+    const committed = await this.deadlines.commitWithWakeup(
+      due,
+      () =>
+        this.ctx.storage.transactionSync(() => {
+          if (!mutationAllowed)
+            return { ok: false, code: "TABLE_NOT_FOUND" } as const;
+          const table = this.metadataRow();
+          const now = Date.now();
+          if (!table || !this.memberFor(guestId)) {
+            return { ok: false, code: "TABLE_NOT_FOUND" } as const;
           }
+          if (this.tableDeadline(table) <= now || table.state === "expired") {
+            return { ok: false, code: "TABLE_EXPIRED" } as const;
+          }
+          if (table.state === "deleted") {
+            return { ok: false, code: "TABLE_NOT_FOUND" } as const;
+          }
+          const existing = this.deleteConfirmation(guestId, requestId);
+          if (existing) {
+            if (existing.state === "denied")
+              return { ok: false, code: "CONFIRMATION_DENIED" } as const;
+            if (existing.state === "expired" || existing.expires_at <= now) {
+              return { ok: false, code: "CONFIRMATION_EXPIRED" } as const;
+            }
+            return {
+              ok: true,
+              value: {
+                confirmation_required: true as const,
+                confirmation_url: this.confirmationUrl(
+                  table.table_id,
+                  requestId,
+                ),
+                expires_at: new Date(existing.expires_at).toISOString(),
+              },
+            } as const;
+          }
+          if (
+            this.channel() &&
+            this.privateSql
+              .exec<{ n: number }>(
+                "SELECT COUNT(*) n FROM table_delete_confirmations WHERE guest_id=?",
+                guestId,
+              )
+              .one().n >= 64
+          )
+            return { ok: false, code: "LIMIT_REACHED" } as const;
+          const expiresAt = now + DELETE_CONFIRMATION_MS;
+          this.privateSql.exec(
+            "INSERT INTO table_delete_confirmations (guest_id, request_id, expires_at, state) VALUES (?, ?, ?, 'pending')",
+            guestId,
+            requestId,
+            expiresAt,
+          );
           return {
             ok: true,
             value: {
               confirmation_required: true as const,
               confirmation_url: this.confirmationUrl(table.table_id, requestId),
-              expires_at: new Date(existing.expires_at).toISOString(),
+              expires_at: new Date(expiresAt).toISOString(),
             },
           } as const;
-        }
-        if (
-          this.channel() &&
-          this.privateSql
-            .exec<{ n: number }>(
-              "SELECT COUNT(*) n FROM table_delete_confirmations",
-            )
-            .one().n >= 64
-        )
-          return { ok: false, code: "LIMIT_REACHED" } as const;
-        const expiresAt = now + DELETE_CONFIRMATION_MS;
-        this.privateSql.exec(
-          "INSERT INTO table_delete_confirmations (guest_id, request_id, expires_at, state) VALUES (?, ?, ?, 'pending')",
-          guestId,
-          requestId,
-          expiresAt,
-        );
-        return {
-          ok: true,
-          value: {
-            confirmation_required: true as const,
-            confirmation_url: this.confirmationUrl(table.table_id, requestId),
-            expires_at: new Date(expiresAt).toISOString(),
-          },
-        } as const;
-      }),
+        }),
+      async () => {
+        mutationAllowed = await authorize();
+      },
     );
     return this.accessQuarantined()
       ? { ok: false, code: "TEMPORARILY_UNAVAILABLE" }
@@ -4157,7 +4214,9 @@ export class TableDO extends DurableObject<Env> {
     if (!(await this.verifyActor(actor, "tables:delete"))) {
       return { ok: false, code: "TABLE_NOT_FOUND" };
     }
-    return this.startDeletion(actor.guestId, requestId);
+    return this.startDeletion(actor.guestId, requestId, () =>
+      this.verifyActor(actor, "tables:delete"),
+    );
   }
 
   /** Browser-initiated deletion must use the same pending/approval ledger. */
@@ -4168,7 +4227,9 @@ export class TableDO extends DurableObject<Env> {
     if (!(await this.verifyBrowserSession(credential))) {
       return { ok: false, code: "NOT_AUTHORIZED" };
     }
-    return this.startDeletion(credential.guestId, requestId);
+    return this.startDeletion(credential.guestId, requestId, () =>
+      this.verifyBrowserSession(credential),
+    );
   }
 
   /** Read-only preview: URL possession conveys no deletion authority. */
@@ -4255,10 +4316,13 @@ export class TableDO extends DurableObject<Env> {
         this.deletionCommitBarrierReleaseForTest?.();
       }
     }
+    let mutationAllowed = false;
     const committed = await this.deadlines.commitWithWakeup(
       previous.expires_at + 24 * 60 * 60_000,
       () =>
         this.ctx.storage.transactionSync(() => {
+          if (!mutationAllowed)
+            return { ok: false, code: "NOT_AUTHORIZED" } as const;
           const table = this.metadataRow();
           const now = Date.now();
           if (!table) {
@@ -4306,6 +4370,9 @@ export class TableDO extends DurableObject<Env> {
           );
           return { ok: true, value: { state: "deleted" as const } } as const;
         }),
+      async () => {
+        mutationAllowed = await this.verifyBrowserSession(credential);
+      },
     );
     return this.accessQuarantined()
       ? { ok: false, code: "TEMPORARILY_UNAVAILABLE" }
