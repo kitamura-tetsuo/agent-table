@@ -290,7 +290,7 @@ tee /secure/operator/operations.json <<'EOF'
     "backup": {"status": "operator-verified", "reviewedAt": "<actual-UTC-ISO-timestamp>", "policy": "<actual-observed-recovery-window-and-limits>", "source": "https://<actual-policy-source>"},
     "logs": {"status": "operator-verified", "reviewedAt": "<actual-UTC-ISO-timestamp>", "policy": "<actual-access-and-retention-policy>", "source": "https://<actual-policy-source>"}
   },
-  "schema": {"testedVersion": 12, "nonDestructiveRollback": true, "rollbackRunbook": "https://github.com/kitamura-tetsuo/agent-table/blob/<exact-40-character-main-sha>/docs/operations.md"},
+  "schema": {"testedVersion": 15, "nonDestructiveRollback": true, "rollbackRunbook": "https://github.com/kitamura-tetsuo/agent-table/blob/<exact-40-character-main-sha>/docs/operations.md"},
   "restore": {"type": "no-restore", "independentlyReviewed": true},
   "cost": {"usageObserved": true, "measurementSource": "https://<actual-cloudflare-metric-receipt>", "currentPricingSource": "https://developers.cloudflare.com/workers/platform/pricing/"}
 }
@@ -301,7 +301,7 @@ The JSON `reviewedAt` fields must be at most 24 hours old. Approval metadata
 does **not** independently prove backup configuration, actual cost, restore
 reconciliation or successful rollback. Do not claim `operator-verified` or
 `usageObserved:true` before you have reviewed those facts. The current
-schema version is `12`; update its explicit acceptance check when schema
+schema version is `15`; update its explicit acceptance check when schema
 changes, never silently reuse an old rollback proof.
 
 Do an offline preflight first, then commit those **private JSON bytes only to
@@ -414,6 +414,33 @@ action; it is not permission to delete or reset private namespaces.
   **never automatically redeploy, clear quarantine, delete namespaces or
   silently declare intake stopped**. Follow a verified pause receipt with
   real HTTPS health, admission-denial and existing-guest lifecycle tests.
+- **Bounded pre-launch relay trial stop:** a separately approved stop may keep
+  the same schema-compatible build, private profile, finite policy, relay config
+  and signing identity while setting all five switches above to false. This
+  stops new guest/table admission as well as notifications. It need not restore
+  the old production build, change to manual, delete old content or reset storage.
+  Verify this exact paused configuration with the full-pause readback path;
+  retained config/key presence is not removal or uninstallation. The active and
+  stop config hashes differ and each needs its applicable exact protected
+  authorization. A notification-only stop preserving intake cannot receive the
+  full-pause receipt.
+  This procedure does not waive `testedVersion`/`nonDestructiveRollback` or prove
+  them true: the operator must review applicable actual test/operational evidence
+  and the exact-build runbook before making that declaration. Fixture inputs or
+  an intention not to preserve pre-launch content are not successful rollback
+  evidence. Keep local/CI and hosted observations distinct.
+  Hold the relay's private foreground controller until pause/drain/stop, and
+  enforce the separately verified environment-side deadline from setup start.
+  Missing stop output, forced kill or unknown finish is not success/no-send.
+  Preserve original event/request/digest/attempt receipts and read back uncertain
+  operations before retry. Current authority and original retry budgets still
+  apply; a permitted next ordinal is not a same-ID replacement.
+  Verify the production-bound host subscription's stop control before enabling
+  it. Apply only the approved synthetic session/table terminal action under the
+  current lifecycle contract, and stop its monitoring; already started host
+  work is not recalled. If provider APIs are unavailable, separately prove local
+  process cessation and leave Worker pause/remote cleanup pending until exact
+  target readback. Timer exit or policy expiry does not prove those changes.
 - **Security incident, unknown backup history or stale authority:** first
   stop external intake/delivery, then install a separately approved
   `RESTORE_QUARANTINE=true` candidate using the offline
@@ -426,7 +453,7 @@ action; it is not permission to delete or reset private namespaces.
   before an exact, independently approved clearance decision.
 - **Compatible Worker rollback:** identify the prior actually deployed
   version ID and current schema version. Verify the old version understands
-  all persisted schema versions (currently `12`), secret formats, and
+  all persisted schema versions (currently `15`), secret formats, and
   migration history before an independently reviewed Wrangler rollback.
   Roll back Worker *code*, **not** KV/DO namespace ownership or historical
   private SQL. The app must refuse unsupported newer-schema constructors;

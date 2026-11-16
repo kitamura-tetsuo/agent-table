@@ -16,7 +16,7 @@ current release decisions use the [reviewed runbook](release-runbook.md).
 
 The committed `wrangler.jsonc` binds `TABLES` to `TableDO` and `GUESTS` to `GuestDO`, using the SQLite backend selected by Cloudflare class migration `v1`. It sets the local `PUBLIC_ORIGIN` and disables guest admission, MCP subscriptions, and OpenAI Events by default. `/` is a minimal HTML status page, `/health` is a JSON health check, and `/mcp` is a modern-only MCP handler with authenticated table tools. Live inbox resource subscriptions are advertised only with the explicit flag and current OAuth grant. Internal Durable Object methods are not public HTTP routes.
 
-The application schema has a separate per-object `__agent_table_schema` version row, initialized by the classes using a local SQLite transaction. `schema/001_initial.ts` is version 1; current numbered migrations extend through `schema/012_recovery_generation.ts`. Object eviction preserves the schema version; a newer unsupported version aborts reconstruction instead of resetting storage.
+The application schema has a separate per-object `__agent_table_schema` version row, initialized by the classes using a local SQLite transaction. `schema/001_initial.ts` is version 1; current numbered migrations extend through `schema/015_conversation_sessions.ts` (application schema 15). Object eviction preserves the schema version; a newer unsupported version aborts reconstruction instead of resetting storage.
 
 Exact direct dependency pins (also recorded in `package-lock.json`):
 
@@ -178,9 +178,12 @@ records the [protected staging deployment](https://github.com/kitamura-tetsuo/ag
 [same-config provider rollback rehearsal](https://github.com/kitamura-tetsuo/agent-table/issues/50#issuecomment-6815095095),
 [text-binding mismatch and repaired pause](https://github.com/kitamura-tetsuo/agent-table/issues/50#issuecomment-6818264043),
 and [synthetic browser Close/Delete acceptance](https://github.com/kitamura-tetsuo/agent-table/issues/50#issuecomment-6820766589).
-For any rollback or emergency pause, run the read-only
-`scripts/release-pause-readback.mjs` verifier before claiming service settings
-and active-version text bindings agree. The
+For a full intake/notification pause (all five switches false), run the
+read-only `scripts/release-pause-readback.mjs` verifier with the independently
+observed active version. It requires both provider surfaces to match the exact
+reviewed configuration. It cannot attest a notification-only stop while either
+new-admission switch remains true; use the existing exact configuration/provider
+checks for that operation and do not label it a verified full pause. The
 [production release receipt](https://github.com/kitamura-tetsuo/agent-table/issues/50#issuecomment-6825493911)
 records the successful exact-build publication and provider readback. The owner
 accepted the disclosed
