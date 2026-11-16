@@ -98,7 +98,10 @@ import {
   privatePilotRecipientAllowed,
   privatePilotRecipientMatches,
 } from "../shared/private-pilot";
-import { productionRelayReadiness } from "../shared/production-relay-events";
+import {
+  productionRelayProfileSelected,
+  productionRelayReadiness,
+} from "../shared/production-relay-events";
 import { digestSessionSecret, randomBase64Url } from "../shared/random";
 import {
   initializeRecoveryFence,
@@ -1372,7 +1375,7 @@ export class TableDO extends DurableObject<Env> {
             nextFence,
             deadline,
           );
-          if (this.env.RELEASE_PROFILE === "production-relay-events")
+          if (productionRelayProfileSelected(this.env))
             this.privateSql.exec(
               "UPDATE table_event_candidates SET verification_mode='relay' WHERE candidate_id=?",
               candidateId,
@@ -1668,7 +1671,7 @@ export class TableDO extends DurableObject<Env> {
           if (
             (relayProof ||
               pending.verification_mode === "relay" ||
-              this.env.RELEASE_PROFILE === "production-relay-events") &&
+              productionRelayProfileSelected(this.env)) &&
             (!relayProof ||
               relayProof.state !== "verified" ||
               relayProof.membership_id !== currentMember.membership_id ||
@@ -3443,7 +3446,7 @@ export class TableDO extends DurableObject<Env> {
       : committed.value;
   }
 
-  /** Public readiness and the protected staging-only trial remain distinct. */
+  /** Public readiness and the protected bounded private trial remain distinct. */
   private outboxDispatchEnabled(): boolean {
     if (this.accessQuarantined()) return false;
     if (this.env.RELEASE_PROFILE === PRIVATE_PILOT_PROFILE) {
@@ -3476,7 +3479,7 @@ export class TableDO extends DurableObject<Env> {
         ok: false,
         reason: "connection-boundary-unverified",
       });
-    if (this.env.RELEASE_PROFILE === "production-relay-events")
+    if (productionRelayProfileSelected(this.env))
       return Promise.resolve({
         ok: false,
         reason: "connection-boundary-unverified",

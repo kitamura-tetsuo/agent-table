@@ -96,3 +96,67 @@ describe("production relay candidate cannot bypass activation prerequisites", ()
     expect(isRestoreQuarantined(paused)).toBe(true);
   });
 });
+
+it("production private scope never becomes global readiness and rejects mismatched targets/key", async () => {
+  const { privateRelayBindings } = await import(
+    "../helpers/production-relay-fixture"
+  );
+  const { privatePilotDiscoveryAllowed } = await import(
+    "../../src/shared/private-pilot"
+  );
+  const actor = {
+    guestId: "11111111-1111-4111-8111-111111111111",
+    connectionId: "22222222-2222-4222-8222-222222222222",
+  };
+  const table = "33333333-3333-4333-8333-333333333333";
+  const value = privateRelayBindings({ ...actor, tableIds: [table] });
+  expect(productionRelayConfiguration(value)).not.toBeNull();
+  expect(productionRelayReadiness(value)).toMatchObject({
+    enabled: false,
+    configured: true,
+  });
+  expect(isRestoreQuarantined(value)).toBe(false);
+  expect(privatePilotDiscoveryAllowed(value, actor, table)).toBe(true);
+  expect(
+    privatePilotDiscoveryAllowed(
+      value,
+      { ...actor, connectionId: crypto.randomUUID() },
+      table,
+    ),
+  ).toBe(false);
+  expect(privatePilotDiscoveryAllowed(value, actor, crypto.randomUUID())).toBe(
+    false,
+  );
+  expect(
+    isRestoreQuarantined({
+      ...value,
+      EVENTS_RELAY_SIGNING_KEY_PKCS8: "invalid",
+    }),
+  ).toBe(true);
+  const unavailable = eventDiagnosticContext(
+    { ...value, EVENTS_RELAY_SIGNING_KEY_PKCS8: "invalid" },
+    actor,
+    table,
+  );
+  expect(unavailable.policyActive).toBe(false);
+  expect(unavailable.recipientMatched).toBe(false);
+  expect(unavailable.tableAllowed).toBe(false);
+  expect(
+    productionRelayConfiguration({ ...value, ENABLE_OPENAI_EVENTS: "true" }),
+  ).toBeNull();
+  const malformedGlobal = {
+    ...value,
+    ENABLE_MCP_SUBSCRIPTIONS: "true",
+    ENABLE_OPENAI_EVENTS: "true",
+  };
+  expect(productionRelayReadiness(malformedGlobal).enabled).toBe(false);
+  expect(isRestoreQuarantined(malformedGlobal)).toBe(true);
+  expect(
+    productionRelayConfiguration({
+      ...value,
+      EVENTS_REVIEWED_CALLBACK_TARGETS: JSON.stringify([
+        { origin: "https://other.example.org", pathPrefix: "/" },
+      ]),
+    }),
+  ).toBeNull();
+});

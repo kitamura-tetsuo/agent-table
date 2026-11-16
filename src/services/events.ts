@@ -21,6 +21,7 @@ import {
   privatePilotConfiguration,
   privatePilotRecipientMatches,
 } from "../shared/private-pilot";
+import { productionRelayProfileSelected } from "../shared/production-relay-events";
 
 export type EventServiceFailure =
   | "invalid"
@@ -75,7 +76,7 @@ export async function subscribeEvent(
 > {
   relay ??= selectProductionRelayAdapters(env)?.verification ?? null;
   // An unavailable production relay is not permission to fall back to native fetch.
-  if (env.RELEASE_PROFILE === "production-relay-events" && !relay)
+  if (productionRelayProfileSelected(env) && !relay)
     return { ok: false, reason: "unavailable" };
   const inspected = inspectEventSubscriptionParams(input, "subscribe");
   if (!inspected.ok) {

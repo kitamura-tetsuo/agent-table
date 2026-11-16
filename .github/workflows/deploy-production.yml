@@ -11,6 +11,7 @@ on:
         options:
           - manual
           - production-relay-events
+          - private-pilot-a-only
       expected_sha:
         description: Exact reviewed main commit SHA (40 lowercase hex digits)
         required: true

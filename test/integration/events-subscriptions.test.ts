@@ -4207,3 +4207,510 @@ it.skipIf(typeof __OPERATOR_BRIDGE__ === "undefined" || !__OPERATOR_BRIDGE__)(
     }
   },
 );
+
+// Actual OAuth/MCP/TableDO producer with a controlled signed-relay receiver.
+// This is a local scope oracle, not public-host or Cloudflare acceptance.
+async function scopedSignedRelayScenario(seedExisting = false) {
+  const a = await newPrincipal(undefined, "192.0.2.61"),
+    b = await newPrincipal(undefined, "192.0.2.62"),
+    c = await newPrincipal(undefined, "192.0.2.63");
+  const second = await grantFor(
+    a.guestId,
+    a.guest,
+    a.cookie,
+    "tables:read events:subscribe",
+    "192.0.2.64",
+  );
+  const setupA = await clientFor(a.token),
+    setupB = await clientFor(b.token),
+    setupC = await clientFor(c.token);
+  const tables = [await createTable(setupA), await createTable(setupA)];
+  for (let i = 0; i < tables.length; i++) {
+    const id = tables[i],
+      client = i === 0 ? setupB : setupC;
+    const invite = toolOutput(
+      await setupA.callTool({
+        name: "create_invite",
+        arguments: { table_id: id, request_id: crypto.randomUUID() },
+      }),
+    );
+    expect(
+      (
+        await client.callTool({
+          name: "join_table",
+          arguments: {
+            invitation: invite.invitation,
+            request_id: crypto.randomUUID(),
+          },
+        })
+      ).isError,
+    ).not.toBe(true);
+  }
+  await setupA.close();
+  await setupB.close();
+  await setupC.close();
+  const full: Env = {
+    ...env,
+    ...relayBindings(),
+    EVENTS_RELAY_SIGNING_KEY_PKCS8: syntheticRelayKey,
+  };
+  const t = Date.now();
+  const policy = {
+    schemaVersion: 1,
+    mode: "a-only",
+    buildSha: full.RELEASE_BUILD_SHA,
+    approvedAt: new Date(t - 2000).toISOString(),
+    notBefore: new Date(t - 1000).toISOString(),
+    expiresAt: new Date(t + 3600000).toISOString(),
+    approvalRef: "synthetic-signed-relay-review",
+    recipientGuestId: a.guestId,
+    recipientConnectionId: a.connectionId,
+    tableIds: [tables[0]],
+    callbackTargets: JSON.parse(REVIEWED),
+  };
+  const overlay: Env = {
+    ...full,
+    RELEASE_PROFILE: "private-pilot-a-only",
+    ENABLE_MCP_SUBSCRIPTIONS: "false",
+    ENABLE_OPENAI_EVENTS: "false",
+    PRIVATE_PILOT_POLICY: JSON.stringify(policy),
+  };
+  let challengeMode: "verified" | "unknown" | "failed" | "pending" = "verified";
+  const calls: Array<{
+    kind: string;
+    requestId: string;
+    destination?: string;
+    eventId?: string;
+  }> = [];
+  const pub = await crypto.subtle.importKey(
+    "spki",
+    Uint8Array.from(
+      Buffer.from(
+        "302a300506032b6570032100d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+        "hex",
+      ),
+    ),
+    { name: "Ed25519" },
+    false,
+    ["verify"],
+  );
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+    const target = new URL(String(url));
+    expect(target.origin).toBe("https://relay.example.org");
+    const raw = new Uint8Array(init?.body as ArrayBuffer),
+      envelope = JSON.parse(new TextDecoder().decode(raw));
+    const headers = new Headers(init?.headers);
+    expect(headers.get("x-agent-table-caller")).toBe("synthetic_caller_123");
+    const prefix = new TextEncoder().encode(
+      `POST\n${target.pathname}\nsynthetic_caller_123\n`,
+    );
+    const signed = new Uint8Array(prefix.length + raw.length);
+    signed.set(prefix);
+    signed.set(raw, prefix.length);
+    expect(
+      await crypto.subtle.verify(
+        "Ed25519",
+        pub,
+        Uint8Array.from(
+          atob(headers.get("x-agent-table-signature") ?? ""),
+          (x) => x.charCodeAt(0),
+        ),
+        signed,
+      ),
+    ).toBe(true);
+    calls.push({
+      kind: envelope.kind ?? "status",
+      requestId: envelope.requestId,
+      destination: envelope.destination,
+      eventId: envelope.headers?.["webhook-id"],
+    });
+    expect(envelope.audience).toBe("production:agent-table");
+    if (target.pathname.endsWith("/status"))
+      return Response.json({ state: "unknown" });
+    const body = new TextDecoder().decode(
+      Uint8Array.from(atob(envelope.payload), (x) => x.charCodeAt(0)),
+    );
+    new Webhook(SECRET).verify(body, envelope.headers);
+    if (
+      envelope.kind === "challenge" &&
+      ["unknown", "pending"].includes(challengeMode)
+    )
+      return Response.json({ state: challengeMode });
+    return Response.json({
+      state: "completed",
+      outcome:
+        envelope.kind === "challenge"
+          ? { kind: "challenge", verification: challengeMode }
+          : { kind: "http", status: 204, retryAfterState: "absent" },
+    });
+  });
+  const configure = async (value: Env = overlay) => {
+    for (const id of tables) {
+      const stub = env.TABLES.get(env.TABLES.idFromName(id));
+      await evictDurableObject(stub);
+      await runInDurableObject(stub, (instance) => {
+        (instance as unknown as { env: Env }).env = value;
+      });
+    }
+  };
+  if (seedExisting) {
+    await configure(full);
+    const oldB = await clientFor(b.token, full),
+      oldA = await clientFor(a.token, full);
+    try {
+      await callEvent(
+        oldB,
+        "events/subscribe",
+        subscriptionParams(tables[0], OTHER_CALLBACK),
+      );
+      await callEvent(oldA, "events/subscribe", subscriptionParams(tables[1]));
+    } finally {
+      await oldB.close();
+      await oldA.close();
+    }
+  }
+  await configure();
+  const ac = await clientFor(a.token, overlay),
+    bc = await clientFor(b.token, overlay),
+    cc = await clientFor(c.token, overlay),
+    dc = await clientFor(second.token, overlay);
+  const post = async (tableId: string) => {
+    const client = tableId === tables[0] ? bc : cc;
+    const result = await client.callTool({
+      name: "post_message",
+      arguments: {
+        table_id: tableId,
+        body: "SYNTHETIC SCOPED RELAY",
+        request_id: crypto.randomUUID(),
+      },
+    });
+    expect(result.isError, JSON.stringify(result.content)).not.toBe(true);
+    return toolOutput(result);
+  };
+  const rows = async (id = tables[0]) =>
+    runInDurableObject(
+      env.TABLES.get(env.TABLES.idFromName(id)),
+      (_instance, state) =>
+        state.storage.sql
+          .exec<{
+            event_id: string;
+            message_seq: number;
+            guest_id: string;
+            connection_id: string;
+            status: string;
+            attempt_count: number;
+          }>(
+            "SELECT o.event_id,o.message_seq,s.guest_id,s.connection_id,o.status,o.attempt_count FROM table_event_outbox o JOIN table_event_subscriptions s ON s.membership_id=o.recipient_membership_id ORDER BY o.message_seq,o.event_id",
+          )
+          .toArray(),
+    );
+  const alarm = async (id = tables[0]) => {
+    await configure();
+    const stub = env.TABLES.get(env.TABLES.idFromName(id));
+    await runInDurableObject(stub, async (instance, state) => {
+      state.storage.sql.exec(
+        "UPDATE table_event_outbox SET next_attempt_at=? WHERE status='pending'",
+        Date.now() - 1,
+      );
+      await instance.alarm();
+    });
+  };
+  return {
+    a,
+    b,
+    c,
+    second,
+    tables,
+    overlay,
+    policy,
+    calls,
+    ac,
+    bc,
+    cc,
+    dc,
+    post,
+    rows,
+    alarm,
+    configure,
+    setMode(value: typeof challengeMode) {
+      challengeMode = value;
+    },
+    async close() {
+      await Promise.all([ac.close(), bc.close(), cc.close(), dc.close()]);
+    },
+  };
+}
+
+describe("bounded production private signed relay", () => {
+  it("real authorized participants/old subscriptions outside recipient, connection and table scope never dispatch; seq cap and expiry survive reconstruction", async () => {
+    const f = await scopedSignedRelayScenario(true);
+    let clockNow = Date.now();
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => clockNow);
+    try {
+      expect(f.overlay.ENABLE_MCP_SUBSCRIPTIONS).toBe("false");
+      expect(f.overlay.ENABLE_OPENAI_EVENTS).toBe("false");
+      const discover = async (token: string) => {
+        const response = await dispatch(
+          new Request(RESOURCE, {
+            method: "POST",
+            headers: {
+              Host: new URL(RESOURCE).host,
+              Authorization: `Bearer ${token}`,
+              "Content-Type": "application/json",
+              Accept: "application/json, text/event-stream",
+              "MCP-Protocol-Version": "2026-07-28",
+              "Mcp-Method": "server/discover",
+            },
+            body: JSON.stringify({
+              jsonrpc: "2.0",
+              id: 1,
+              method: "server/discover",
+              params: {
+                _meta: {
+                  "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                  "io.modelcontextprotocol/clientCapabilities": {},
+                },
+              },
+            }),
+          }),
+          f.overlay,
+        );
+        expect(response.status).toBe(200);
+        const body = (await response.json()) as {
+          result?: { capabilities?: Record<string, unknown> };
+          error?: unknown;
+        };
+        expect(body.error).toBeUndefined();
+        expect(body.result?.capabilities).toBeDefined();
+        return body;
+      };
+      expect((await discover(f.a.token)).result?.capabilities?.events).toEqual(
+        {},
+      );
+      for (const participant of [f.b, f.c, f.second])
+        expect(
+          (await discover(participant.token)).result?.capabilities?.events,
+        ).toBeUndefined();
+      const before = f.calls.length;
+      for (const client of [f.bc, f.cc, f.dc])
+        await expect(
+          callEvent(
+            client,
+            "events/subscribe",
+            subscriptionParams(f.tables[0]),
+          ),
+        ).rejects.toThrow();
+      await expect(
+        callEvent(f.ac, "events/subscribe", subscriptionParams(f.tables[1])),
+      ).rejects.toThrow();
+      await expect(
+        callEvent(
+          f.ac,
+          "events/subscribe",
+          subscriptionParams(
+            f.tables[0],
+            "https://outside.example.org/callback",
+          ),
+        ),
+      ).rejects.toThrow();
+      expect(f.calls).toHaveLength(before);
+      await callEvent(
+        f.ac,
+        "events/subscribe",
+        subscriptionParams(f.tables[0]),
+      );
+      expect(f.calls.slice(before).map((x) => x.kind)).toEqual(["challenge"]);
+      expect((await f.post(f.tables[0])).seq).toBe(1);
+      // An ordinary authorized non-selected recipient already has a real
+      // subscription. A's self-post queues its event without notifying A.
+      const selfPost = await f.ac.callTool({
+        name: "post_message",
+        arguments: {
+          table_id: f.tables[0],
+          body: "SYNTHETIC SELF POST",
+          request_id: crypto.randomUUID(),
+        },
+      });
+      expect(selfPost.isError).not.toBe(true);
+      expect(toolOutput(selfPost).seq).toBe(2);
+      await f.post(f.tables[1]);
+      await f.alarm();
+      await f.alarm(f.tables[1]);
+      const sent = f.calls.filter((x) => x.kind === "message");
+      expect(sent).toHaveLength(1);
+      expect(sent[0].destination).toBe(CALLBACK);
+      const rows = await f.rows();
+      expect(rows.find((x) => x.guest_id === f.a.guestId)).toMatchObject({
+        status: "accepted",
+        attempt_count: 1,
+      });
+      expect(rows.find((x) => x.guest_id === f.b.guestId)).toMatchObject({
+        status: "cancelled",
+        attempt_count: 0,
+      });
+      expect(
+        (await f.rows(f.tables[1])).every((x) => x.attempt_count === 0),
+      ).toBe(true);
+      const status = toolOutput(
+        await f.ac.callTool({
+          name: "get_table",
+          arguments: { table_id: f.tables[0] },
+        }),
+      );
+      expect(status.notifications).toMatchObject({
+        available: true,
+        reason: "private_pilot_only",
+      });
+      // Advance the clock between real posts rather than disabling admission.
+      clockNow += 61000;
+      expect((await f.post(f.tables[0])).seq).toBe(3);
+      const pendingExpiry = (await f.rows()).find(
+        (x) => x.guest_id === f.a.guestId && x.message_seq === 3,
+      );
+      expect(pendingExpiry).toMatchObject({
+        status: "pending",
+        attempt_count: 0,
+      });
+      const beforeExpiry = f.calls.length;
+      f.overlay.PRIVATE_PILOT_POLICY = JSON.stringify({
+        ...f.policy,
+        expiresAt: new Date(clockNow - 1).toISOString(),
+      });
+      await f.alarm();
+      await expect(
+        callEvent(f.ac, "events/subscribe", subscriptionParams(f.tables[0])),
+      ).rejects.toThrow();
+      expect(f.calls).toHaveLength(beforeExpiry);
+      expect(
+        (await f.rows()).find((x) => x.event_id === pendingExpiry?.event_id),
+      ).toMatchObject({ status: "pending", attempt_count: 0 });
+      f.overlay.PRIVATE_PILOT_POLICY = JSON.stringify(f.policy);
+      await f.alarm();
+      expect(
+        (await f.rows()).find((x) => x.event_id === pendingExpiry?.event_id),
+      ).toMatchObject({ status: "accepted", attempt_count: 1 });
+      clockNow += 61000;
+      expect((await f.post(f.tables[0])).seq).toBe(4);
+      const pendingPause = (await f.rows()).find(
+        (x) => x.guest_id === f.a.guestId && x.message_seq === 4,
+      );
+      const beforePause = f.calls.length;
+      f.overlay.ALLOW_OUTBOUND_NOTIFICATIONS = "false";
+      await f.alarm();
+      expect(f.calls).toHaveLength(beforePause);
+      expect(
+        (await f.rows()).find((x) => x.event_id === pendingPause?.event_id),
+      ).toMatchObject({ status: "pending", attempt_count: 0 });
+      f.overlay.ALLOW_OUTBOUND_NOTIFICATIONS = "true";
+      await f.alarm();
+      expect(
+        (await f.rows()).find((x) => x.event_id === pendingPause?.event_id),
+      ).toMatchObject({ status: "accepted", attempt_count: 1 });
+      for (let seq = 5; seq <= 13; seq++) {
+        clockNow += 61000;
+        expect((await f.post(f.tables[0])).seq).toBe(seq);
+        await f.alarm();
+      }
+      expect(f.calls.filter((x) => x.kind === "message")).toHaveLength(11);
+      const finalRows = await f.rows();
+      expect(
+        finalRows
+          .filter((x) => x.message_seq > 12)
+          .every((x) => x.attempt_count === 0 && x.status !== "accepted"),
+      ).toBe(true);
+      expect(
+        finalRows
+          .filter((x) => x.guest_id === f.b.guestId)
+          .every((x) => x.attempt_count === 0),
+      ).toBe(true);
+      const accepted = finalRows
+        .filter((x) => x.guest_id === f.a.guestId && x.status === "accepted")
+        .map((x) => x.event_id);
+      expect(new Set(accepted).size).toBe(11);
+      const count = f.calls.length;
+      f.overlay.PRIVATE_PILOT_POLICY = JSON.stringify({
+        ...f.policy,
+        expiresAt: new Date(Date.now() - 1).toISOString(),
+      });
+      await f.configure();
+      await f.alarm();
+      await expect(
+        callEvent(f.ac, "events/subscribe", subscriptionParams(f.tables[0])),
+      ).rejects.toThrow();
+      expect(f.calls).toHaveLength(count);
+      expect(
+        (await f.rows())
+          .filter((x) => accepted.includes(x.event_id))
+          .map((x) => x.event_id)
+          .sort(),
+      ).toEqual(accepted.sort());
+      // A changed key is not permission to use native fetch, including retained work.
+      f.overlay.PRIVATE_PILOT_POLICY = JSON.stringify(f.policy);
+      const originalRelay = f.overlay.EVENTS_RELAY_CONFIGURATION;
+      f.overlay.EVENTS_RELAY_CONFIGURATION = JSON.stringify({
+        ...JSON.parse(originalRelay ?? "{}"),
+        signingPublicKeySha256: "f".repeat(64),
+      });
+      await f.configure();
+      await f.alarm();
+      await expect(
+        callEvent(f.ac, "events/subscribe", subscriptionParams(f.tables[0])),
+      ).rejects.toThrow();
+      expect(f.calls).toHaveLength(count);
+      f.overlay.EVENTS_RELAY_CONFIGURATION = originalRelay;
+      f.overlay.EVENTS_RELAY_SIGNING_KEY_PKCS8 = "mismatched";
+      await f.configure();
+      await f.alarm();
+      await expect(
+        callEvent(f.ac, "events/subscribe", subscriptionParams(f.tables[0])),
+      ).rejects.toThrow();
+      expect(f.calls).toHaveLength(count);
+    } finally {
+      await f.close();
+      clock.mockRestore();
+    }
+  });
+  it.each(["unknown", "failed", "pending"] as const)(
+    "%s challenge cannot activate; original unknown request is read without replacement",
+    async (mode) => {
+      const f = await scopedSignedRelayScenario();
+      try {
+        f.setMode(mode);
+        await expect(
+          callEvent(f.ac, "events/subscribe", subscriptionParams(f.tables[0])),
+        ).rejects.toThrow();
+        const proof = await runInDurableObject(
+          env.TABLES.get(env.TABLES.idFromName(f.tables[0])),
+          (_instance, state) => ({
+            active: state.storage.sql
+              .exec<{ n: number }>(
+                "SELECT COUNT(*) n FROM table_event_subscriptions WHERE status='active'",
+              )
+              .one().n,
+            records: state.storage.sql
+              .exec<{ request_id: string; state: string }>(
+                "SELECT request_id,state FROM table_event_relay_verifications",
+              )
+              .toArray(),
+          }),
+        );
+        expect(proof.active).toBe(0);
+        expect(f.calls.filter((x) => x.kind === "challenge")).toHaveLength(1);
+        const original = f.calls.find((x) => x.kind === "challenge")?.requestId;
+        for (const read of f.calls.filter((x) => x.kind === "status"))
+          expect(read.requestId).toBe(original);
+        if (mode !== "failed")
+          expect(proof.records).toContainEqual({
+            request_id: original,
+            state: "unknown",
+          });
+        await f.post(f.tables[0]);
+        await f.alarm();
+        expect(f.calls.filter((x) => x.kind === "message")).toHaveLength(0);
+        expect(await f.rows()).toHaveLength(0);
+      } finally {
+        await f.close();
+      }
+    },
+  );
+});

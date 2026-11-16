@@ -21,6 +21,11 @@ import {
   verifyDeployedConfiguration,
 } from "./release-provider.mjs";
 
+import {
+  isPendingProductionRelayAcceptance,
+  pendingProductionRelayAcceptance,
+} from "./release-relay-decision.mjs";
+
 function requirePost(value, code) {
   if (!value) throw new ProviderVerificationError(code);
 }
@@ -69,10 +74,15 @@ export async function verifyPublishedRelease({
       testNativeEventsAllowed(config.vars),
     "post-deploy-profile-unverified",
   );
-  if (profile === PRODUCTION_RELAY_EVENTS_PROFILE) {
+  if (
+    profile === PRODUCTION_RELAY_EVENTS_PROFILE ||
+    (profile === PRIVATE_PILOT_PROFILE &&
+      config.vars.RELEASE_ENVIRONMENT === "production")
+  ) {
     const relay = productionRelayConfiguration(config.vars);
     requirePost(
       relay &&
+        isPendingProductionRelayAcceptance(approval.productionAcceptance) &&
         approval.productionRelay?.reviewAuthority ===
           "operator-reviewed-under-protected-environment" &&
         approval.productionRelay.machineVerifiedTransportEvidence === false &&
@@ -176,6 +186,15 @@ export async function verifyPublishedRelease({
   );
   return {
     verified: true,
+    ...(profile === PRODUCTION_RELAY_EVENTS_PROFILE ||
+    (profile === PRIVATE_PILOT_PROFILE &&
+      config.vars.RELEASE_ENVIRONMENT === "production")
+      ? {
+          verificationScope: "serving-configuration",
+          configSha256: approval.configSha256,
+          productionAcceptance: pendingProductionRelayAcceptance(),
+        }
+      : {}),
     environment: config.vars.RELEASE_ENVIRONMENT,
     buildSha: config.vars.RELEASE_BUILD_SHA,
     profile: config.vars.RELEASE_PROFILE,

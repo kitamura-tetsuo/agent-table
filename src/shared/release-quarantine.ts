@@ -44,7 +44,7 @@ export function isRestoreQuarantined(
   if (!knownEnvironment || env.RESTORE_QUARANTINE !== "false") return true;
   if (env.RELEASE_ENVIRONMENT === "local") return false;
   if (
-    privatePilotConfiguration(env) ||
+    (env.RELEASE_ENVIRONMENT === "staging" && privatePilotConfiguration(env)) ||
     testNativeEventsAllowed(env) ||
     productionRelayAccessAllowed(env)
   )

@@ -34,7 +34,10 @@ import {
   PRIVATE_PILOT_PROFILE,
   privatePilotDiscoveryAllowed,
 } from "../shared/private-pilot";
-import { productionRelayReadiness } from "../shared/production-relay-events";
+import {
+  productionRelayAccessAllowed,
+  productionRelayReadiness,
+} from "../shared/production-relay-events";
 import { testNativeEventsAllowed } from "../shared/test-native-events";
 import { getOwnConnectionIdentity } from "./connection-identity";
 import type { EventDiagnosticTrace } from "./event-diagnostic-trace";
@@ -173,7 +176,9 @@ function newServer(
 ) {
   const advertiseEvents =
     privateEvents &&
-    (privatePilotDiscoveryAllowed(env, identity) ||
+    ((privatePilotDiscoveryAllowed(env, identity) &&
+      (env.RELEASE_ENVIRONMENT !== "production" ||
+        productionRelayAccessAllowed(env))) ||
       testNativeEventsAllowed(env) ||
       productionRelayReadiness(env).enabled);
   diagnostics?.record(
@@ -209,8 +214,8 @@ function newServer(
     return checked.allowed ? checked.actor : null;
   };
 
-  // Public Events stay unadvertised. A separately approved staging pilot
-  // exposes the provider profile only to its freshly authorized recipient.
+  // The bounded private profile exposes Events only to its fresh recipient;
+  // production additionally requires the selected signed-relay/key boundary.
   server.server.setRequestHandler(
     "events/list",
     { params: z.unknown() },
@@ -224,7 +229,9 @@ function newServer(
       if (
         !actor ||
         (env.RELEASE_PROFILE === PRIVATE_PILOT_PROFILE &&
-          !privatePilotDiscoveryAllowed(env, actor))
+          (!privatePilotDiscoveryAllowed(env, actor) ||
+            (env.RELEASE_ENVIRONMENT === "production" &&
+              !productionRelayAccessAllowed(env))))
       ) {
         diagnostics?.record("events/list", "handler", "denied");
         throw eventError("denied");
@@ -600,7 +607,9 @@ export async function handleMcp(
       )
     ).allowed;
   const privateEvents =
-    (privatePilotDiscoveryAllowed(env, identity) ||
+    ((privatePilotDiscoveryAllowed(env, identity) &&
+      (env.RELEASE_ENVIRONMENT !== "production" ||
+        productionRelayAccessAllowed(env))) ||
       testNativeEventsAllowed(env) ||
       productionRelayReadiness(env).enabled) &&
     identity.scopes.includes("events:subscribe") &&

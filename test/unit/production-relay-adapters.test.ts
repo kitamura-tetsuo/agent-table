@@ -133,3 +133,76 @@ describe("production relay preparation is not operational authority", () => {
     }
   });
 });
+
+it("private relay expiry/scope changes deny sends while same-ID metadata reads keep no-send semantics", async () => {
+  const { privateRelayBindings } = await import(
+    "../helpers/production-relay-fixture"
+  );
+  const t = Date.now(),
+    env = privateRelayBindings({
+      guestId: "11111111-1111-4111-8111-111111111111",
+      connectionId: "22222222-2222-4222-8222-222222222222",
+      tableIds: ["33333333-3333-4333-8333-333333333333"],
+      now: t,
+    });
+  const prepared = selectProductionRelayAdapters(env);
+  expect(prepared).not.toBeNull();
+  if (!prepared) throw Error("missing private adapter");
+  const transport = vi.fn(async (_url: RequestInfo | URL) =>
+    Response.json({ state: "unknown" }),
+  );
+  const clock = vi.spyOn(Date, "now").mockReturnValue(t + 180000);
+  try {
+    await prepared.outbox.send(
+      prepared.outbox.configuration,
+      operation(),
+      "https://events.provider.example.org/callback/test",
+      request,
+      async () => true,
+      transport,
+    );
+    await prepared.verification.send(
+      prepared.verification.configuration,
+      operation(),
+      "https://events.provider.example.org/callback/test",
+      request,
+      async () => true,
+      transport,
+    );
+    expect(transport).not.toHaveBeenCalled();
+    expect(
+      await prepared.outbox.read(
+        prepared.outbox.configuration,
+        { ...operation(), operationDigest: "a".repeat(64) },
+        async () => true,
+        transport,
+      ),
+    ).toEqual({ ok: true, state: "unknown" });
+    expect(String(transport.mock.calls[0]?.[0])).toContain("/relay/v1/status");
+  } finally {
+    clock.mockRestore();
+  }
+  transport.mockClear();
+  const change = async () => {
+    env.PRIVATE_PILOT_POLICY = JSON.stringify({
+      ...JSON.parse(env.PRIVATE_PILOT_POLICY),
+      tableIds: [crypto.randomUUID()],
+    });
+    return true;
+  };
+  await prepared.outbox.send(
+    prepared.outbox.configuration,
+    operation(),
+    "https://events.provider.example.org/callback/test",
+    request,
+    change,
+    transport,
+  );
+  expect(transport).not.toHaveBeenCalled();
+  expect(
+    selectProductionRelayAdapters({
+      ...env,
+      EVENTS_RELAY_SIGNING_KEY_PKCS8: "mismatched",
+    }),
+  ).toBeNull();
+});

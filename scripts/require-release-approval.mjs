@@ -8,6 +8,7 @@ import {
   TEST_NATIVE_EVENTS_PROFILE,
   TEST_NATIVE_EVENTS_RISK,
 } from "../src/shared/test-native-events.ts";
+import { isPendingProductionRelayAcceptance } from "./release-relay-decision.mjs";
 
 // A successful offline preflight is not an independently approved deployment.
 // This gate consumes only the output of the live verifier in the protected job.
@@ -30,6 +31,7 @@ try {
       (profile === "manual" ||
         (profile === PRODUCTION_RELAY_EVENTS_PROFILE &&
           environment === "production" &&
+          isPendingProductionRelayAcceptance(manifest.productionAcceptance) &&
           manifest.productionRelay?.reviewAuthority ===
             "operator-reviewed-under-protected-environment" &&
           manifest.productionRelay.machineVerifiedTransportEvidence === false &&
@@ -44,7 +46,24 @@ try {
           manifest.testNativeEvents?.risk === TEST_NATIVE_EVENTS_RISK &&
           /^[a-f0-9]{64}$/.test(manifest.testNativeEvents.targetsSha256)) ||
         (profile === PRIVATE_PILOT_PROFILE &&
-          environment === "staging" &&
+          (environment === "staging" ||
+            (environment === "production" &&
+              manifest.privatePilot?.mode === "a-only" &&
+              isPendingProductionRelayAcceptance(
+                manifest.productionAcceptance,
+              ) &&
+              manifest.productionRelay?.reviewAuthority ===
+                "operator-reviewed-under-protected-environment" &&
+              manifest.productionRelay.machineVerifiedTransportEvidence ===
+                false &&
+              [
+                "configurationSha256",
+                "callbackTargetsSha256",
+                "signingPublicKeySha256",
+                "decisionSha256",
+              ].every((k) =>
+                /^[a-f0-9]{64}$/.test(manifest.productionRelay[k]),
+              ))) &&
           ["a-only", "a-only-discovery"].includes(
             manifest.privatePilot?.mode,
           ) &&

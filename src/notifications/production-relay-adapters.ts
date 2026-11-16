@@ -1,3 +1,8 @@
+import {
+  activePrivatePilotPolicy,
+  PRIVATE_PILOT_PROFILE,
+} from "../shared/private-pilot";
+
 /** Internal preparation is not release authorization or transport attestation. */
 
 import {
@@ -70,6 +75,9 @@ export function prepareProductionRelayAdapters(
     ] as const;
     const current = (send = true) =>
       fields.every((name) => env[name] === snapshot[name]) &&
+      (env.RELEASE_PROFILE !== PRIVATE_PILOT_PROFILE ||
+        !send ||
+        !!activePrivatePilotPolicy(env)) &&
       (send
         ? env.ALLOW_OUTBOUND_NOTIFICATIONS === "true"
         : ["true", "false"].includes(env.ALLOW_OUTBOUND_NOTIFICATIONS ?? ""));
@@ -127,6 +135,14 @@ export function prepareProductionRelayAdapters(
 export function selectProductionRelayAdapters(
   env: Bindings,
 ): PreparedProductionRelayAdapters | null {
-  if (!productionRelayReadiness(env).enabled) return null;
+  if (
+    !productionRelayReadiness(env).enabled &&
+    !(
+      env.RELEASE_ENVIRONMENT === "production" &&
+      env.RELEASE_PROFILE === PRIVATE_PILOT_PROFILE &&
+      productionRelayConfiguration(env)
+    )
+  )
+    return null;
   return prepareProductionRelayAdapters(env);
 }

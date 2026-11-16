@@ -11,7 +11,7 @@ const UUID =
 const SHA = /^[a-f0-9]{40}$/;
 const REFERENCE = /^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$/;
 
-/** Nonsecret policy delivered only through the protected staging release. */
+/** Scoped policy from protected staging or separately reviewed production relay release. */
 export interface PrivatePilotPolicy {
   schemaVersion: 1;
   mode: "a-only" | "a-only-discovery";
@@ -37,6 +37,7 @@ export interface PrivatePilotBindings {
   ENABLE_OPENAI_EVENTS?: string;
   ALLOW_OUTBOUND_NOTIFICATIONS?: string;
   PRIVATE_PILOT_POLICY?: string;
+  EVENTS_RELAY_CONFIGURATION?: string;
 }
 
 function instant(value: unknown): number {
@@ -148,8 +149,10 @@ export function privatePilotConfiguration(
   env: PrivatePilotBindings,
 ): PrivatePilotPolicy | null {
   if (
-    env.RELEASE_ENVIRONMENT !== "staging" ||
+    !["staging", "production"].includes(env.RELEASE_ENVIRONMENT ?? "") ||
     env.RELEASE_PROFILE !== PRIVATE_PILOT_PROFILE ||
+    (env.RELEASE_ENVIRONMENT === "production" &&
+      typeof env.EVENTS_RELAY_CONFIGURATION !== "string") ||
     env.RESTORE_QUARANTINE !== "false" ||
     env.ENABLE_MCP_SUBSCRIPTIONS !== "false" ||
     env.ENABLE_OPENAI_EVENTS !== "false" ||
@@ -158,6 +161,7 @@ export function privatePilotConfiguration(
     return null;
   const policy = parsePrivatePilotPolicy(env.PRIVATE_PILOT_POLICY);
   return policy &&
+    (env.RELEASE_ENVIRONMENT !== "production" || policy.mode === "a-only") &&
     policy.buildSha === env.RELEASE_BUILD_SHA &&
     (policy.mode !== "a-only-discovery" ||
       env.ALLOW_OUTBOUND_NOTIFICATIONS === "false")

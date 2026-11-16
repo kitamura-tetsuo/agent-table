@@ -61,7 +61,7 @@ test("private staging preflight binds scope without claiming prior autonomous co
   }
 });
 
-test("private policy cannot be smuggled into manual or production release profiles", () => {
+test("native private policy cannot be smuggled into manual or unconfigured production profiles", () => {
   const candidate = makePrivatePilotFixture();
   const config = JSON.parse(candidate.configText);
   candidate.profile = config.vars.RELEASE_PROFILE = "manual";
@@ -84,7 +84,7 @@ test("private policy cannot be smuggled into manual or production release profil
   production.inventory.workerName = "agent-table-production";
   assert.throws(
     () => validateRelease({ ...production, secrets: production.inventory }),
-    /invalid-private-pilot-configuration/,
+    /production-relay-configuration-unverified/,
   );
 });
 
@@ -134,7 +134,7 @@ test("discovery preflight accepts only explicit redacted observation with zero o
   production.inventory.workerName = "agent-table-production";
   assert.throws(
     () => validateRelease({ ...production, secrets: production.inventory }),
-    /invalid-private-pilot-configuration/,
+    /production-relay-configuration-unverified/,
   );
 });
 const makeConfig = (environment, overrides = {}) => ({

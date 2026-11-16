@@ -16,6 +16,8 @@ import {
   testNativeEventsInspectable,
 } from "../src/shared/test-native-events.ts";
 
+import { pendingProductionRelayAcceptance } from "./release-relay-decision.mjs";
+
 const EXPECTED_DOS = new Map([
   ["TABLES", "TableDO"],
   ["GUESTS", "GuestDO"],
@@ -112,6 +114,10 @@ const EVIDENCE_CHECKS = {
     "delivery",
     "real_host",
   ],
+  // #22 REQ-003: pending output metadata is not a runtime isolation policy.
+  // Keep the full public production-relay evidence gate. A first-host candidate
+  // needs a separately approved, enforced isolated operation before this gate
+  // can honestly be satisfied; an all-table enabled config is not that path.
   // Staging evidence-collection activation: real-host outcomes are obtained
   // after deployment, never asserted as a precondition or production readiness.
   // Authenticated provider readback and protected owner approval remain mandatory.
@@ -271,7 +277,11 @@ function verifyEvidence(
       evidence?.configSha256 === configSha256,
     "evidence-target-mismatch",
   );
-  for (const check of EVIDENCE_CHECKS[profile]) {
+  const checks =
+    profile === PRIVATE_PILOT_PROFILE && environment === "production"
+      ? [...EVIDENCE_CHECKS[profile], "egress", "provider"]
+      : EVIDENCE_CHECKS[profile];
+  for (const check of checks) {
     const record = evidence?.checks?.[check];
     requireCondition(
       record?.status === "passed" &&
@@ -447,7 +457,10 @@ export function validateRelease({
 
   validateSecretInventory(secrets, environment, config.name);
   requireCondition(
-    profile !== PRODUCTION_RELAY_EVENTS_PROFILE ||
+    !(
+      profile === PRODUCTION_RELAY_EVENTS_PROFILE ||
+      (profile === PRIVATE_PILOT_PROFILE && environment === "production")
+    ) ||
       (environment === "production" &&
         productionRelayConfiguration(vars) !== null &&
         secrets.bindings.includes("EVENTS_RELAY_SIGNING_KEY_PKCS8")),
@@ -474,7 +487,10 @@ export function validateRelease({
   );
   if (profile === PRIVATE_PILOT_PROFILE) {
     requireCondition(
-      environment === "staging" && privatePilotConfiguration(vars),
+      privatePilotConfiguration(vars) &&
+        (environment === "staging" ||
+          (environment === "production" &&
+            productionRelayConfiguration(vars) !== null)),
       "invalid-private-pilot-configuration",
     );
   } else {
@@ -509,6 +525,10 @@ export function validateRelease({
   return {
     preflightValid: true,
     deploymentApproved: false,
+    ...(profile === PRODUCTION_RELAY_EVENTS_PROFILE ||
+    (profile === PRIVATE_PILOT_PROFILE && environment === "production")
+      ? { productionAcceptance: pendingProductionRelayAcceptance() }
+      : {}),
     environment,
     profile,
     buildSha,

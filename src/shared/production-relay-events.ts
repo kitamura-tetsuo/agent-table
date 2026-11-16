@@ -3,8 +3,23 @@ import {
   validateReviewedCallbackDestination,
 } from "../notifications/egress.ts";
 import { relaySigningPublicKeySha256 } from "../notifications/relay-signing-key.ts";
+import {
+  PRIVATE_PILOT_PROFILE,
+  privatePilotConfiguration,
+} from "./private-pilot.ts";
 
 export const PRODUCTION_RELAY_EVENTS_PROFILE = "production-relay-events";
+
+/** Selection only; malformed production relay selection cannot fall back to native. */
+export function productionRelayProfileSelected(
+  env: ProductionRelayBindings,
+): boolean {
+  return (
+    env.RELEASE_PROFILE === PRODUCTION_RELAY_EVENTS_PROFILE ||
+    (env.RELEASE_ENVIRONMENT === "production" &&
+      env.RELEASE_PROFILE === PRIVATE_PILOT_PROFILE)
+  );
+}
 
 export interface ProductionRelayBindings {
   RELEASE_ENVIRONMENT?: string;
@@ -40,16 +55,25 @@ export interface ProductionRelayConfiguration {
 export function productionRelayConfiguration(
   env: ProductionRelayBindings,
 ): ProductionRelayConfiguration | null {
+  const privateRelay = env.RELEASE_PROFILE === PRIVATE_PILOT_PROFILE;
+  const pilot = privateRelay ? privatePilotConfiguration(env) : null;
   if (
     env.RELEASE_ENVIRONMENT !== "production" ||
-    env.RELEASE_PROFILE !== PRODUCTION_RELAY_EVENTS_PROFILE ||
+    (!privateRelay &&
+      env.RELEASE_PROFILE !== PRODUCTION_RELAY_EVENTS_PROFILE) ||
+    (privateRelay && pilot?.mode !== "a-only") ||
     !/^[a-f0-9]{40}$/.test(env.RELEASE_BUILD_SHA ?? "") ||
     env.RESTORE_QUARANTINE !== "false" ||
-    env.ENABLE_MCP_SUBSCRIPTIONS !== "true" ||
-    env.ENABLE_OPENAI_EVENTS !== "true" ||
+    env.ENABLE_MCP_SUBSCRIPTIONS !== (privateRelay ? "false" : "true") ||
+    env.ENABLE_OPENAI_EVENTS !== (privateRelay ? "false" : "true") ||
     !["true", "false"].includes(env.ALLOW_OUTBOUND_NOTIFICATIONS ?? "") ||
     env.TEST_NATIVE_EVENTS_RISK_ACCEPTANCE !== undefined ||
-    env.PRIVATE_PILOT_POLICY !== undefined ||
+    (!privateRelay && env.PRIVATE_PILOT_POLICY !== undefined) ||
+    (pilot &&
+      JSON.stringify(pilot.callbackTargets) !==
+        JSON.stringify(
+          reviewedCallbackTargets(env.EVENTS_REVIEWED_CALLBACK_TARGETS),
+        )) ||
     reviewedCallbackTargets(env.EVENTS_REVIEWED_CALLBACK_TARGETS).length ===
       0 ||
     typeof env.EVENTS_RELAY_CONFIGURATION !== "string" ||
@@ -106,10 +130,14 @@ export function productionRelayInspectableConfiguration(
     )
   )
     return null;
+  if (env.RELEASE_PROFILE === PRIVATE_PILOT_PROFILE)
+    return productionRelayConfiguration(env);
   return productionRelayConfiguration({
     ...env,
-    ENABLE_MCP_SUBSCRIPTIONS: "true",
-    ENABLE_OPENAI_EVENTS: "true",
+    ENABLE_MCP_SUBSCRIPTIONS:
+      env.RELEASE_PROFILE === PRIVATE_PILOT_PROFILE ? "false" : "true",
+    ENABLE_OPENAI_EVENTS:
+      env.RELEASE_PROFILE === PRIVATE_PILOT_PROFILE ? "false" : "true",
   });
 }
 /** Preserve ordinary service access during an independently requested pause. */
@@ -152,6 +180,7 @@ export function productionRelayReadiness(env: ProductionRelayBindings): {
       reason: "relay-key-unavailable",
     };
   const enabled =
+    env.RELEASE_PROFILE === PRODUCTION_RELAY_EVENTS_PROFILE &&
     env.ENABLE_MCP_SUBSCRIPTIONS === "true" &&
     env.ENABLE_OPENAI_EVENTS === "true";
   return {

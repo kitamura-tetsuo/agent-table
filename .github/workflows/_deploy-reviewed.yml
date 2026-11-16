@@ -63,8 +63,11 @@ jobs:
           if [[ "$RELEASE_PROFILE" == "production-relay-events" ]]; then
             [[ "$TARGET_ENVIRONMENT" == "production" ]]
             [[ "$BOOTSTRAP_STAGING" == "false" ]]
+          elif [[ "$RELEASE_PROFILE" == "private-pilot-a-only" ]]; then
+            [[ "$TARGET_ENVIRONMENT" == "staging" || "$TARGET_ENVIRONMENT" == "production" ]]
+            [[ "$BOOTSTRAP_STAGING" == "false" ]]
           elif [[ "$RELEASE_PROFILE" != "manual" ]]; then
-            [[ "$RELEASE_PROFILE" == "private-pilot-a-only" || "$RELEASE_PROFILE" == "test-native-events" ]]
+            [[ "$RELEASE_PROFILE" == "test-native-events" ]]
             [[ "$TARGET_ENVIRONMENT" == "staging" ]]
             [[ "$BOOTSTRAP_STAGING" == "false" ]]
           fi

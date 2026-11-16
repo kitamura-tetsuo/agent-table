@@ -52,3 +52,46 @@ Additional tests cover key format/fingerprint, immutable shared configuration,
 current grant/binding changes, domain-separated message/challenge/status paths and
 header canonicalization. They are not evidence of live DNS/TLS peer binding,
 public relay ownership, remote process operations or hosted ChatGPT behavior.
+
+## Deployment versus actual acceptance
+
+The normal public `production-relay-events` profile retains its full evidence
+prerequisites, including actual delivery and real-host evidence. Pending metadata
+cannot grant runtime isolation or enable an all-table candidate.
+
+The existing `private-pilot-a-only` profile now also implements production
+signed-relay collection in `a-only` mode; `a-only-discovery` remains staging-only.
+Both global Events flags must remain false. Exact recipient guest/connection,
+one to three selected tables, matching reviewed callback targets, a window of
+at most two hours, and the existing per-table message-sequence ceiling of 12
+bound discovery, subscription/status and dispatch. The ceiling includes
+self-posts and is not a total HTTP-request count. The normal public readiness
+signal remains false for the private profile. Production still requires valid
+relay config and the actual matching signing key; no native fallback is allowed.
+
+Predeployment application/security/browser/egress/provider checks, both scoped
+private-pilot and relay operator decisions, and the existing exact-main CI,
+provider/resource/restore and protected owner approval gates remain mandatory.
+No source-only approval chooses live participants, tables, destinations or host,
+or authorizes setup, enablement, keys, deployment or traffic. Runtime scope
+checks are not process-stop evidence; a live operation needs its own bounded
+controller/drain/stop plan and independent readback.
+
+Actual OAuth/MCP and TableDO regressions retain previously authorized
+participants and old subscriptions outside the selected scope, reconstruct the
+objects, and verify that only the selected scope can dispatch. They also cover
+expiry, outbound pause, sequence limits, bad keys and failed/pending/unknown
+challenges. Controlled relay responses and local tests do not establish a real
+supported host's receipt, run, read or reply.
+
+Protected publication and provider/health readback still retain
+`productionAcceptance.completed:false`, with `delivery` and `realHost` pending:
+these helpers have no machine oracle for a supported-host run/read/reply. HTTP
+2xx, old Test2 traces, declaration fields or different-config observations do not
+satisfy that acceptance. See the existing
+[operator sequence](../production-relay-operator-decision.md). A private trial
+cannot automatically promote the normal public profile: a changed final
+scope/config needs separate hashes, independent applicability review, fresh
+approval/readback and required full-profile verification. Original event IDs,
+attempt ordinals, the eight-attempt budget and one-hour retry horizon remain
+unchanged; unknown results remain unknown.

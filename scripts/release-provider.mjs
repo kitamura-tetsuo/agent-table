@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 import { PRIVATE_PILOT_PROFILE } from "../src/shared/private-pilot.ts";
 import {
-  PRODUCTION_RELAY_EVENTS_PROFILE,
-  productionRelayConfiguration,
+  productionRelayInspectableConfiguration,
+  productionRelayProfileSelected,
 } from "../src/shared/production-relay-events.ts";
 import {
   TEST_NATIVE_EVENTS_PROFILE,
@@ -71,18 +71,7 @@ function validateAccountWorker(config) {
 
 /** Readback of a valid active OR emergency-paused profile; never activation. */
 export function productionRelayInspectable(vars) {
-  return (
-    [
-      "ENABLE_MCP_SUBSCRIPTIONS",
-      "ENABLE_OPENAI_EVENTS",
-      "ALLOW_OUTBOUND_NOTIFICATIONS",
-    ].every((k) => ["true", "false"].includes(vars?.[k])) &&
-    productionRelayConfiguration({
-      ...vars,
-      ENABLE_MCP_SUBSCRIPTIONS: "true",
-      ENABLE_OPENAI_EVENTS: "true",
-    }) !== null
-  );
+  return !!vars && productionRelayInspectableConfiguration(vars) !== null;
 }
 
 /**
@@ -329,10 +318,7 @@ export async function inspectWorker(
     settings.bindings.some((b) => b?.name === relaySecret) ||
     versionBindings.some((b) => b?.name === relaySecret) ||
     secretNames.has(relaySecret);
-  if (
-    relaySecretPresent ||
-    textBindings.RELEASE_PROFILE === PRODUCTION_RELAY_EVENTS_PROFILE
-  ) {
+  if (relaySecretPresent || productionRelayProfileSelected(textBindings)) {
     readBinding(settings.bindings, relaySecret, "secret_text");
     readBinding(versionBindings, relaySecret, "secret_text");
     ensure(
@@ -341,7 +327,7 @@ export async function inspectWorker(
     );
   }
   ensure(
-    textBindings.RELEASE_PROFILE !== PRODUCTION_RELAY_EVENTS_PROFILE ||
+    !productionRelayProfileSelected(textBindings) ||
       productionRelayInspectable(textBindings),
     "provider-relay-profile-unverified",
   );
@@ -436,7 +422,7 @@ export function verifyDeployedConfiguration(observed, config) {
       "provider-deployed-test-native-binding-mismatch",
     );
   }
-  if (config.vars.RELEASE_PROFILE === PRODUCTION_RELAY_EVENTS_PROFILE) {
+  if (productionRelayProfileSelected(config.vars)) {
     ensure(
       productionRelayInspectable(config.vars) &&
         observed.secretNames.includes("EVENTS_RELAY_SIGNING_KEY_PKCS8"),

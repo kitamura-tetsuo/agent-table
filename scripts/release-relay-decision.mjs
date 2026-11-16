@@ -80,3 +80,19 @@ export function verifyProductionRelayDecision(record, vars) {
     machineVerifiedTransportEvidence: false,
   };
 }
+
+/** #74 REQ-006: authorization/config readback cannot observe future host effects. */
+export function pendingProductionRelayAcceptance() {
+  return { completed: false, delivery: "pending", realHost: "pending" };
+}
+export function isPendingProductionRelayAcceptance(value) {
+  return (
+    value &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    Object.keys(value).sort().join(",") === "completed,delivery,realHost" &&
+    value.completed === false &&
+    value.delivery === "pending" &&
+    value.realHost === "pending"
+  );
+}

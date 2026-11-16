@@ -10,6 +10,7 @@ import {
 import {
   PRODUCTION_RELAY_EVENTS_PROFILE,
   type ProductionRelayBindings,
+  productionRelayAccessAllowed,
   productionRelayReadiness,
 } from "../shared/production-relay-events";
 import {
@@ -188,6 +189,9 @@ export function eventDiagnosticContext(
   now = Date.now(),
 ): SafeEventRuntimeContext {
   const policy = parsePrivatePilotPolicy(env.PRIVATE_PILOT_POLICY);
+  const privateTransportAllowed =
+    env.RELEASE_ENVIRONMENT !== "production" ||
+    productionRelayAccessAllowed(env);
   const environment = member(
     ["local", "staging", "production"] as const,
     env.RELEASE_ENVIRONMENT,
@@ -229,19 +233,24 @@ export function eventDiagnosticContext(
     policyActive:
       productionRelayReadiness(env).enabled ||
       testNativeEventsAllowed(env) ||
-      activePrivatePilotDiscoveryPolicy(env, now) !== null ||
-      activePrivatePilotPolicy(env, now) !== null,
+      (privateTransportAllowed &&
+        (activePrivatePilotDiscoveryPolicy(env, now) !== null ||
+          activePrivatePilotPolicy(env, now) !== null)),
     recipientMatched:
       !!actor &&
       (productionRelayReadiness(env).enabled ||
         testNativeEventsAllowed(env) ||
-        (!!policy && privatePilotRecipientMatches(policy, actor))),
+        (privateTransportAllowed &&
+          !!policy &&
+          privatePilotRecipientMatches(policy, actor))),
     tableAllowed:
       tableId === undefined
         ? null
         : productionRelayReadiness(env).enabled ||
           testNativeEventsAllowed(env) ||
-          (!!policy && policy.tableIds.includes(tableId)),
+          (privateTransportAllowed &&
+            !!policy &&
+            policy.tableIds.includes(tableId)),
     mode: policy?.mode ?? null,
     expiresAt: policy?.expiresAt ?? null,
   };

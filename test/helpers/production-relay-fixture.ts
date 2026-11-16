@@ -24,3 +24,34 @@ export const relayBindings = () => ({
     audience: "production:agent-table",
   }),
 });
+
+/** Synthetic bounded scope only; never a live host/account/table selection. */
+export function privateRelayBindings(options: {
+  guestId: string;
+  connectionId: string;
+  tableIds: string[];
+  now?: number;
+}) {
+  const base = relayBindings(),
+    now = options.now ?? Date.now();
+  return {
+    ...base,
+    RELEASE_PROFILE: "private-pilot-a-only",
+    ENABLE_MCP_SUBSCRIPTIONS: "false",
+    ENABLE_OPENAI_EVENTS: "false",
+    EVENTS_RELAY_SIGNING_KEY_PKCS8: syntheticRelayKey,
+    PRIVATE_PILOT_POLICY: JSON.stringify({
+      schemaVersion: 1,
+      mode: "a-only",
+      buildSha: base.RELEASE_BUILD_SHA,
+      approvedAt: new Date(now - 2000).toISOString(),
+      notBefore: new Date(now - 1000).toISOString(),
+      expiresAt: new Date(now + 120000).toISOString(),
+      approvalRef: "synthetic-relay-scope-review",
+      recipientGuestId: options.guestId,
+      recipientConnectionId: options.connectionId,
+      tableIds: options.tableIds,
+      callbackTargets: JSON.parse(base.EVENTS_REVIEWED_CALLBACK_TARGETS),
+    }),
+  };
+}

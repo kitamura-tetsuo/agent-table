@@ -259,7 +259,9 @@ export function verifyPrivatePilotDecision(record, vars, now) {
         ? decision.callbackDiscoveryReviewed === true &&
           decision.noOutboundReviewed === true
         : decision.callbackControlReviewed === true &&
-          decision.nativeFetchRiskAccepted === true) &&
+          (vars.RELEASE_ENVIRONMENT === "production"
+            ? decision.nativeFetchRiskAccepted === false
+            : decision.nativeFetchRiskAccepted === true)) &&
       (policy.observationMode === undefined ||
         decision.privateObservationReviewed === true) &&
       decision.boundedCanaryReviewed === true &&
@@ -323,8 +325,9 @@ export async function authorizeRelease({
     profile === "manual" ||
       (profile === PRODUCTION_RELAY_EVENTS_PROFILE &&
         environment === "production") ||
-      ([PRIVATE_PILOT_PROFILE, TEST_NATIVE_EVENTS_PROFILE].includes(profile) &&
-        environment === "staging"),
+      (profile === PRIVATE_PILOT_PROFILE &&
+        ["staging", "production"].includes(environment)) ||
+      (profile === TEST_NATIVE_EVENTS_PROFILE && environment === "staging"),
     "profile-real-host-evidence-not-verified",
   );
   requireDecision(
@@ -381,7 +384,8 @@ export async function authorizeRelease({
     bootstrapStaging,
   });
   const productionRelay =
-    profile === PRODUCTION_RELAY_EVENTS_PROFILE
+    profile === PRODUCTION_RELAY_EVENTS_PROFILE ||
+    (profile === PRIVATE_PILOT_PROFILE && environment === "production")
       ? verifyProductionRelayDecision(operations, config.vars)
       : undefined;
   const testNativeEvents =
