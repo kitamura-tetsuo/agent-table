@@ -4,7 +4,7 @@
 
 The repository contains an **authenticated, protected release gate**. It
 checks the exact `main` commit, a successful independently fetched CI run,
-fresh operator disclosures, the protected GitHub Environment, and actual
+fresh operator disclosures, the GitHub Environment deployment policy, and actual
 Cloudflare Worker, SQLite Durable Object, KV, secret-name, domain and deployed
 version state **before** permitting `wrangler deploy`. It reads the deployed
 resources and public `/health` build receipt again after publication. A local
@@ -27,7 +27,9 @@ The owner accepted the disclosed [retention limits](https://github.com/kitamura-
 and [proceeding without a finalized invoice](https://github.com/kitamura-tetsuo/agent-table/issues/50#issuecomment-6824960944).
 Actual account charges and account-wide retained copies remain unverified;
 neither zero spend, universal erasure nor automatic billing shutdown is claimed.
-New operations still need fresh target-bound inputs and approvals. The
+New operations still need fresh target-bound inputs and operator records;
+production releases and destructive recovery additionally need GitHub reviewer
+approval. Ordinary staging releases do not. The
 checked-in `wrangler.jsonc` is not a hosted release candidate. The
 [Issue #22 acceptance map](issue22-acceptance.md) joins these release receipts
 to the separate recovery evidence and original requirements.
@@ -78,8 +80,8 @@ IDs, rename a namespace, or publish an unreviewed candidate.
 restricted to the existing `agent-table-staging` Worker when precisely the
 four `RELEASE_ENVIRONMENT`, `RELEASE_BUILD_SHA`, `RELEASE_PROFILE` and
 `RESTORE_QUARANTINE` text bindings are absent from both its settings and
-active version. Before publishing, the independent protected Environment
-review, successful exact-main manual CI, actual retention/cost/restore
+active version. Before publishing, the branch-protected staging Environment
+readback, successful exact-main manual CI, actual retention/cost/restore
 operator disclosures, intact four SQLite DO namespaces, OAuth KV, secret
 names, custom domain and expected active version must all be verified. The
 existing staging admission settings must be `true` while the approved
@@ -134,13 +136,14 @@ again just before writing and performs normal strict post-deploy verification.
    recoverable offline key copy; follow the unavailable-old-key branch instead
    of assuming seamless overlap rotation is possible. Rotate provider/OAuth
    client credentials through their own independent authorization flows.
-4. Configure protected GitHub `staging` and `production` Environments with
-   deployment branches restricted to `main` and a human reviewer
-   (the owner), requiring an explicit review after workflow dispatch. The
-   owner has approved same-account dispatch plus review; verify the policy
-   actually permits this and requires review, rather than silently bypassing
-   it. Verify Environment protection again immediately
-   before use; a historically green test is insufficient.
+4. Configure GitHub Environments with deployment branches restricted to
+   protected `main`: `staging` has **no required reviewer** or waiting rule,
+   while `production` requires explicit review by the owner. Destructive
+   staging recovery uses a separate `staging-recovery` approval job with
+   required owner review, then accesses staging credentials in the normal
+   `staging` Environment. Verify these policies before use; the staging
+   release verifier rejects an unexpected protection rule or loss of branch
+   protection, and recovery rejects missing/wrong approval history.
 5. Scope the **write** `CLOUDFLARE_API_TOKEN` to the intended account and Worker
    deployment operation only. Scope the **separate read token**
    `CLOUDFLARE_READ_TOKEN` to Worker scripts/settings, deployments/versions,
@@ -152,8 +155,9 @@ again just before writing and performs normal strict post-deploy verification.
 To verify the newly configured read tokens without publishing, dispatch
 `Protected release read credential verification` from `main` once for each
 `target_environment` (`staging` and `production`), supplying the exact current
-`main` SHA. After the owner explicitly approves each protected Environment,
-the job uses **only** that Environment's `CLOUDFLARE_READ_TOKEN` and reads
+`main` SHA. Staging starts without GitHub reviewer action; production starts
+after the owner explicitly approves the protected Environment.
+The job uses **only** that Environment's `CLOUDFLARE_READ_TOKEN` and reads
 both Workers' settings, subdomain exposure, secret names, deployed versions,
 KV namespace metadata, and account domain/SQLite namespace lists. A green
 result proves the required GET access is available; it **does not prove the
@@ -320,23 +324,22 @@ node scripts/release-preflight.mjs \
 Expected success is `PREFLIGHT_MANIFEST_VALID` with
 `deploymentApproved:false`. If anything is missing or mismatched, stop.
 
-## 3. Approval and protected deployment
+## 3. Deployment authorization
 
-1. Manually dispatch `deploy-staging.yml` on the **exact** `main` SHA with
-   `expected_sha`. The selected `staging` Environment must wait for an
-   independent reviewer. Send the reviewer the source SHA, target origin,
-   config digest, profile, intended capabilities, risk and rollback reference.
-   Do not substitute a Slack response for GitHub's actual protected
-   Environment approval; Slack is an additional, durable backup channel.
-2. After approval, the job checks checkout SHA, runs application tests and a
+1. Dispatch `deploy-staging.yml` on the **exact** `main` SHA with
+   `expected_sha`. The `staging` Environment has no GitHub approval step.
+   The GitHub policy readback must still confirm protected-branch restriction
+   and absence of reviewer/wait rules. Provide fresh reviewed operational and
+   capability evidence through its Environment secrets. For production,
+   dispatch `deploy-production.yml` and explicitly approve the owner's GitHub
+   Environment review before proceeding.
+2. The job checks checkout SHA, runs application tests and a
    fresh Wrangler **dry-run without deployment credentials**, then reads
-   Cloudflare **and GitHub** with separate read-only tokens. GitHub's own
-   review-history endpoint must show an explicit approval by the verified owner
-   `kitamura-tetsuo` for this exact deployment run and environment, even if
-   the dispatcher uses that same GitHub account; an Environment
-   label or an operator-provided JSON approval is insufficient. Because the
-   approval history is not attempt-scoped, workflow reruns are refused: dispatch
-   a new reviewed run after a failure. The gate requires the currently
+   Cloudflare **and GitHub** with separate read-only tokens. For production,
+   GitHub's review-history endpoint must show explicit approval by the verified
+   owner `kitamura-tetsuo` for this exact run; for staging it verifies the
+   actual reviewer-free Environment policy instead. Workflow reruns remain
+   forbidden: dispatch a new run after a failure. The gate requires the currently
    advertised `main` head to match the tested SHA and rechecks this immediately
    before the publish write. The identity
    readback includes both deployed Workers, actual four SQLite DO namespace
@@ -345,7 +348,7 @@ Expected success is `PREFLIGHT_MANIFEST_VALID` with
    state aborts **before publication**. It also refuses a previously
    quarantined live Worker; clearing an old restore is Issue #51, not #50.
 3. A single in-job `RELEASE_APPROVAL_VALID` manifest binds the approved
-   environment, SHA, exact config digest, CI run, protected run/attempt and
+   environment, SHA, exact config digest, CI run, bound run/attempt and
    redacted provider receipt. `require-release-approval.mjs` verifies it
    before the job receives the write credential. There is no checked-in
    static override or manual `deploymentApproved:true` file.
@@ -488,7 +491,7 @@ authorize a new deployment, key change, public profile or recovery incident.
 | --- | --- | --- |
 | Structural preflight, fail-closed checks and generated-restore local oracle | Local and CI tests, PR #46 | Implemented code; not hosted approval |
 | Staging secret/config access | [protected config readback #43115024418](https://github.com/kitamura-tetsuo/agent-table/actions/runs/43115024418), commit `70cfe1c`, SHA-256 `22b619dd3af71bce1688a7f3ec2e451654cea0a28ac6e166f70bfa98513bb867` | Verified no-publish only; stale after new `main` commit |
-| Separate configured protected Environments | Human reviewer and `main` branch protection readback 2026-11-11; staging and production Cloudflare GET access [#43104683889](https://github.com/kitamura-tetsuo/agent-table/actions/runs/43104683889), [#43104688167](https://github.com/kitamura-tetsuo/agent-table/actions/runs/43104688167) | Verified read-only; each deployment still needs a separate approval |
+| Environment policies | Historical reviewer/`main` readback 2026-11-11 and staging/production Cloudflare GET access [#43104683889](https://github.com/kitamura-tetsuo/agent-table/actions/runs/43104683889), [#43104688167](https://github.com/kitamura-tetsuo/agent-table/actions/runs/43104688167) | Current policy: staging branch-protected without GitHub review; production and staging-recovery retain owner review. Reverify at dispatch |
 | Both true Cloudflare Worker/DO/KV identities, origins, inventories | [Staging provider receipt](https://github.com/kitamura-tetsuo/agent-table/issues/50#issuecomment-6814836152) and independent staging/production readback in the [final acceptance](https://github.com/kitamura-tetsuo/agent-table/issues/50#issuecomment-6825493911) | **Verified** for the recorded 2026-11-12 builds and configurations; recheck before next release |
 | Staging protected deploy, host smoke, retained-state update/rollback | [Staging bootstrap](https://github.com/kitamura-tetsuo/agent-table/issues/50#issuecomment-6814836152), [same-config update + pinned rollback](https://github.com/kitamura-tetsuo/agent-table/issues/50#issuecomment-6815095095), [binding-drift finding and canonical repair](https://github.com/kitamura-tetsuo/agent-table/issues/50#issuecomment-6818264043) | **Passed** for same-source/same-config retained synthetic data; this #50 rehearsal did not restore a snapshot or establish arbitrary older-schema compatibility. #51 separately exercised PITR and newer-schema refusal below |
 | Normal pause and existing-guest browser Close/Delete | [7-day synthetic fixture and settings repair](https://github.com/kitamura-tetsuo/agent-table/issues/50#issuecomment-6818264043), [browser Close/Delete and independent `TABLE_NOT_FOUND` postconditions](https://github.com/kitamura-tetsuo/agent-table/issues/50#issuecomment-6820766589) | **Passed** on staging; prior browser POST refresh showed CSRF rejection and stale response label, but a fresh GET confirmed closed |

@@ -10,8 +10,8 @@ import {
 } from "../src/shared/test-native-events.ts";
 import { isPendingProductionRelayAcceptance } from "./release-relay-decision.mjs";
 
-// A successful offline preflight is not an independently approved deployment.
-// This gate consumes only the output of the live verifier in the protected job.
+// A successful offline preflight is not deployment authorization.
+// This gate consumes only the output of the environment-bound live verifier.
 const [environment, buildSha, configSha256, profile = "manual"] =
   process.argv.slice(2);
 let approved = false;
@@ -23,7 +23,9 @@ try {
       manifest.preflightValid === true &&
       manifest.deploymentApproved === true &&
       manifest.approvalSource ===
-        "protected-environment-and-live-provider-readback" &&
+        (environment === "staging"
+          ? "reviewer-free-staging-and-live-provider-readback"
+          : "protected-environment-and-live-provider-readback") &&
       manifest.environment === environment &&
       manifest.buildSha === buildSha &&
       manifest.configSha256 === configSha256 &&

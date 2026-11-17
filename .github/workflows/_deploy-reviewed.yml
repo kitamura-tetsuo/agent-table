@@ -137,8 +137,8 @@ jobs:
           test -n "$CLOUDFLARE_ACCOUNT_ID"
           [[ "$EXPECTED_CONFIG_SHA" =~ ^[a-f0-9]{64}$ ]]
           [[ "$(sha256sum "$config" | cut -d " " -f1)" == "$EXPECTED_CONFIG_SHA" ]]
-          # The only producer of an approved manifest performs live authenticated
-          # Cloudflare + exact-main CI reads inside the approved Environment.
+          # The only producer of an authorized manifest performs live Cloudflare,
+          # exact-main CI, and Environment-policy checks before publication.
           node scripts/release-authorization.mjs \
               --environment "$TARGET_ENVIRONMENT" --profile "$RELEASE_PROFILE" \
               --build-sha "$GITHUB_SHA" --config "$config" \

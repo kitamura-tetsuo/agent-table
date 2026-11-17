@@ -1,4 +1,4 @@
-name: Staging deployment (protected)
+name: Staging deployment (main only, no GitHub reviewer)
 
 on:
   workflow_dispatch:

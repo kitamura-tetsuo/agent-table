@@ -55,7 +55,7 @@ test("release gate refuses a merely valid preflight, missing approval or mismatc
   const independentlyVerified = {
     ...valid,
     deploymentApproved: true,
-    approvalSource: "protected-environment-and-live-provider-readback",
+    approvalSource: "reviewer-free-staging-and-live-provider-readback",
     workflowRunId: "2345",
     workflowRunAttempt: "1",
     ciRunId: "1234",
@@ -72,6 +72,10 @@ test("release gate refuses a merely valid preflight, missing approval or mismatc
   );
   for (const manifest of [
     { ...independentlyVerified, approvalSource: "offline" },
+    {
+      ...independentlyVerified,
+      approvalSource: "protected-environment-and-live-provider-readback",
+    },
     { ...independentlyVerified, providerReceiptSha256: "bad" },
     { ...independentlyVerified, workflowRunAttempt: "0" },
     {
@@ -106,7 +110,7 @@ test("private gate binds the explicit staging profile and rechecks its finite se
     profile: "private-pilot-a-only",
     buildSha: sha,
     configSha256: configSha,
-    approvalSource: "protected-environment-and-live-provider-readback",
+    approvalSource: "reviewer-free-staging-and-live-provider-readback",
     workflowRunId: "2345",
     workflowRunAttempt: "1",
     ciRunId: "1234",
@@ -312,4 +316,20 @@ test("release workflows remain explicit main-only manual dispatches with environ
   assert.match(liveApproval, /release-authorization\.mjs/);
   assert.match(liveApproval, /CLOUDFLARE_READ_TOKEN/);
   assert.match(liveApproval, /RELEASE_OPERATIONS_JSON|operations\.json/);
+});
+
+test("staging recovery has a separate human-review job before accessing staging secrets", () => {
+  const workflow = readFileSync(
+    new URL("../.github/workflows/_recover-reviewed.yml", import.meta.url),
+    "utf8",
+  );
+  assert.match(workflow, /staging-recovery-review:/);
+  assert.match(workflow, /name: staging-recovery/);
+  assert.match(workflow, /needs: staging-recovery-review/);
+  assert.match(workflow, /needs\.staging-recovery-review\.result == 'success'/);
+  assert.match(workflow, /name: \$\{\{ inputs\.target_environment \}\}/);
+  assert.match(
+    workflow,
+    /RECOVERY_SIGNING_KEY: \$\{\{ secrets\.RECOVERY_SIGNING_KEY \}\}/,
+  );
 });

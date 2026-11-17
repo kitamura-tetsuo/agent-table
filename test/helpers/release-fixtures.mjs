@@ -126,6 +126,7 @@ export function makeFixture(environment = "staging") {
       },
     },
     workflow: {
+      kind: "release",
       repository: "kitamura-tetsuo/agent-table",
       ref: "refs/heads/main",
       eventName: "workflow_dispatch",
@@ -329,6 +330,17 @@ export function makeGithubMock(environment = "staging") {
   const deploymentPath = "/repos/kitamura-tetsuo/agent-table/actions/runs/2345";
   const routes = new Map([
     [
+      "/repos/kitamura-tetsuo/agent-table/environments/staging",
+      {
+        name: "staging",
+        protection_rules: [{ id: 1, type: "branch_policy" }],
+        deployment_branch_policy: {
+          protected_branches: true,
+          custom_branch_policies: false,
+        },
+      },
+    ],
+    [
       deploymentPath,
       {
         id: 2345,
@@ -344,13 +356,15 @@ export function makeGithubMock(environment = "staging") {
     ],
     [
       `${deploymentPath}/approvals`,
-      [
-        {
-          state: "approved",
-          environments: [{ name: environment }],
-          user: { login: "kitamura-tetsuo", type: "User" },
-        },
-      ],
+      environment === "staging"
+        ? []
+        : [
+            {
+              state: "approved",
+              environments: [{ name: environment }],
+              user: { login: "kitamura-tetsuo", type: "User" },
+            },
+          ],
     ],
     [
       "/repos/kitamura-tetsuo/agent-table/git/ref/heads/main",
