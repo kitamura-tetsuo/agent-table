@@ -80,8 +80,11 @@ Use `recover-staging.yml` and `recover-production.yml`; both call
 `_recover-reviewed.yml`. The corresponding normal deployment and recovery jobs
 share `agent-table-deployment-<environment>` concurrency with cancellation
 disabled. Their current-main, successful exact-main CI and actual owner
-Environment-approval checks remain mandatory. Reruns cannot reuse an earlier
-attempt's approval; use a new dispatch.
+Environment-approval checks remain mandatory. Staging recovery first passes
+the reviewer-protected `staging-recovery` gate, then uses the reviewer-free
+`staging` Environment for its separately guarded execution and credentials;
+production continues using its existing `production` reviewer gate. Reruns
+cannot reuse an earlier attempt's approval; use a new dispatch.
 
 The Environment requires existing deployment/read tokens and account ID plus:
 
@@ -213,7 +216,8 @@ Reconstruct the candidate using that plan's `servingConfig`, canonical namespace
 identity, the returned `RECOVERY_CONFIG_SHA256` and `RECOVERY_AUTHORIZATION`.
 Use exactly `JSON.stringify(candidate)` bytes for the returned complete-config
 hash. The normal release evidence/operations records must bind that exact hash,
-and the normal deployment needs its own applicable Environment approval. Its
+and the normal deployment needs its own applicable Environment-policy check
+(staging without a GitHub reviewer, production with review). Its
 continuity gate verifies the latest cleared generation, unchanged pinned key,
 resource tuple, and both live and candidate signatures. It refuses missing
 recovery metadata, old generations, pending recovery and quarantined targets.

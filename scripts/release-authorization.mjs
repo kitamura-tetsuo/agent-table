@@ -130,9 +130,10 @@ export async function verifyCurrentMainHead(sha, githubRead) {
 }
 
 /**
- * A protected Environment name does not prove that the owner approved this
- * exact run. GitHub's approval history is not attempt-scoped, so a rerun
- * cannot inherit an earlier approval.
+ * Authenticate the exact deployment/recovery run. Staging releases use the
+ * reviewer-free branch-protected Environment; production releases and all
+ * recovery operations require a separately approved GitHub Environment.
+ * Approval history is not attempt-scoped, so reruns remain forbidden.
  */
 export async function verifyProtectedEnvironmentApproval(workflow, githubRead) {
   requireDecision(
@@ -140,9 +141,15 @@ export async function verifyProtectedEnvironmentApproval(workflow, githubRead) {
     "deployment-review-attempt-unverifiable",
   );
   const prefix = `/repos/${REPOSITORY}/actions/runs/${workflow.runId}`;
-  const [run, approvals] = await Promise.all([
+  const reviewerFreeStagingRelease =
+    workflow.environment === "staging" && workflow.kind === "release";
+  const [run, approvalOrEnvironment] = await Promise.all([
     githubRead(prefix),
-    githubRead(`${prefix}/approvals`),
+    githubRead(
+      reviewerFreeStagingRelease
+        ? `/repos/${REPOSITORY}/environments/staging`
+        : `${prefix}/approvals`,
+    ),
   ]);
   requireDecision(
     run?.id === Number(workflow.runId) &&
@@ -156,6 +163,26 @@ export async function verifyProtectedEnvironmentApproval(workflow, githubRead) {
       run?.status === "in_progress",
     "deployment-run-not-verified",
   );
+  if (reviewerFreeStagingRelease) {
+    const environment = approvalOrEnvironment;
+    requireDecision(
+      environment?.name === "staging" &&
+        environment.deployment_branch_policy?.protected_branches === true &&
+        environment.deployment_branch_policy?.custom_branch_policies ===
+          false &&
+        Array.isArray(environment.protection_rules) &&
+        environment.protection_rules.every(
+          (rule) => rule.type === "branch_policy",
+        ),
+      "staging-environment-policy-unverified",
+    );
+    return;
+  }
+  const approvals = approvalOrEnvironment;
+  const reviewEnvironment =
+    workflow.kind === "recovery" && workflow.environment === "staging"
+      ? "staging-recovery"
+      : workflow.environment;
   requireDecision(
     Array.isArray(approvals) &&
       approvals.length === 1 &&
@@ -164,7 +191,7 @@ export async function verifyProtectedEnvironmentApproval(workflow, githubRead) {
       approvals[0]?.user?.login === "kitamura-tetsuo" &&
       Array.isArray(approvals[0]?.environments) &&
       approvals[0].environments.length === 1 &&
-      approvals[0].environments[0]?.name === workflow.environment,
+      approvals[0].environments[0]?.name === reviewEnvironment,
     "independent-deployment-review-unverified",
   );
 }
@@ -195,8 +222,8 @@ export function verifyOperationalDecision(
       freshReview(record.review, now),
     "operator-approval-unavailable",
   );
-  // The independent protected GitHub Environment reviewer owns the decision.
-  // These are disclosures, not an assertion that the code verifies CF backups.
+  // These are operator disclosures, not independent verification of backups.
+  // Production and recovery additionally require GitHub reviewer approval.
   for (const name of ["backup", "logs"]) {
     const disclosure = record?.retention?.[name];
     requireDecision(
@@ -281,9 +308,9 @@ export function verifyPrivatePilotDecision(record, vars, now) {
 }
 
 /**
- * Only the protected exact-main workflow can consume this approval. Private
- * A-only staging verification gathers missing host evidence; public capability
- * profiles remain blocked until their independently observed evidence exists.
+ * Only the exact-main, environment-bound workflow can consume this approval.
+ * Private A-only staging verification gathers missing host evidence; public
+ * capability profiles remain blocked until independently observed evidence exists.
  */
 export async function authorizeRelease({
   environment,
@@ -313,6 +340,7 @@ export async function authorizeRelease({
   });
   requireDecision(
     workflow?.repository === REPOSITORY &&
+      workflow.kind === "release" &&
       workflow.ref === "refs/heads/main" &&
       workflow.eventName === "workflow_dispatch" &&
       workflow.sha === buildSha &&
@@ -456,7 +484,10 @@ export async function authorizeRelease({
     ...(testNativeEvents ? { testNativeEvents } : {}),
     bootstrapStaging,
     deploymentApproved: true,
-    approvalSource: "protected-environment-and-live-provider-readback",
+    approvalSource:
+      environment === "staging"
+        ? "reviewer-free-staging-and-live-provider-readback"
+        : "protected-environment-and-live-provider-readback",
     workflowRunId: workflow.runId,
     workflowRunAttempt: workflow.runAttempt,
     ciRunId,
@@ -469,7 +500,7 @@ export function githubReader(token, fetchImpl = fetch) {
   requireDecision(token?.length > 10, "github-read-token-missing");
   return async (path) => {
     requireDecision(
-      /^\/repos\/kitamura-tetsuo\/agent-table\/(?:git\/ref\/heads\/main|actions\/runs\/[1-9]\d*(?:\/jobs\?per_page=100|\/approvals)?)$/.test(
+      /^\/repos\/kitamura-tetsuo\/agent-table\/(?:git\/ref\/heads\/main|environments\/staging|actions\/runs\/[1-9]\d*(?:\/jobs\?per_page=100|\/approvals)?)$/.test(
         path,
       ),
       "github-evidence-path-invalid",
@@ -566,6 +597,7 @@ async function main() {
         readFileSync(cliArgument(args, "operations"), "utf8"),
       ),
       workflow: {
+        kind: "release",
         repository: process.env.GITHUB_REPOSITORY,
         ref: process.env.GITHUB_REF,
         eventName: process.env.GITHUB_EVENT_NAME,

@@ -28,12 +28,36 @@ permissions:
   actions: read
 
 jobs:
-  recovery:
+  staging-recovery-review:
     if: >-
       github.repository == 'kitamura-tetsuo/agent-table' &&
       github.ref == 'refs/heads/main' &&
       github.event_name == 'workflow_dispatch' &&
-      (inputs.target_environment == 'staging' || inputs.target_environment == 'production')
+      inputs.target_environment == 'staging'
+    environment:
+      name: staging-recovery
+    permissions: {}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Record separate approval for destructive staging recovery
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_SHA" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$GITHUB_SHA" == "$EXPECTED_SHA" ]]
+
+  recovery:
+    needs: staging-recovery-review
+    if: >-
+      always() &&
+      github.repository == 'kitamura-tetsuo/agent-table' &&
+      github.ref == 'refs/heads/main' &&
+      github.event_name == 'workflow_dispatch' &&
+      (inputs.target_environment == 'production' ||
+        (inputs.target_environment == 'staging' &&
+          needs.staging-recovery-review.result == 'success'))
     environment:
       name: ${{ inputs.target_environment }}
     concurrency:

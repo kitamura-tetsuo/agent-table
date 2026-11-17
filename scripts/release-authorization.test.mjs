@@ -15,6 +15,7 @@ import {
   githubReader,
   ReleaseAuthorizationError,
   verifyOperationalDecision,
+  verifyProtectedEnvironmentApproval,
 } from "./release-authorization.mjs";
 
 const valid = makeFixture();
@@ -24,11 +25,11 @@ function harness(overrides = {}) {
   const config = JSON.parse(fixture.configText);
   const peer = JSON.parse(fixture.peerText);
   const cloudflare = makeProviderMock(config, peer);
-  const github = makeGithubMock();
+  const github = makeGithubMock(fixture.environment);
   return { fixture, cloudflare, github };
 }
 
-test("protected exact-main run plus independent provider and CI reads authorize manual staging only", async () => {
+test("reviewer-free exact-main staging run plus independent provider and CI reads authorizes manual release", async () => {
   const { fixture, cloudflare, github } = harness();
   const approval = await authorizeRelease({
     ...fixture,
@@ -39,7 +40,7 @@ test("protected exact-main run plus independent provider and CI reads authorize 
   assert.equal(approval.deploymentApproved, true);
   assert.equal(
     approval.approvalSource,
-    "protected-environment-and-live-provider-readback",
+    "reviewer-free-staging-and-live-provider-readback",
   );
   assert.equal(approval.buildSha, buildSha);
   assert.equal(approval.ciRunId, runId);
@@ -445,12 +446,12 @@ test("production needs its own protected workflow and separate owned resources",
   );
 });
 
-test("explicit owner review permits same-account or agent dispatch without bypass", async () => {
+test("production owner review permits same-account or agent dispatch without bypass", async () => {
   for (const actor of [
     { login: "kitamura-tetsuo", type: "User" },
     { login: "release-agent[bot]", type: "Bot" },
   ]) {
-    const { fixture, cloudflare, github } = harness();
+    const { fixture, cloudflare, github } = harness(makeFixture("production"));
     github.routes.get(
       "/repos/kitamura-tetsuo/agent-table/actions/runs/2345",
     ).actor = actor;
@@ -464,14 +465,13 @@ test("explicit owner review permits same-account or agent dispatch without bypas
   }
 });
 
-test("a GitHub Environment label or claimed operator approval is not a review", async () => {
+test("production Environment label or operator record cannot replace GitHub review", async () => {
   const prefix = "/repos/kitamura-tetsuo/agent-table/actions/runs/2345";
   const cases = [
     (routes) => routes.set(`${prefix}/approvals`, []),
     (routes) => (routes.get(`${prefix}/approvals`)[0].state = "pending"),
     (routes) =>
-      (routes.get(`${prefix}/approvals`)[0].environments[0].name =
-        "production"),
+      (routes.get(`${prefix}/approvals`)[0].environments[0].name = "staging"),
     (routes) =>
       (routes.get(`${prefix}/approvals`)[0].user.login = "release-dispatcher"),
     (routes) => (routes.get(`${prefix}/approvals`)[0].user.type = "Bot"),
@@ -491,7 +491,7 @@ test("a GitHub Environment label or claimed operator approval is not a review", 
     (routes) => (routes.get(prefix).run_attempt = 2),
   ];
   for (const mutate of cases) {
-    const { fixture, cloudflare, github } = harness();
+    const { fixture, cloudflare, github } = harness(makeFixture("production"));
     mutate(github.routes);
     await assert.rejects(
       authorizeRelease({
@@ -503,6 +503,46 @@ test("a GitHub Environment label or claimed operator approval is not a review", 
       /deployment-run-not-verified|independent-deployment-review-unverified/,
     );
   }
+});
+
+test("staging release refuses a reviewer requirement or missing branch protection", async () => {
+  const path = "/repos/kitamura-tetsuo/agent-table/environments/staging";
+  for (const mutate of [
+    (value) => value.protection_rules.push({ type: "required_reviewers" }),
+    (value) => (value.deployment_branch_policy.protected_branches = false),
+    (value) => (value.name = "production"),
+  ]) {
+    const { fixture, cloudflare, github } = harness();
+    mutate(github.routes.get(path));
+    await assert.rejects(
+      authorizeRelease({
+        ...fixture,
+        cloudflareRead: cloudflare.read,
+        githubRead: github.read,
+        now,
+      }),
+      /staging-environment-policy-unverified/,
+    );
+  }
+});
+
+test("staging recovery still requires a separate owner's GitHub approval", async () => {
+  const github = makeGithubMock("staging");
+  const prefix = "/repos/kitamura-tetsuo/agent-table/actions/runs/2345";
+  const workflow = { ...makeFixture().workflow, kind: "recovery" };
+  github.routes.get(prefix).path = ".github/workflows/recover-staging.yml";
+  const approval = {
+    state: "approved",
+    environments: [{ name: "staging-recovery" }],
+    user: { login: "kitamura-tetsuo", type: "User" },
+  };
+  github.routes.set(`${prefix}/approvals`, [approval]);
+  await verifyProtectedEnvironmentApproval(workflow, github.read);
+  approval.environments[0].name = "staging";
+  await assert.rejects(
+    verifyProtectedEnvironmentApproval(workflow, github.read),
+    /independent-deployment-review-unverified/,
+  );
 });
 
 test("reruns cannot reuse earlier deployment approvals", async () => {
