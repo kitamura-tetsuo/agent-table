@@ -241,12 +241,13 @@ function toolOutput(result: Awaited<ReturnType<Client["callTool"]>>) {
   return JSON.parse(block.text) as Record<string, unknown>;
 }
 
-async function createTable(client: Client) {
+async function createTable(client: Client, reusable = false) {
   const response = await client.callTool({
     name: "create_table",
     arguments: {
       request_id: `event_creation_${crypto.randomUUID()}`,
       title: "Synthetic private Events table",
+      ...(reusable ? { reusable: true } : {}),
     },
   });
   expect(response.isError).not.toBe(true);
@@ -4220,7 +4221,7 @@ it.skipIf(typeof __OPERATOR_BRIDGE__ === "undefined" || !__OPERATOR_BRIDGE__)(
 
 // Actual OAuth/MCP/TableDO producer with a controlled signed-relay receiver.
 // This is a local scope oracle, not public-host or Cloudflare acceptance.
-async function scopedSignedRelayScenario(seedExisting = false) {
+async function scopedSignedRelayScenario(seedExisting = false, resume = false) {
   const a = await newPrincipal(undefined, "192.0.2.61"),
     b = await newPrincipal(undefined, "192.0.2.62"),
     c = await newPrincipal(undefined, "192.0.2.63");
@@ -4234,7 +4235,10 @@ async function scopedSignedRelayScenario(seedExisting = false) {
   const setupA = await clientFor(a.token),
     setupB = await clientFor(b.token),
     setupC = await clientFor(c.token);
-  const tables = [await createTable(setupA), await createTable(setupA)];
+  const tables = [
+    await createTable(setupA, resume),
+    await createTable(setupA, resume),
+  ];
   for (let i = 0; i < tables.length; i++) {
     const id = tables[i],
       client = i === 0 ? setupB : setupC;
@@ -4264,6 +4268,13 @@ async function scopedSignedRelayScenario(seedExisting = false) {
     ...relayBindings(),
     EVENTS_RELAY_SIGNING_KEY_PKCS8: syntheticRelayKey,
   };
+  if (resume) {
+    full.RELEASE_ENVIRONMENT = "staging";
+    const config = JSON.parse(full.EVENTS_RELAY_CONFIGURATION as string);
+    config.environment = "staging";
+    config.audience = "test:agent-table";
+    full.EVENTS_RELAY_CONFIGURATION = JSON.stringify(config);
+  }
   const t = Date.now();
   const policy = {
     schemaVersion: 1,
@@ -4273,6 +4284,7 @@ async function scopedSignedRelayScenario(seedExisting = false) {
     notBefore: new Date(t - 1000).toISOString(),
     expiresAt: new Date(t + 3600000).toISOString(),
     approvalRef: "synthetic-signed-relay-review",
+    ...(resume ? { eventNames: ["table.resume.requested"] } : {}),
     recipientGuestId: a.guestId,
     recipientConnectionId: a.connectionId,
     tableIds: [tables[0]],
@@ -4287,6 +4299,7 @@ async function scopedSignedRelayScenario(seedExisting = false) {
   };
   let challengeMode: "verified" | "unknown" | "failed" | "pending" = "verified";
   let messageMode: "completed" | "unknown" = "completed";
+  const payloads: Array<Record<string, unknown>> = [];
   const calls: Array<{
     kind: string;
     requestId: string;
@@ -4335,13 +4348,20 @@ async function scopedSignedRelayScenario(seedExisting = false) {
       destination: envelope.destination,
       eventId: envelope.headers?.["webhook-id"],
     });
-    expect(envelope.audience).toBe("production:agent-table");
+    expect(envelope.audience).toBe(
+      resume ? "test:agent-table" : "production:agent-table",
+    );
     if (target.pathname.endsWith("/status"))
       return Response.json({ state: "unknown" });
     const body = new TextDecoder().decode(
       Uint8Array.from(atob(envelope.payload), (x) => x.charCodeAt(0)),
     );
-    new Webhook(SECRET).verify(body, envelope.headers);
+    payloads.push(
+      new Webhook(SECRET).verify(body, envelope.headers) as Record<
+        string,
+        unknown
+      >,
+    );
     if (
       envelope.kind === "challenge" &&
       ["unknown", "pending"].includes(challengeMode)
@@ -4445,6 +4465,7 @@ async function scopedSignedRelayScenario(seedExisting = false) {
     rows,
     alarm,
     configure,
+    payloads,
     setMode(value: typeof challengeMode) {
       challengeMode = value;
     },
@@ -4851,6 +4872,167 @@ describe("bounded production private signed relay", () => {
         await f.alarm();
         expect(f.calls.filter((x) => x.kind === "message")).toHaveLength(0);
         expect(await f.rows()).toHaveLength(0);
+      } finally {
+        await f.close();
+      }
+    },
+  );
+});
+
+describe("scoped staging signed relay resume", () => {
+  const params = (tableId: string) => ({
+    ...subscriptionParams(tableId),
+    name: "table.resume.requested",
+  });
+  const request = (
+    f: Awaited<ReturnType<typeof scopedSignedRelayScenario>>,
+    requestId: string,
+    requestedAt: number,
+  ) =>
+    f.bc.callTool({
+      name: "request_table_resume",
+      arguments: {
+        table_id: f.tables[0],
+        request_id: requestId,
+        generation: 0,
+        requested_at: requestedAt,
+      },
+    });
+  it("uses explicit resume-only discovery, real OAuth/MCP/DO producer, signed challenge and delivery, then recipient accept exactly once", async () => {
+    const f = await scopedSignedRelayScenario(false, true);
+    try {
+      expect(await callEvent(f.ac, "events/list")).toMatchObject({
+        events: [{ name: "table.resume.requested" }],
+      });
+      await expect(
+        callEvent(f.ac, "events/subscribe", subscriptionParams(f.tables[0])),
+      ).rejects.toThrow();
+      await expect(
+        callEvent(f.dc, "events/subscribe", params(f.tables[0])),
+      ).rejects.toThrow();
+      await expect(
+        callEvent(f.ac, "events/subscribe", params(f.tables[1])),
+      ).rejects.toThrow();
+      expect(f.calls).toHaveLength(0);
+      await callEvent(f.ac, "events/subscribe", params(f.tables[0]));
+      expect(f.calls.map((x) => x.kind)).toEqual(["challenge"]);
+      const requestId = crypto.randomUUID(),
+        requestedAt = Date.now();
+      expect(
+        toolOutput(await request(f, requestId, requestedAt)),
+      ).toMatchObject({ state: "pending" });
+      expect(
+        toolOutput(await request(f, requestId, requestedAt)),
+      ).toMatchObject({ state: "pending" });
+      expect(await f.rows()).toHaveLength(1);
+      await f.alarm();
+      expect(f.calls.map((x) => x.kind)).toEqual(["challenge", "message"]);
+      const event = f.payloads.find((x) => x.name === "table.resume.requested");
+      expect(event).toMatchObject({
+        data: { table_id: f.tables[0], request_id: requestId, generation: 0 },
+      });
+      expect(Object.keys(event?.data as object).sort()).toEqual([
+        "expires_at",
+        "generation",
+        "request_id",
+        "requester_membership_id",
+        "table_id",
+      ]);
+      expect(await f.rows()).toMatchObject([
+        { status: "accepted", attempt_count: 1 },
+      ]);
+      const accepted = toolOutput(
+        await f.ac.callTool({
+          name: "respond_table_resume",
+          arguments: {
+            table_id: f.tables[0],
+            request_id: requestId,
+            generation: 0,
+            decision: "accept",
+          },
+        }),
+      );
+      expect(accepted).toMatchObject({
+        state: "accepted",
+        sessionGeneration: 1,
+      });
+      const table = toolOutput(
+        await f.bc.callTool({
+          name: "get_table",
+          arguments: { table_id: f.tables[0] },
+        }),
+      );
+      expect(table).toMatchObject({
+        generation: 1,
+        session: { sessionId: accepted.sessionId, generation: 1 },
+      });
+      await f.alarm();
+      expect(f.calls).toHaveLength(2);
+    } finally {
+      await f.close();
+    }
+  });
+  it("retains the original unknown resume operation across reconstruction and a full stop without replay", async () => {
+    const f = await scopedSignedRelayScenario(false, true);
+    try {
+      await callEvent(f.ac, "events/subscribe", params(f.tables[0]));
+      f.setMessageMode("unknown");
+      const requestId = crypto.randomUUID(),
+        requestedAt = Date.now();
+      await request(f, requestId, requestedAt);
+      await f.alarm();
+      const before = await f.rows();
+      expect(before).toMatchObject([{ attempt_count: 1, status: "in_flight" }]);
+      const message = f.calls.find((x) => x.kind === "message");
+      expect(message).toBeDefined();
+      const attempts = () =>
+        runInDurableObject(
+          env.TABLES.get(env.TABLES.idFromName(f.tables[0])),
+          (_i, state) =>
+            state.storage.sql
+              .exec("SELECT * FROM table_event_relay_attempts")
+              .toArray(),
+        );
+      const original = await attempts();
+      expect(original).toHaveLength(1);
+      for (const key of [
+        "ALLOW_NEW_GUESTS",
+        "ALLOW_NEW_TABLES",
+        "ENABLE_MCP_SUBSCRIPTIONS",
+        "ENABLE_OPENAI_EVENTS",
+        "ALLOW_OUTBOUND_NOTIFICATIONS",
+      ] as const)
+        f.overlay[key] = "false";
+      await f.alarm();
+      await f.alarm();
+      expect(await attempts()).toEqual(original);
+      expect(await f.rows()).toEqual(before);
+      expect(f.calls.filter((x) => x.kind === "message")).toEqual([message]);
+    } finally {
+      await f.close();
+    }
+  });
+  it.each(["scope", "expiry", "pause"])(
+    "rechecks %s before an already queued resume delivery",
+    async (change) => {
+      const f = await scopedSignedRelayScenario(false, true);
+      try {
+        await callEvent(f.ac, "events/subscribe", params(f.tables[0]));
+        await request(f, crypto.randomUUID(), Date.now());
+        expect(await f.rows()).toHaveLength(1);
+        const policy = JSON.parse(f.overlay.PRIVATE_PILOT_POLICY as string);
+        if (change === "scope") policy.eventNames = ["table.message.created"];
+        if (change === "expiry") {
+          policy.notBefore = new Date(Date.now() - 120000).toISOString();
+          policy.approvedAt = policy.notBefore;
+          policy.expiresAt = new Date(Date.now() - 1).toISOString();
+        }
+        if (change === "pause")
+          f.overlay.ALLOW_OUTBOUND_NOTIFICATIONS = "false";
+        f.overlay.PRIVATE_PILOT_POLICY = JSON.stringify(policy);
+        await f.alarm();
+        expect(f.calls.map((x) => x.kind)).toEqual(["challenge"]);
+        expect(await f.rows()).toMatchObject([{ attempt_count: 0 }]);
       } finally {
         await f.close();
       }

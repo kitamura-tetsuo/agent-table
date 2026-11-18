@@ -19,6 +19,7 @@ import {
   activePrivatePilotPolicy,
   PRIVATE_PILOT_PROFILE,
   privatePilotConfiguration,
+  privatePilotEventAllowed,
   privatePilotRecipientMatches,
 } from "../shared/private-pilot";
 import { productionRelayProfileSelected } from "../shared/production-relay-events";
@@ -91,7 +92,7 @@ export async function subscribeEvent(
   const parsed = inspected.value;
   if (
     env.RELEASE_PROFILE === PRIVATE_PILOT_PROFILE &&
-    parsed.name !== "table.message.created"
+    !privatePilotEventAllowed(privatePilotConfiguration(env), parsed.name)
   )
     return { ok: false, reason: "denied" };
   diagnostics?.record("events/subscribe", "parameters", "valid");
@@ -150,6 +151,7 @@ export async function subscribeEvent(
       const currentPilot = activePrivatePilotPolicy(env);
       if (
         !currentPilot ||
+        !privatePilotEventAllowed(currentPilot, parsed.name) ||
         !privatePilotRecipientMatches(
           currentPilot,
           actor,
