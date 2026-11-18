@@ -40,6 +40,7 @@ import {
 } from "../shared/private-pilot";
 import {
   productionRelayAccessAllowed,
+  productionRelayProfileSelected,
   productionRelayReadiness,
 } from "../shared/production-relay-events";
 import { testNativeEventsAllowed } from "../shared/test-native-events";
@@ -188,7 +189,7 @@ function newServer(
   const advertiseEvents =
     privateEvents &&
     ((privatePilotDiscoveryAllowed(env, identity) &&
-      (env.RELEASE_ENVIRONMENT !== "production" ||
+      (!productionRelayProfileSelected(env) ||
         productionRelayAccessAllowed(env))) ||
       testNativeEventsAllowed(env) ||
       productionRelayReadiness(env).enabled);
@@ -241,7 +242,7 @@ function newServer(
         !actor ||
         (env.RELEASE_PROFILE === PRIVATE_PILOT_PROFILE &&
           (!privatePilotDiscoveryAllowed(env, actor) ||
-            (env.RELEASE_ENVIRONMENT === "production" &&
+            (productionRelayProfileSelected(env) &&
               !productionRelayAccessAllowed(env))))
       ) {
         diagnostics?.record("events/list", "handler", "denied");
@@ -754,7 +755,7 @@ export async function handleMcp(
     ).allowed;
   const privateEvents =
     ((privatePilotDiscoveryAllowed(env, identity) &&
-      (env.RELEASE_ENVIRONMENT !== "production" ||
+      (!productionRelayProfileSelected(env) ||
         productionRelayAccessAllowed(env))) ||
       testNativeEventsAllowed(env) ||
       productionRelayReadiness(env).enabled) &&

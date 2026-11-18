@@ -654,7 +654,7 @@ test("reusable workflow context permits only the scoped production profile and n
   );
   const end = source.indexOf("\n          fi", start);
   assert.ok(start >= 0 && end > start);
-  const block = source.slice(start, end) + "\nfi";
+  const block = `${source.slice(start, end)}\nfi`;
   for (const [profile, environment, bootstrap, allowed] of [
     ["private-pilot-a-only", "production", "false", true],
     ["private-pilot-a-only", "staging", "false", true],
@@ -678,5 +678,74 @@ test("reusable workflow context permits only the scoped production profile and n
       allowed,
       `${profile}/${environment}/${bootstrap}`,
     );
+  }
+});
+
+function stagingSignedFixture() {
+  const f = makePrivatePilotFixture(),
+    config = JSON.parse(f.configText),
+    peer = JSON.parse(f.peerText);
+  const production = fixture();
+  config.vars.EVENTS_REVIEWED_CALLBACK_TARGETS = JSON.stringify(
+    JSON.parse(config.vars.PRIVATE_PILOT_POLICY).callbackTargets,
+  );
+  config.vars.EVENTS_RELAY_CONFIGURATION = JSON.stringify({
+    ...JSON.parse(production.config.vars.EVENTS_RELAY_CONFIGURATION),
+    environment: "staging",
+    audience: "test:agent-table",
+  });
+  f.configText = JSON.stringify(config);
+  f.inventory.bindings = [
+    ...f.inventory.bindings,
+    "EVENTS_RELAY_SIGNING_KEY_PKCS8",
+  ];
+  f.operations.configSha256 = f.evidence.configSha256 = hash(f.configText);
+  f.operations.privatePilot.nativeFetchRiskAccepted = false;
+  f.operations.productionRelay = {
+    ...production.f.operations.productionRelay,
+    configurationSha256: hash(config.vars.EVENTS_RELAY_CONFIGURATION),
+    callbackTargetsSha256: hash(config.vars.EVENTS_REVIEWED_CALLBACK_TARGETS),
+  };
+  const cf = makeProviderMock(config, peer),
+    gh = makeGithubMock("staging"),
+    prefix = `/client/v4/accounts/${config.account_id}/workers/scripts/${config.name}`;
+  for (const rows of [
+    cf.routes.get(`${prefix}/settings`).bindings,
+    cf.routes.get(`${prefix}/versions/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb`)
+      .resources.bindings,
+    cf.routes.get(`${prefix}/secrets`),
+  ])
+    rows.push({ name: "EVENTS_RELAY_SIGNING_KEY_PKCS8", type: "secret_text" });
+  return { f, config, peer, cf, gh };
+}
+test("staging private signed relay uses test audience and real release authority without production promotion", async () => {
+  const v = stagingSignedFixture();
+  const a = await authorize(v);
+  assert.equal(a.deploymentApproved, true);
+  assert.equal(a.environment, "staging");
+  assert.equal(a.productionRelay.machineVerifiedTransportEvidence, false);
+  assert.deepEqual(a.productionAcceptance, pendingAcceptance);
+  for (const mutate of [
+    (v) => delete v.f.operations.productionRelay,
+    (v) => (v.f.operations.privatePilot.nativeFetchRiskAccepted = true),
+    (v) => {
+      const c = JSON.parse(v.f.configText);
+      c.vars.EVENTS_RELAY_CONFIGURATION = JSON.stringify({
+        ...JSON.parse(c.vars.EVENTS_RELAY_CONFIGURATION),
+        audience: "production:agent-table",
+      });
+      v.f.configText = JSON.stringify(c);
+      v.f.evidence.configSha256 = v.f.operations.configSha256 = hash(
+        v.f.configText,
+      );
+    },
+    (v) =>
+      (v.f.inventory.bindings = v.f.inventory.bindings.filter(
+        (k) => k !== "EVENTS_RELAY_SIGNING_KEY_PKCS8",
+      )),
+  ]) {
+    const bad = stagingSignedFixture();
+    mutate(bad);
+    await assert.rejects(authorize(bad));
   }
 });

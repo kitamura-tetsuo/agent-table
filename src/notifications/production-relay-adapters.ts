@@ -138,7 +138,6 @@ export function selectProductionRelayAdapters(
   if (
     !productionRelayReadiness(env).enabled &&
     !(
-      env.RELEASE_ENVIRONMENT === "production" &&
       env.RELEASE_PROFILE === PRIVATE_PILOT_PROFILE &&
       productionRelayConfiguration(env)
     )
