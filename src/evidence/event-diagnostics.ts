@@ -16,6 +16,7 @@ import {
   PRODUCTION_RELAY_EVENTS_PROFILE,
   type ProductionRelayBindings,
   productionRelayAccessAllowed,
+  productionRelayProfileSelected,
   productionRelayReadiness,
 } from "../shared/production-relay-events";
 import {
@@ -206,8 +207,7 @@ export function eventDiagnosticContext(
   const native = nativeDiagnosticPolicy(env);
   const policy = parsePrivatePilotPolicy(env.PRIVATE_PILOT_POLICY);
   const privateTransportAllowed =
-    env.RELEASE_ENVIRONMENT !== "production" ||
-    productionRelayAccessAllowed(env);
+    !productionRelayProfileSelected(env) || productionRelayAccessAllowed(env);
   const environment = member(
     ["local", "staging", "production"] as const,
     env.RELEASE_ENVIRONMENT,

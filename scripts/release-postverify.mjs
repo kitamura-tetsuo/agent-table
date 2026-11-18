@@ -7,8 +7,8 @@ import {
   privatePilotConfiguration,
 } from "../src/shared/private-pilot.ts";
 import {
-  PRODUCTION_RELAY_EVENTS_PROFILE,
   productionRelayConfiguration,
+  productionRelayProfileSelected,
 } from "../src/shared/production-relay-events.ts";
 import {
   TEST_NATIVE_EVENTS_PROFILE,
@@ -164,11 +164,7 @@ export async function verifyPublishedRelease({
       testNativeEventsAllowed(config.vars),
     "post-deploy-profile-unverified",
   );
-  if (
-    profile === PRODUCTION_RELAY_EVENTS_PROFILE ||
-    (profile === PRIVATE_PILOT_PROFILE &&
-      config.vars.RELEASE_ENVIRONMENT === "production")
-  ) {
+  if (productionRelayProfileSelected(config.vars)) {
     const relay = productionRelayConfiguration(config.vars);
     requirePost(
       relay &&
@@ -312,9 +308,7 @@ export async function verifyPublishedRelease({
   }
   return {
     verified: true,
-    ...(profile === PRODUCTION_RELAY_EVENTS_PROFILE ||
-    (profile === PRIVATE_PILOT_PROFILE &&
-      config.vars.RELEASE_ENVIRONMENT === "production")
+    ...(productionRelayProfileSelected(config.vars)
       ? {
           verificationScope: "serving-configuration",
           configSha256: approval.configSha256,

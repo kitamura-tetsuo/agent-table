@@ -160,3 +160,68 @@ it("production private scope never becomes global readiness and rejects mismatch
     }),
   ).toBeNull();
 });
+
+it("staging signed private relay binds test audience and refuses native fallback or production identity", async () => {
+  const { privateRelayBindings } = await import(
+    "../helpers/production-relay-fixture"
+  );
+  const { productionRelayProfileSelected } = await import(
+    "../../src/shared/production-relay-events"
+  );
+  const { selectProductionRelayAdapters } = await import(
+    "../../src/notifications/production-relay-adapters"
+  );
+  const actor = {
+    guestId: crypto.randomUUID(),
+    connectionId: crypto.randomUUID(),
+  };
+  const tableId = crypto.randomUUID();
+  const value = {
+    ...privateRelayBindings({ ...actor, tableIds: [tableId] }),
+    RELEASE_ENVIRONMENT: "staging",
+  };
+  const config = JSON.parse(value.EVENTS_RELAY_CONFIGURATION);
+  config.environment = "staging";
+  config.audience = "test:agent-table";
+  value.EVENTS_RELAY_CONFIGURATION = JSON.stringify(config);
+  expect(productionRelayProfileSelected(value)).toBe(true);
+  expect(productionRelayConfiguration(value)?.environment).toBe("staging");
+  expect(
+    selectProductionRelayAdapters(value)?.outbox.configuration.audience,
+  ).toBe("test:agent-table");
+  expect(isRestoreQuarantined(value)).toBe(false);
+  expect(productionRelayReadiness(value).enabled).toBe(false); // never global capability
+  for (const change of [
+    { environment: "production" },
+    { audience: "production:agent-table" },
+  ]) {
+    const invalid = {
+      ...value,
+      EVENTS_RELAY_CONFIGURATION: JSON.stringify({ ...config, ...change }),
+    };
+    expect(productionRelayProfileSelected(invalid)).toBe(true);
+    expect(selectProductionRelayAdapters(invalid)).toBeNull();
+    expect(isRestoreQuarantined(invalid)).toBe(true);
+    expect(eventDiagnosticContext(invalid, actor, tableId).policyActive).toBe(
+      false,
+    );
+  }
+  expect(
+    selectProductionRelayAdapters({
+      ...value,
+      EVENTS_RELAY_SIGNING_KEY_PKCS8: "invalid",
+    }),
+  ).toBeNull();
+  expect(
+    isRestoreQuarantined({
+      ...value,
+      EVENTS_RELAY_SIGNING_KEY_PKCS8: "invalid",
+    }),
+  ).toBe(true);
+  expect(
+    productionRelayConfiguration({
+      ...value,
+      RELEASE_PROFILE: "production-relay-events",
+    }),
+  ).toBeNull();
+});

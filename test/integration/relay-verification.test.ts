@@ -556,3 +556,83 @@ it("production relay selection missing refuses before candidate or native networ
   expect((await f.rows()).candidates).toEqual([]);
   expect((await f.rows()).proof).toEqual([]);
 });
+
+it.each(["verified", "lost-response"])(
+  "staging selected signed adapter persists %s without native fallback",
+  async (outcome) => {
+    const f = await fixture();
+    const { privateRelayBindings } = await import(
+      "../helpers/production-relay-fixture"
+    );
+    const signed = privateRelayBindings({
+      guestId: f.actor.guestId,
+      connectionId: f.actor.connectionId,
+      tableIds: [f.params.arguments.table_id],
+    });
+    const config = JSON.parse(signed.EVENTS_RELAY_CONFIGURATION);
+    config.environment = "staging";
+    config.audience = "test:agent-table";
+    const staging: Env = {
+      ...env,
+      ...signed,
+      RELEASE_ENVIRONMENT: "staging",
+      EVENTS_RELAY_CONFIGURATION: JSON.stringify(config),
+    };
+    await runInDurableObject(f.stub, (instance) => {
+      (instance as unknown as { env: Env }).env = staging;
+      delete (instance as unknown as { outboxDispatchEnabled?: unknown })
+        .outboxDispatchEnabled;
+    });
+    const network = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async (url, init) => {
+        const envelope = JSON.parse(
+          new TextDecoder().decode(init?.body as Uint8Array),
+        );
+        expect(envelope.audience).toBe("test:agent-table");
+        if (String(url).endsWith("/status")) {
+          expect(String(url)).toBe("https://relay.example.org/relay/v1/status");
+          const saved = await f.rows();
+          expect(envelope.requestId).toBe(saved.proof[0].request_id);
+          expect(envelope.operationDigest).toBe(
+            saved.proof[0].operation_digest,
+          );
+          return Response.json({ state: "unknown" });
+        }
+        expect(String(url)).toBe(
+          "https://relay.example.org/relay/v1/challenge",
+        );
+        const rows = await f.rows();
+        expect(rows.proof[0].state).toBe("dispatched");
+        expect(rows.proof[0].request_id).toBe(envelope.requestId);
+        if (outcome === "lost-response")
+          throw Error("controlled response loss");
+        return Response.json({
+          state: "completed",
+          outcome: { kind: "challenge", verification: "verified" },
+        });
+      });
+    const result = await subscribeEvent(staging, f.actor, f.params);
+    expect(result.ok).toBe(outcome === "verified");
+    expect(network).toHaveBeenCalledTimes(outcome === "verified" ? 1 : 2);
+    const saved = await f.rows();
+    expect(saved.proof[0].state).toBe(
+      outcome === "verified" ? "verified" : "unknown",
+    );
+    if (outcome === "verified")
+      expect(saved.subscriptions[0].status).toBe("active");
+    else {
+      await evictDurableObject(f.stub);
+      expect((await f.rows()).proof).toEqual(saved.proof);
+      expect(
+        (
+          await f.stub.commitVerifiedEventSubscription(
+            f.actor,
+            String(saved.proof[0].candidate_id),
+          )
+        ).ok,
+      ).toBe(false);
+      expect(network).toHaveBeenCalledTimes(outcome === "verified" ? 1 : 2);
+    }
+  },
+);

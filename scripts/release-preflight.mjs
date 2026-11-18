@@ -10,6 +10,7 @@ import {
 import {
   PRODUCTION_RELAY_EVENTS_PROFILE,
   productionRelayConfiguration,
+  productionRelayProfileSelected,
 } from "../src/shared/production-relay-events.ts";
 import {
   TEST_NATIVE_EVENTS_PROFILE,
@@ -480,10 +481,10 @@ export function validateRelease({
   requireCondition(
     !(
       profile === PRODUCTION_RELAY_EVENTS_PROFILE ||
-      (profile === PRIVATE_PILOT_PROFILE && environment === "production")
+      (profile === PRIVATE_PILOT_PROFILE &&
+        productionRelayProfileSelected(vars))
     ) ||
-      (environment === "production" &&
-        productionRelayConfiguration(vars) !== null &&
+      (productionRelayConfiguration(vars) !== null &&
         secrets.bindings.includes("EVENTS_RELAY_SIGNING_KEY_PKCS8")),
     "production-relay-configuration-unverified",
   );
@@ -547,7 +548,7 @@ export function validateRelease({
     preflightValid: true,
     deploymentApproved: false,
     ...(profile === PRODUCTION_RELAY_EVENTS_PROFILE ||
-    (profile === PRIVATE_PILOT_PROFILE && environment === "production")
+    (profile === PRIVATE_PILOT_PROFILE && productionRelayProfileSelected(vars))
       ? { productionAcceptance: pendingProductionRelayAcceptance() }
       : {}),
     environment,

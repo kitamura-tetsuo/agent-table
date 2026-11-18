@@ -1,5 +1,8 @@
 import { privatePilotConfiguration } from "./private-pilot";
-import { productionRelayAccessAllowed } from "./production-relay-events";
+import {
+  productionRelayAccessAllowed,
+  productionRelayProfileSelected,
+} from "./production-relay-events";
 import { recoveryEnvironmentDenied } from "./recovery";
 import { testNativeEventsAllowed } from "./test-native-events";
 
@@ -44,7 +47,9 @@ export function isRestoreQuarantined(
   if (!knownEnvironment || env.RESTORE_QUARANTINE !== "false") return true;
   if (env.RELEASE_ENVIRONMENT === "local") return false;
   if (
-    (env.RELEASE_ENVIRONMENT === "staging" && privatePilotConfiguration(env)) ||
+    (env.RELEASE_ENVIRONMENT === "staging" &&
+      !productionRelayProfileSelected(env) &&
+      privatePilotConfiguration(env)) ||
     testNativeEventsAllowed(env) ||
     productionRelayAccessAllowed(env)
   )

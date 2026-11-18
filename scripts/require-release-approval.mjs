@@ -30,6 +30,19 @@ try {
       manifest.buildSha === buildSha &&
       manifest.configSha256 === configSha256 &&
       manifest.profile === profile &&
+      (manifest.productionRelay === undefined ||
+        (isPendingProductionRelayAcceptance(manifest.productionAcceptance) &&
+          manifest.productionRelay.reviewAuthority ===
+            "operator-reviewed-under-protected-environment" &&
+          manifest.productionRelay.machineVerifiedTransportEvidence === false &&
+          [
+            "configurationSha256",
+            "callbackTargetsSha256",
+            "signingPublicKeySha256",
+            "decisionSha256",
+          ].every((k) =>
+            /^[a-f0-9]{64}$/.test(manifest.productionRelay[k]),
+          ))) &&
       (profile === "manual" ||
         (profile === PRODUCTION_RELAY_EVENTS_PROFILE &&
           environment === "production" &&

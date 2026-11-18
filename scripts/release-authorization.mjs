@@ -10,6 +10,7 @@ import {
 import {
   PRODUCTION_RELAY_EVENTS_PROFILE,
   productionRelayConfiguration,
+  productionRelayProfileSelected,
 } from "../src/shared/production-relay-events.ts";
 import {
   TEST_NATIVE_EVENTS_PROFILE,
@@ -286,7 +287,7 @@ export function verifyPrivatePilotDecision(record, vars, now) {
         ? decision.callbackDiscoveryReviewed === true &&
           decision.noOutboundReviewed === true
         : decision.callbackControlReviewed === true &&
-          (vars.RELEASE_ENVIRONMENT === "production"
+          (productionRelayProfileSelected(vars)
             ? decision.nativeFetchRiskAccepted === false
             : decision.nativeFetchRiskAccepted === true)) &&
       (policy.observationMode === undefined ||
@@ -414,7 +415,8 @@ export async function authorizeRelease({
   });
   const productionRelay =
     profile === PRODUCTION_RELAY_EVENTS_PROFILE ||
-    (profile === PRIVATE_PILOT_PROFILE && environment === "production")
+    (profile === PRIVATE_PILOT_PROFILE &&
+      productionRelayProfileSelected(config.vars))
       ? verifyProductionRelayDecision(operations, config.vars)
       : undefined;
   const testNativeEvents =
