@@ -623,6 +623,9 @@ it.each(["verified", "lost-response"])(
       expect(saved.subscriptions[0].status).toBe("active");
     else {
       await evictDurableObject(f.stub);
+      await runInDurableObject(f.stub, (instance) => {
+        (instance as unknown as { env: Env }).env = staging;
+      });
       expect((await f.rows()).proof).toEqual(saved.proof);
       expect(
         (
