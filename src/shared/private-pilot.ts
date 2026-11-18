@@ -12,6 +12,10 @@ const SHA = /^[a-f0-9]{40}$/;
 const REFERENCE = /^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$/;
 
 /** Scoped policy from protected staging or separately reviewed production relay release. */
+export type PrivatePilotEventName =
+  | "table.message.created"
+  | "table.resume.requested";
+
 export interface PrivatePilotPolicy {
   schemaVersion: 1;
   mode: "a-only" | "a-only-discovery";
@@ -25,6 +29,8 @@ export interface PrivatePilotPolicy {
   recipientConnectionId: string;
   tableIds: string[];
   callbackTargets: readonly ReviewedCallbackTarget[];
+  /** Omission preserves the original message-only scope. */
+  eventNames?: PrivatePilotEventName[];
 }
 
 /** Independent of Cloudflare globals so the release scripts use the same parser. */
@@ -81,7 +87,10 @@ export function parsePrivatePilotPolicy(
   ];
   if (
     Object.keys(row).some(
-      (key) => !keys.includes(key) && key !== "observationMode",
+      (key) =>
+        !keys.includes(key) &&
+        key !== "observationMode" &&
+        key !== "eventNames",
     ) ||
     !keys.every((key) => Object.hasOwn(row, key)) ||
     row.schemaVersion !== 1 ||
@@ -101,6 +110,18 @@ export function parsePrivatePilotPolicy(
     row.tableIds.length > 3 ||
     !row.tableIds.every((id) => typeof id === "string" && UUID.test(id)) ||
     new Set(row.tableIds).size !== row.tableIds.length
+  )
+    return null;
+  if (
+    Object.hasOwn(row, "eventNames") &&
+    (!Array.isArray(row.eventNames) ||
+      row.eventNames.length < 1 ||
+      row.eventNames.length > 2 ||
+      new Set(row.eventNames).size !== row.eventNames.length ||
+      !row.eventNames.every(
+        (name) =>
+          name === "table.message.created" || name === "table.resume.requested",
+      ))
   )
     return null;
   const approved = instant(row.approvedAt);
@@ -141,6 +162,9 @@ export function parsePrivatePilotPolicy(
     recipientConnectionId: row.recipientConnectionId,
     tableIds: row.tableIds as string[],
     callbackTargets,
+    ...(Array.isArray(row.eventNames)
+      ? { eventNames: row.eventNames as PrivatePilotEventName[] }
+      : {}),
   };
 }
 
@@ -163,6 +187,9 @@ export function privatePilotConfiguration(
   return policy &&
     (env.RELEASE_ENVIRONMENT !== "production" || policy.mode === "a-only") &&
     policy.buildSha === env.RELEASE_BUILD_SHA &&
+    (!privatePilotEventAllowed(policy, "table.resume.requested") ||
+      (policy.mode === "a-only" &&
+        typeof env.EVENTS_RELAY_CONFIGURATION === "string")) &&
     (policy.mode !== "a-only-discovery" ||
       env.ALLOW_OUTBOUND_NOTIFICATIONS === "false")
     ? policy
@@ -232,4 +259,17 @@ export function privatePilotRecipientAllowed(
 ): boolean {
   const policy = activePrivatePilotPolicy(env, now);
   return !!policy && privatePilotRecipientMatches(policy, actor, tableId);
+}
+
+/** Event scope is explicit and independently rechecked at durable boundaries. */
+export function privatePilotEventAllowed(
+  policy: PrivatePilotPolicy | null,
+  eventName: string,
+): boolean {
+  return (
+    !!policy &&
+    (policy.eventNames ?? ["table.message.created"]).some(
+      (name) => name === eventName,
+    )
+  );
 }

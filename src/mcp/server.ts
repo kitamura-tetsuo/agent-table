@@ -36,7 +36,9 @@ import { validTableId } from "../shared/invitations";
 import { CREATION_LIMITS, TABLE_LIMITS } from "../shared/limits";
 import {
   PRIVATE_PILOT_PROFILE,
+  privatePilotConfiguration,
   privatePilotDiscoveryAllowed,
+  privatePilotEventAllowed,
 } from "../shared/private-pilot";
 import {
   productionRelayAccessAllowed,
@@ -252,7 +254,13 @@ function newServer(
       return {
         events:
           env.RELEASE_PROFILE === PRIVATE_PILOT_PROFILE
-            ? [MESSAGE_EVENT_DEFINITION]
+            ? [MESSAGE_EVENT_DEFINITION, RESUME_EVENT_DEFINITION].filter(
+                (definition) =>
+                  privatePilotEventAllowed(
+                    privatePilotConfiguration(env),
+                    definition.name,
+                  ),
+              )
             : [MESSAGE_EVENT_DEFINITION, RESUME_EVENT_DEFINITION],
       };
     },

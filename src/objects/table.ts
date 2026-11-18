@@ -111,6 +111,7 @@ import {
   PRIVATE_PILOT_PROFILE,
   type PrivatePilotPolicy,
   privatePilotConfiguration,
+  privatePilotEventAllowed,
   privatePilotRecipientAllowed,
   privatePilotRecipientMatches,
 } from "../shared/private-pilot";
@@ -1748,12 +1749,14 @@ export class TableDO extends DurableObject<Env> {
     actor: VerifiedConnectionActor,
     tableId: string,
     destination: string,
+    eventName: string,
     now = Date.now(),
   ): boolean {
     if (this.env.RELEASE_PROFILE !== PRIVATE_PILOT_PROFILE) return true;
     const policy = activePrivatePilotPolicy(this.env, now);
     return (
       !!policy &&
+      privatePilotEventAllowed(policy, eventName) &&
       privatePilotRecipientMatches(policy, actor, tableId) &&
       validateReviewedCallbackDestination(destination, policy.callbackTargets)
         .ok
@@ -1783,6 +1786,7 @@ export class TableDO extends DurableObject<Env> {
       !policy ||
       actor?.kind !== "verified-connection" ||
       actor.scope !== "events:subscribe" ||
+      !privatePilotEventAllowed(policy, parsed.name) ||
       !privatePilotRecipientMatches(policy, actor, parsed.arguments.table_id)
     )
       return { ok: false, code: "TABLE_NOT_FOUND" };
@@ -1882,6 +1886,7 @@ export class TableDO extends DurableObject<Env> {
         fresh,
         parsed.arguments.table_id,
         parsed.delivery.url,
+        parsed.name,
       )
     )
       return { ok: false, code: "TABLE_NOT_FOUND" };
@@ -1948,6 +1953,7 @@ export class TableDO extends DurableObject<Env> {
                 fresh,
                 parsed.arguments.table_id,
                 parsed.delivery.url,
+                parsed.name,
                 now,
               )
             )
@@ -2158,7 +2164,13 @@ export class TableDO extends DurableObject<Env> {
           session_id: c.session_id ?? undefined,
           generation: c.session_id ? c.session_generation : undefined,
         }).ok) ||
-      !this.eventRegistrationAllowed(actor, table.table_id, c.callback_url, now)
+      !this.eventRegistrationAllowed(
+        actor,
+        table.table_id,
+        c.callback_url,
+        c.event_name,
+        now,
+      )
     )
       return;
     return c;
@@ -2298,6 +2310,7 @@ export class TableDO extends DurableObject<Env> {
         fresh,
         table.table_id,
         candidate.callback_url,
+        candidate.event_name,
       )
     )
       return { ok: false, code: "TABLE_NOT_FOUND" };
@@ -2357,6 +2370,7 @@ export class TableDO extends DurableObject<Env> {
                 fresh,
                 table.table_id,
                 pending.callback_url,
+                pending.event_name,
                 now,
               )
             )
@@ -2646,7 +2660,11 @@ export class TableDO extends DurableObject<Env> {
           generation: row.session_id ? row.session_generation : undefined,
         }).ok) &&
       (this.env.RELEASE_PROFILE !== PRIVATE_PILOT_PROFILE ||
-        privatePilotRecipientAllowed(this.env, fresh, table.table_id)) &&
+        (privatePilotRecipientAllowed(this.env, fresh, table.table_id) &&
+          privatePilotEventAllowed(
+            privatePilotConfiguration(this.env),
+            row.event_name,
+          ))) &&
       row.status === "active" &&
       row.guest_id === fresh.guestId &&
       row.connection_id === fresh.connectionId &&
@@ -4488,6 +4506,7 @@ export class TableDO extends DurableObject<Env> {
           },
           work.table_id,
         ) ||
+        !privatePilotEventAllowed(policy, work.event_name) ||
         work.created_at < Date.parse(policy.notBefore) ||
         work.message_seq > PRIVATE_PILOT_MAX_MESSAGE_SEQ ||
         !validateReviewedCallbackDestination(
