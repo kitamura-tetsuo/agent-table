@@ -12,6 +12,11 @@ import {
   validEventDiagnosticRecord,
 } from "../evidence/event-diagnostics";
 import {
+  pruneNativeDiagnostics,
+  readNativeDiagnostics,
+  writeNativeDiagnostics,
+} from "../evidence/native-event-diagnostics";
+import {
   requestFingerprint,
   stagingEvidenceEnabled,
 } from "../evidence/staging";
@@ -250,7 +255,10 @@ export class GuestDO extends DurableObject<Env> {
     ctx.blockConcurrencyWhile(async () => {
       await initializeRecoveryFence(ctx, env, GUEST_RECOVERY_STORAGE, virgin);
       if (await this.deferQuarantinedWork()) return;
-      await this.deadlines.ensureExistingWakeup(() => this.earliestDeadline());
+      await this.deadlines.ensureExistingWakeup(
+        () => this.earliestDeadline(),
+        pruneNativeDiagnostics,
+      );
     });
   }
 
@@ -301,9 +309,28 @@ export class GuestDO extends DurableObject<Env> {
   async recordEventDiagnostics(
     records: EventDiagnosticRecord[],
     scope: EventDiagnosticScope,
+    actor?: { guestId: string; connectionId: string },
   ): Promise<boolean> {
     if (this.accessQuarantined()) return false;
     try {
+      if (this.env.RELEASE_PROFILE === "test-native-events") {
+        if (!actor) return false;
+        return await writeNativeDiagnostics(
+          () => this.env,
+          this.ctx.storage,
+          () =>
+            !this.accessQuarantined() &&
+            this.ctx.id.equals(this.env.GUESTS.idFromName(actor.guestId)) &&
+            this.authorizeConnection(
+              actor.guestId,
+              actor.connectionId,
+              "events:subscribe",
+            ).allowed,
+          actor.connectionId,
+          records,
+          scope,
+        );
+      }
       if (
         !Array.isArray(records) ||
         records.length === 0 ||
@@ -406,6 +433,13 @@ export class GuestDO extends DurableObject<Env> {
           .allowed;
       if (!authorized()) return null;
       const actor = { guestId, connectionId };
+      if (this.env.RELEASE_PROFILE === "test-native-events")
+        return await readNativeDiagnostics(
+          () => this.env,
+          this.ctx.storage,
+          () => !this.accessQuarantined() && authorized(),
+          actor,
+        );
       const context = eventDiagnosticContext(this.env, actor);
       const policy = privatePilotConfiguration(this.env);
       const empty = (
@@ -1305,6 +1339,7 @@ export class GuestDO extends DurableObject<Env> {
       const drained = await this.deadlines.drainDueWork(
         () => this.earliestDeadline(),
         (now, budget) => this.pruneDue(now, budget),
+        pruneNativeDiagnostics,
       );
       emitOperationalEvent({
         kind: "alarm",

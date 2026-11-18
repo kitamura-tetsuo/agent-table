@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { isIP } from "node:net";
 import { pathToFileURL } from "node:url";
+import { nativeDiagnosticPolicy } from "../src/shared/native-event-diagnostics.ts";
 import {
   PRIVATE_PILOT_PROFILE,
   privatePilotConfiguration,
@@ -386,6 +387,7 @@ export function validateRelease({
   peerText,
   secrets,
   evidence,
+  now = Date.now(),
 }) {
   requireCondition(
     ["staging", "production"].includes(environment),
@@ -449,6 +451,20 @@ export function validateRelease({
   );
 
   validatePeerIsolation(config, peer, environment);
+  for (const bindings of [vars, peer.vars]) {
+    requireCondition(
+      bindings.TEST_NATIVE_EVENT_DIAGNOSTICS === undefined ||
+        nativeDiagnosticPolicy(bindings),
+      "invalid-native-event-diagnostics",
+    );
+  }
+  if (vars.TEST_NATIVE_EVENT_DIAGNOSTICS !== undefined) {
+    const diagnostic = nativeDiagnosticPolicy(vars);
+    requireCondition(
+      diagnostic && now < Date.parse(diagnostic.expiresAt),
+      "expired-native-event-diagnostics",
+    );
+  }
   requireCondition(
     peer.vars.RELEASE_PROFILE !== TEST_NATIVE_EVENTS_PROFILE ||
       testNativeEventsInspectable(peer.vars),
@@ -592,6 +608,7 @@ export function prepareQuarantinedRestoreConfig(configText, peerText) {
   candidate.workers_dev = false;
   candidate.preview_urls = false;
   candidate.vars.RESTORE_QUARANTINE = "true";
+  delete candidate.vars.TEST_NATIVE_EVENT_DIAGNOSTICS;
   for (const name of [
     "ENABLE_MCP_SUBSCRIPTIONS",
     "ENABLE_OPENAI_EVENTS",

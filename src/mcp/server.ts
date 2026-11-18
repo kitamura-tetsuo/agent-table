@@ -729,6 +729,7 @@ export async function handleMcp(
   diagnostics?: EventDiagnosticTrace,
 ): Promise<Response> {
   // This function accepts only identity established by the OAuth middleware.
+  diagnostics?.authenticate?.(identity);
   diagnostics?.record(diagnostics.methodHint, "authentication", "allowed");
   const canonicalHostname = new URL(env.PUBLIC_ORIGIN).hostname;
   const allowedHostnames = [canonicalHostname];

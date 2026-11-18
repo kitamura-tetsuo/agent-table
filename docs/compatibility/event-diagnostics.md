@@ -71,3 +71,12 @@ and a bounded ring can discard history. An HTTP success, diagnostic record,
 callback origin or subscription acknowledgement does not establish delivery,
 a new autonomous host run, an authenticated read or a committed reply. The
 real-host acceptance requirements in Issue #24 and PR #63 are unchanged.
+
+
+## Native staging observation
+
+The native transport policy and protocol recording are separate. `policyActive` describes transport eligibility; it does not imply that protocol recording is enabled. In the native profile, `diagnosticCollection` reports the recording opt-in, active window and matching connection without exposing identifiers.
+
+`TEST_NATIVE_EVENT_DIAGNOSTICS` optionally pins schemaVersion 1, the exact buildSha, an approvalRef, one authenticated connectionId and canonical notBefore/expiresAt timestamps. Collection lasts at most 15 minutes. This changes observation only; native delivery may remain enabled after collection expires. The release operator record must bind the policy hash and review its data and stop plan. Normal pause/removal and quarantined recovery remove the opt-in.
+
+Only actual Events list/subscribe handling for the matching OAuth identity records fixed method/stage/outcome/detail classifications. Callback URLs, signing secrets, headers, RPC IDs and payloads are excluded. Reads require the same still-authorized connection and exact policy/transport provenance. Logical reads stop 15 minutes after collection expiry; a Durable Object alarm performs best-effort physical pruning and may be delayed by platform scheduling or quarantine. Existing earlier application deadlines are preserved. Empty records never prove that no request arrived, especially before authentication. Subscription validation, callback verification and host acceptance still require separate evidence.

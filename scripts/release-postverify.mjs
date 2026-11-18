@@ -193,6 +193,12 @@ export async function verifyPublishedRelease({
   if (profile === TEST_NATIVE_EVENTS_PROFILE) {
     requirePost(
       approval.testNativeEvents?.risk === TEST_NATIVE_EVENTS_RISK &&
+        approval.testNativeEvents?.diagnosticsSha256 ===
+          (config.vars.TEST_NATIVE_EVENT_DIAGNOSTICS === undefined
+            ? undefined
+            : createHash("sha256")
+                .update(config.vars.TEST_NATIVE_EVENT_DIAGNOSTICS)
+                .digest("hex")) &&
         approval.testNativeEvents.targetsSha256 ===
           createHash("sha256")
             .update(config.vars.EVENTS_REVIEWED_CALLBACK_TARGETS)
