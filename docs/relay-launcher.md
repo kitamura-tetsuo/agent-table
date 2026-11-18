@@ -71,8 +71,10 @@ Only successful application close emits `stopped,settled:true`; an ambiguous
 close emits `unknown,settled:false`. Missing output is unknown to the operator.
 SIGKILL emits no stop proof. Original admission/attempt evidence is not reset.
 
-There is deliberately no detached service/FIFO/socket management scheme. A
-supervisor must retain exclusive ownership of the private controller channel;
+The launcher itself has no detached service/FIFO/socket management scheme. The
+reviewed [Docker controller integration](relay-container-controller.md) retains
+its input/output and provides a private, owner-only Unix control socket without
+automatic enable. A supervisor must retain exclusive ownership of the channel;
 stdin=/dev/null immediately drains. Detached systemd activation and unattended
 re-enable are not provided. If those are needed, review that specific deployment
 integration instead of opening an administrative TCP port.
