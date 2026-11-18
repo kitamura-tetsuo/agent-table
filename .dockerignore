@@ -1,0 +1,9 @@
+# Only public runtime source enters the relay build context.
+**
+!package.json
+!.node-version
+!scripts/
+!scripts/*.mjs
+!src/
+!src/**/
+!src/**/*.ts

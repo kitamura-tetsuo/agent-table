@@ -1,0 +1,11 @@
+# Non-working placeholders. Freeze/review actual identity before use.
+tunnel: REPLACE_WITH_STAGING_ONLY_TUNNEL_ID
+credentials-file: /config/tunnel.json
+ingress:
+  - hostname: relay-staging.example.invalid
+    path: ^/relay/v1/(challenge|message|status)$
+    service: https://127.0.0.1:9444
+    originRequest:
+      originServerName: relay-staging.example.invalid
+      caPool: /config/origin-ca.pem
+  - service: http_status:404
