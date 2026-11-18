@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import {
   PRIVATE_PILOT_PROFILE,
@@ -30,12 +31,101 @@ function requirePost(value, code) {
   if (!value) throw new ProviderVerificationError(code);
 }
 
+const HEALTH_CONVERGENCE_MS = 30_000;
+const HEALTH_RECHECK_MS = 2_000;
+
+async function readPublishedHealth(origin, httpFetch, signal, remainingMs) {
+  const requestSignal = AbortSignal.any([
+    signal,
+    AbortSignal.timeout(Math.max(1, Math.ceil(Math.min(10_000, remainingMs)))),
+  ]);
+  let response;
+  try {
+    response = await httpFetch(`${origin}/health`, {
+      method: "GET",
+      redirect: "error",
+      signal: requestSignal,
+    });
+  } catch {
+    throw new ProviderVerificationError("post-deploy-origin-unreachable");
+  }
+  requirePost(
+    response.status === 200 &&
+      response.headers.get("Cache-Control") === "no-store" &&
+      Number(response.headers.get("Content-Length") || 0) < 2048,
+    "post-deploy-health-unverified",
+  );
+  let health;
+  try {
+    const reader = response.body?.getReader();
+    requirePost(reader, "post-deploy-health-invalid");
+    const cancel = () => {
+      reader.cancel().catch(() => {});
+    };
+    requestSignal.addEventListener("abort", cancel, { once: true });
+    if (requestSignal.aborted) cancel();
+    const chunks = [];
+    let size = 0;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        requestSignal.throwIfAborted();
+        if (done) break;
+        size += value.byteLength;
+        requirePost(size < 2048, "post-deploy-health-oversized");
+        chunks.push(value);
+      }
+    } finally {
+      requestSignal.removeEventListener("abort", cancel);
+      cancel();
+    }
+    requestSignal.throwIfAborted();
+    health = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  } catch (error) {
+    if (error instanceof ProviderVerificationError) throw error;
+    throw new ProviderVerificationError("post-deploy-health-invalid");
+  }
+  requirePost(
+    health &&
+      typeof health === "object" &&
+      !Array.isArray(health) &&
+      health.status === "ok" &&
+      health.release &&
+      typeof health.release === "object" &&
+      !Array.isArray(health.release) &&
+      typeof health.release.environment === "string" &&
+      typeof health.release.profile === "string" &&
+      typeof health.release.buildSha === "string" &&
+      /^[a-f0-9]{40}$/.test(health.release.buildSha),
+    "post-deploy-health-invalid",
+  );
+  return health;
+}
+
+function healthMismatches(health, vars) {
+  return [
+    ["status", health?.status, "ok"],
+    [
+      "release.environment",
+      health?.release?.environment,
+      vars.RELEASE_ENVIRONMENT,
+    ],
+    ["release.profile", health?.release?.profile, vars.RELEASE_PROFILE],
+    ["release.buildSha", health?.release?.buildSha, vars.RELEASE_BUILD_SHA],
+  ]
+    .filter(([, observed, expected]) => observed !== expected)
+    .map(([field]) => field);
+}
+
 export async function verifyPublishedRelease({
   configText,
   peer,
   approval,
   cloudflareRead,
   httpFetch = fetch,
+  healthNow = () => performance.now(),
+  waitForHealth = (ms, signal) => delay(ms, undefined, { signal }),
+  onHealthMismatch = () => {},
 }) {
   let config;
   try {
@@ -126,64 +216,94 @@ export async function verifyPublishedRelease({
       "post-deploy-private-pilot-approval-mismatch",
     );
   }
-  const state = await readCloudflareDeployment(config, peer, cloudflareRead);
-  verifyDeployedConfiguration(state.targetState, config);
   const before = approval.providerReceipt;
-  requirePost(
-    before?.accountId === state.targetState.accountId &&
-      before.workerName === state.targetState.workerName &&
-      before.kvId === state.targetState.kvId &&
-      Object.keys(state.targetState.doNamespaces).every(
-        (name) =>
-          before.doNamespaces?.[name] === state.targetState.doNamespaces[name],
-      ),
-    "post-deploy-resource-identity-changed",
-  );
-  let response;
+  const verifySnapshot = ({ targetState }) => {
+    verifyDeployedConfiguration(targetState, config);
+    requirePost(
+      before?.accountId === targetState.accountId &&
+        before.workerName === targetState.workerName &&
+        before.kvId === targetState.kvId &&
+        Object.keys(targetState.doNamespaces).every(
+          (name) =>
+            before.doNamespaces?.[name] === targetState.doNamespaces[name],
+        ),
+      "post-deploy-resource-identity-changed",
+    );
+  };
+  const state = await readCloudflareDeployment(config, peer, cloudflareRead);
+  verifySnapshot(state);
+  const startedAt = healthNow();
+  const deadline = startedAt + HEALTH_CONVERGENCE_MS;
+  const window = new AbortController();
+  const inWindow = () =>
+    requirePost(
+      !window.signal.aborted && healthNow() < deadline,
+      "post-deploy-build-not-observed",
+    );
+  let timer;
   try {
-    response = await httpFetch(`${config.vars.PUBLIC_ORIGIN}/health`, {
-      method: "GET",
-      redirect: "error",
-      signal: AbortSignal.timeout(10_000),
-    });
-  } catch {
-    throw new ProviderVerificationError("post-deploy-origin-unreachable");
+    await Promise.race([
+      (async () => {
+        for (let attempt = 1; ; attempt++) {
+          inWindow();
+          const health = await readPublishedHealth(
+            config.vars.PUBLIC_ORIGIN,
+            httpFetch,
+            window.signal,
+            deadline - healthNow(),
+          );
+          inWindow();
+          const mismatches = healthMismatches(health, config.vars);
+          if (mismatches.length === 0) {
+            if (attempt > 1) {
+              // A delayed health response cannot authorize a different deployment.
+              const settled = await readCloudflareDeployment(
+                config,
+                peer,
+                async (path) => {
+                  inWindow();
+                  const value = await cloudflareRead(path);
+                  inWindow();
+                  return value;
+                },
+              );
+              verifySnapshot(settled);
+              requirePost(
+                settled.targetState.versionId === state.targetState.versionId &&
+                  settled.targetState.deploymentId ===
+                    state.targetState.deploymentId,
+                "post-deploy-version-changed",
+              );
+            }
+            inWindow();
+            return;
+          }
+          // Field names only: never log the remote body or observed values.
+          onHealthMismatch({
+            attempt,
+            elapsedMs: Math.max(0, Math.floor(healthNow() - startedAt)),
+            mismatches,
+          });
+          inWindow();
+          await waitForHealth(
+            Math.min(HEALTH_RECHECK_MS, deadline - healthNow()),
+            window.signal,
+          );
+        }
+      })(),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => {
+          reject(
+            new ProviderVerificationError("post-deploy-build-not-observed"),
+          );
+          window.abort();
+        }, HEALTH_CONVERGENCE_MS);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+    window.abort();
   }
-  requirePost(
-    response.status === 200 &&
-      response.headers.get("Cache-Control") === "no-store" &&
-      Number(response.headers.get("Content-Length") || 0) < 2048,
-    "post-deploy-health-unverified",
-  );
-  let health;
-  try {
-    const reader = response.body?.getReader();
-    requirePost(reader, "post-deploy-health-invalid");
-    const chunks = [];
-    let size = 0;
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        size += value.byteLength;
-        requirePost(size < 2048, "post-deploy-health-oversized");
-        chunks.push(value);
-      }
-    } finally {
-      reader.cancel().catch(() => {});
-    }
-    health = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-  } catch (error) {
-    if (error instanceof ProviderVerificationError) throw error;
-    throw new ProviderVerificationError("post-deploy-health-invalid");
-  }
-  requirePost(
-    health?.status === "ok" &&
-      health.release?.environment === config.vars.RELEASE_ENVIRONMENT &&
-      health.release?.profile === config.vars.RELEASE_PROFILE &&
-      health.release?.buildSha === config.vars.RELEASE_BUILD_SHA,
-    "post-deploy-build-not-observed",
-  );
   return {
     verified: true,
     ...(profile === PRODUCTION_RELAY_EVENTS_PROFILE ||
@@ -227,6 +347,11 @@ async function main() {
       peer,
       approval,
       cloudflareRead: cloudflareReader(process.env.CLOUDFLARE_READ_TOKEN),
+      onHealthMismatch: (observation) => {
+        process.stderr.write(
+          `POST_DEPLOY_HEALTH_RECHECK ${JSON.stringify(observation)}\n`,
+        );
+      },
     });
     process.stdout.write(`POST_DEPLOY_VERIFIED ${JSON.stringify(result)}\n`);
   } catch (error) {
