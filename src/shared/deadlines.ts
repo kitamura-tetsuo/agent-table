@@ -88,11 +88,19 @@ export class DurableDeadlineScheduler {
    */
   ensureExistingWakeup(
     findEarliest: () => number | null,
+    extraDeadline?: (tx: DurableObjectTransaction) => Promise<number | null>,
   ): Promise<number | null> {
     return this.serialize(() =>
       this.storage.transaction(async (txn) => {
         const current = await txn.getAlarm();
-        const earliest = this.storage.transactionSync(findEarliest);
+        const ordinary = this.storage.transactionSync(findEarliest);
+        const extra = extraDeadline ? await extraDeadline(txn) : null;
+        const earliest =
+          ordinary === null
+            ? extra
+            : extra === null
+              ? ordinary
+              : Math.min(ordinary, extra);
         if (earliest !== null && !validDeadline(earliest)) {
           throw new Error("Invalid persisted deadline");
         }
@@ -112,6 +120,7 @@ export class DurableDeadlineScheduler {
   drainDueWork(
     findEarliest: () => number | null,
     processDue: (now: number, budget: number) => number,
+    extraDeadline?: (tx: DurableObjectTransaction) => Promise<number | null>,
   ): Promise<DrainObservation> {
     return this.serialize(async () => {
       const safety = Date.now() + DEADLINE_POLICY.recoveryWakeupMs;
@@ -137,7 +146,14 @@ export class DurableDeadlineScheduler {
           throw new Error("Invalid deadline drain count");
         }
         await this.checkpoint("after-mutation");
-        const nextDeadline = this.storage.transactionSync(findEarliest);
+        const ordinary = this.storage.transactionSync(findEarliest);
+        const extra = extraDeadline ? await extraDeadline(txn) : null;
+        const nextDeadline =
+          ordinary === null
+            ? extra
+            : extra === null
+              ? ordinary
+              : Math.min(ordinary, extra);
         if (nextDeadline !== null && !validDeadline(nextDeadline)) {
           throw new Error("Invalid persisted deadline");
         }

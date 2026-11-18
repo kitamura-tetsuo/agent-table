@@ -337,6 +337,7 @@ export async function authorizeRelease({
     peerText,
     secrets: inventory,
     evidence,
+    now,
   });
   requireDecision(
     workflow?.repository === REPOSITORY &&
@@ -655,5 +656,20 @@ export function verifyTestNativeEventsDecision(record, vars) {
       record.testNativeEvents.monitoringAndStopPlanReviewed === true,
     "test-native-events-risk-not-approved",
   );
-  return { risk: TEST_NATIVE_EVENTS_RISK, targetsSha256 };
+  const diagnostic = vars.TEST_NATIVE_EVENT_DIAGNOSTICS;
+  const diagnosticsSha256 =
+    diagnostic === undefined
+      ? undefined
+      : createHash("sha256").update(diagnostic).digest("hex");
+  requireDecision(
+    diagnostic === undefined ||
+      (record.testNativeEvents.diagnosticsSha256 === diagnosticsSha256 &&
+        record.testNativeEvents.diagnosticsDataAndStopPlanReviewed === true),
+    "native-event-diagnostics-not-approved",
+  );
+  return {
+    risk: TEST_NATIVE_EVENTS_RISK,
+    targetsSha256,
+    ...(diagnosticsSha256 ? { diagnosticsSha256 } : {}),
+  };
 }

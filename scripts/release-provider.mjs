@@ -288,6 +288,7 @@ export async function inspectWorker(
   // surface retains it, verify its exact bytes and unique nonsecret type on both.
   // Do not require the new candidate's policy during a pre-deploy manual readback.
   for (const name of [
+    "TEST_NATIVE_EVENT_DIAGNOSTICS",
     "TEST_NATIVE_EVENTS_RISK_ACCEPTANCE",
     "EVENTS_REVIEWED_CALLBACK_TARGETS",
     "EVENTS_RELAY_CONFIGURATION",
@@ -418,6 +419,7 @@ export function verifyDeployedConfiguration(observed, config) {
     );
   }
   for (const name of [
+    "TEST_NATIVE_EVENT_DIAGNOSTICS",
     "TEST_NATIVE_EVENTS_RISK_ACCEPTANCE",
     "EVENTS_REVIEWED_CALLBACK_TARGETS",
     "EVENTS_RELAY_CONFIGURATION",

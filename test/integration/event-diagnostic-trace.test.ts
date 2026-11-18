@@ -1,5 +1,6 @@
 import {
   createExecutionContext,
+  evictDurableObject,
   runInDurableObject,
   waitOnExecutionContext,
 } from "cloudflare:test";
@@ -7,6 +8,7 @@ import { env } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { beginEventDiagnosticTrace } from "../../src/mcp/event-diagnostic-trace";
 import { handleMcp } from "../../src/mcp/server";
+import { nativeDiagnosticDigest } from "../../src/shared/native-event-diagnostics";
 import { inboxStreamFixture } from "../helpers/inbox-stream-fixture";
 
 const CALLBACK =
@@ -25,13 +27,13 @@ function parameters(tableId: string) {
 }
 
 async function fixture(
-  mode: "a-only-discovery" | "a-only" = "a-only-discovery",
+  mode: "a-only-discovery" | "a-only" | "native" = "a-only-discovery",
 ) {
   const f = await inboxStreamFixture(env);
   const now = Date.now();
   const policy = {
     schemaVersion: 1,
-    mode,
+    mode: mode === "native" ? "a-only-discovery" : mode,
     observationMode: "private-redacted",
     buildSha: "b".repeat(40),
     approvedAt: new Date(now - 2_000).toISOString(),
@@ -57,6 +59,26 @@ async function fixture(
     ALLOW_OUTBOUND_NOTIFICATIONS: mode === "a-only" ? "true" : "false",
     PRIVATE_PILOT_POLICY: JSON.stringify(policy),
   };
+  if (mode === "native") {
+    overlay.RELEASE_PROFILE = "test-native-events";
+    overlay.ENABLE_MCP_SUBSCRIPTIONS = "true";
+    overlay.ENABLE_OPENAI_EVENTS = "true";
+    overlay.ALLOW_OUTBOUND_NOTIFICATIONS = "true";
+    delete overlay.PRIVATE_PILOT_POLICY;
+    overlay.TEST_NATIVE_EVENTS_RISK_ACCEPTANCE =
+      "accept-unverified-dns-peer-boundary";
+    overlay.EVENTS_REVIEWED_CALLBACK_TARGETS = JSON.stringify([
+      { origin: "https://events.example.org", pathPrefix: "/" },
+    ]);
+    overlay.TEST_NATIVE_EVENT_DIAGNOSTICS = JSON.stringify({
+      schemaVersion: 1,
+      buildSha: policy.buildSha,
+      approvalRef: policy.approvalRef,
+      connectionId: f.owner.grant.connectionId,
+      notBefore: policy.notBefore,
+      expiresAt: policy.expiresAt,
+    });
+  }
   await runInDurableObject(f.table, (instance) => {
     const harness = instance as unknown as { env: Env };
     harness.env = { ...harness.env, ...overlay };
@@ -570,4 +592,272 @@ describe("durable Events protocol diagnostics through the real MCP handler", () 
       outbox: [],
     });
   });
+});
+
+describe("bounded native protocol diagnostics", () => {
+  it("records actual native Events handlers and invalid resume arguments without sending a callback", async () => {
+    const f = await fixture("native");
+    const fetch = vi
+      .spyOn(globalThis, "fetch")
+      .mockRejectedValue(new Error("Unexpected live callback"));
+    const listed = await wire(f, "events/list");
+    expect(listed.body.result).toMatchObject({
+      events: expect.arrayContaining([
+        expect.objectContaining({ name: "table.resume.requested" }),
+      ]),
+    });
+    const invalid = await wire(f, "events/subscribe", {
+      ...parameters(f.tableId),
+      name: "table.resume.requested",
+      arguments: { table_id: f.tableId, generation: 0 },
+    });
+    expect(invalid.body.error?.code).toBe(-32602);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(await f.rows()).toMatchObject({
+      candidates: [],
+      subscriptions: [],
+      outbox: [],
+    });
+    const snapshot = await f.read();
+    expect(snapshot?.scopeMatches).toBe(true);
+    expect(snapshot?.context.diagnosticCollection).toMatchObject({
+      configured: true,
+      active: true,
+      recipientMatched: true,
+    });
+    expect(snapshot?.records).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          method: "events/list",
+          stage: "handler",
+          outcome: "success",
+        }),
+        expect.objectContaining({
+          method: "events/subscribe",
+          stage: "parameters",
+          outcome: "invalid",
+          detail: "arguments",
+        }),
+      ]),
+    );
+    assertPrivateValuesAbsent(snapshot, f);
+  });
+  it("does not collect without opt-in, after collection expiry, while paused or in production", async () => {
+    const f = await fixture("native");
+    for (const patch of [
+      { TEST_NATIVE_EVENT_DIAGNOSTICS: undefined },
+      { ALLOW_OUTBOUND_NOTIFICATIONS: "false" },
+      { RELEASE_ENVIRONMENT: "production" },
+      {
+        TEST_NATIVE_EVENT_DIAGNOSTICS: JSON.stringify({
+          ...JSON.parse(f.overlay.TEST_NATIVE_EVENT_DIAGNOSTICS ?? "null"),
+          expiresAt: new Date(Date.now() - 1).toISOString(),
+        }),
+      },
+    ])
+      expect(
+        beginEventDiagnosticTrace(new Request(`${env.PUBLIC_ORIGIN}/mcp`), {
+          ...f.overlay,
+          ...patch,
+        }),
+      ).toBeUndefined();
+    const trace = beginEventDiagnosticTrace(
+      new Request(`${env.PUBLIC_ORIGIN}/mcp`),
+      f.overlay,
+    );
+    if (!trace) throw new Error("Missing native trace");
+    trace.authenticate?.({
+      guestId: f.owner.id,
+      connectionId: crypto.randomUUID(),
+    });
+    trace.record("events/subscribe", "handler", "received");
+    const ctx = createExecutionContext();
+    trace.finish(ctx);
+    await waitOnExecutionContext(ctx);
+    expect((await f.read())?.records).toEqual([]);
+  });
+  it("expires and physically prunes only the native diagnostic ring without disturbing guest state", async () => {
+    const f = await fixture("native");
+    await wire(f, "events/list");
+    const snapshot = await f.read();
+    expect(snapshot?.records.length).toBeGreaterThan(0);
+    const nativeKey = "native-event-diagnostics:v1";
+    const before = await runInDurableObject(
+      f.owner.stub,
+      (_instance, state) => ({
+        ring: state.storage.get(nativeKey),
+        alarm: state.storage.getAlarm(),
+      }),
+    );
+    expect(await before.ring).toBeDefined();
+    const until = Date.parse(f.policy.expiresAt) + 15 * 60_000;
+    expect(await before.alarm).toBeLessThanOrEqual(until);
+    vi.spyOn(Date, "now").mockReturnValue(until);
+    await runInDurableObject(f.owner.stub, async (instance, state) => {
+      await instance.alarm();
+      expect(await state.storage.get(nativeKey)).toBeUndefined();
+    });
+    expect((await f.read())?.records).toEqual([]);
+  });
+});
+
+describe("native diagnostic storage race and deadline boundaries", () => {
+  it.each(["revocation", "pause", "policy-change"] as const)(
+    "refuses a batch when %s occurs during hashing",
+    async (change) => {
+      const f = await fixture("native");
+      const policy = JSON.parse(
+        f.overlay.TEST_NATIVE_EVENT_DIAGNOSTICS ?? "null",
+      );
+      const scope = {
+        buildSha: policy.buildSha,
+        approvalRef: policy.approvalRef,
+        policyDigest: await nativeDiagnosticDigest(f.overlay, policy),
+      };
+      await runInDurableObject(f.owner.stub, async (instance, state) => {
+        const harness = instance as unknown as { env: Env };
+        const original = crypto.subtle.digest.bind(crypto.subtle);
+        const hash = vi
+          .spyOn(crypto.subtle, "digest")
+          .mockImplementation(async (algorithm, data) => {
+            const result = await original(algorithm, data);
+            if (change === "revocation")
+              state.storage.sql.exec(
+                "UPDATE guest_connections SET revoked_at = ? WHERE connection_id = ?",
+                Date.now(),
+                f.owner.grant.connectionId,
+              );
+            else if (change === "pause")
+              harness.env = {
+                ...harness.env,
+                ALLOW_OUTBOUND_NOTIFICATIONS: "false",
+              };
+            else
+              harness.env = {
+                ...harness.env,
+                TEST_NATIVE_EVENT_DIAGNOSTICS: JSON.stringify({
+                  ...policy,
+                  approvalRef: "changed-policy-approval",
+                }),
+              };
+            return result;
+          });
+        try {
+          expect(
+            await instance.recordEventDiagnostics(
+              [
+                {
+                  diagnosticId: "abcdef012345",
+                  observedAt: Date.now(),
+                  method: "events/subscribe",
+                  stage: "handler",
+                  outcome: "received",
+                  detail: "none",
+                },
+              ],
+              scope,
+              { guestId: f.owner.id, connectionId: f.owner.grant.connectionId },
+            ),
+          ).toBe(false);
+          expect(
+            await state.storage.get("native-event-diagnostics:v1"),
+          ).toBeUndefined();
+        } finally {
+          hash.mockRestore();
+        }
+      });
+    },
+  );
+  it("caps the ring and preserves an earlier real connection expiry through reconstruction and alarms", async () => {
+    const f = await fixture("native");
+    const short = await f.owner.stub.createConnection(
+      f.owner.session.sessionId,
+      f.owner.session.secret,
+      ["events:subscribe"],
+      Date.now() + 2000,
+    );
+    if (!short) throw new Error("Missing short connection");
+    const policy = JSON.parse(
+      f.overlay.TEST_NATIVE_EVENT_DIAGNOSTICS ?? "null",
+    );
+    const scope = {
+      buildSha: policy.buildSha,
+      approvalRef: policy.approvalRef,
+      policyDigest: await nativeDiagnosticDigest(f.overlay, policy),
+    };
+    const before = await runInDurableObject(f.owner.stub, (_instance, state) =>
+      state.storage.getAlarm(),
+    );
+    for (let batch = 0; batch < 5; batch++) {
+      const records = Array.from({ length: 16 }, (_, i) => ({
+        diagnosticId: (batch * 16 + i).toString(16).padStart(12, "0"),
+        observedAt: Date.parse(policy.notBefore) + batch * 16 + i,
+        method: "events/list" as const,
+        stage: "handler" as const,
+        outcome: "received" as const,
+        detail: "none" as const,
+      }));
+      expect(
+        await f.owner.stub.recordEventDiagnostics(records, scope, {
+          guestId: f.owner.id,
+          connectionId: f.owner.grant.connectionId,
+        }),
+      ).toBe(true);
+    }
+    const snapshot = await f.read();
+    expect(snapshot?.records).toHaveLength(64);
+    expect(snapshot?.droppedCount).toBe(16);
+    expect(
+      await runInDurableObject(f.owner.stub, (_instance, state) =>
+        state.storage.getAlarm(),
+      ),
+    ).toBe(before);
+    const schemaBefore = await f.owner.stub.schemaVersion();
+    // A fresh instance must retain both the earlier SQL expiry and the KV cleanup deadline.
+    await evictDurableObject(f.owner.stub);
+    await runInDurableObject(f.owner.stub, (instance) => {
+      (instance as unknown as { env: Env }).env = f.overlay;
+    });
+    vi.spyOn(Date, "now").mockReturnValue(Date.now() + 3000);
+    await runInDurableObject(f.owner.stub, (instance) => instance.alarm());
+    expect(
+      (
+        await f.owner.stub.authorizeConnection(
+          f.owner.id,
+          short.connectionId,
+          "events:subscribe",
+        )
+      ).allowed,
+    ).toBe(false);
+    expect((await f.read())?.records).toHaveLength(64);
+    expect(await f.owner.stub.schemaVersion()).toBe(schemaBefore);
+    const until = Date.parse(policy.expiresAt) + 15 * 60_000;
+    expect(
+      await runInDurableObject(f.owner.stub, (_instance, state) =>
+        state.storage.getAlarm(),
+      ),
+    ).toBeLessThanOrEqual(until);
+  });
+});
+
+it("contains hashing failures even when no authenticated actor is ever bound", async () => {
+  const f = await fixture("native");
+  const hash = vi
+    .spyOn(crypto.subtle, "digest")
+    .mockRejectedValue(new Error("PRIVATE_HASH_ERROR_SENTINEL"));
+  try {
+    const trace = beginEventDiagnosticTrace(
+      new Request(`${env.PUBLIC_ORIGIN}/mcp`),
+      f.overlay,
+    );
+    expect(trace).toBeDefined();
+    const ctx = createExecutionContext();
+    trace?.finish(ctx);
+    await waitOnExecutionContext(ctx);
+    await Promise.resolve();
+    hash.mockRestore();
+    expect((await f.read())?.records).toEqual([]);
+  } finally {
+    hash.mockRestore();
+  }
 });

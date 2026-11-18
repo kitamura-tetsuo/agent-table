@@ -1,4 +1,9 @@
 import {
+  activeNativeDiagnosticPolicy,
+  type NativeDiagnosticBindings,
+  nativeDiagnosticPolicy,
+} from "../shared/native-event-diagnostics";
+import {
   activePrivatePilotDiscoveryPolicy,
   activePrivatePilotPolicy,
   type PrivatePilotBindings,
@@ -148,6 +153,13 @@ export function validEventDiagnosticRecord(
 }
 
 export type SafeEventRuntimeContext = {
+  diagnosticCollection?: {
+    configured: boolean;
+    active: boolean;
+    recipientMatched: boolean;
+    notBefore: string | null;
+    expiresAt: string | null;
+  };
   transportState?:
     | "relay-configuration-invalid"
     | "relay-key-unavailable"
@@ -183,11 +195,15 @@ export type EventDiagnosticSnapshot = {
 
 /** Return classifications only, never raw bindings, recipients or targets. */
 export function eventDiagnosticContext(
-  env: PrivatePilotBindings & TestNativeBindings & ProductionRelayBindings,
+  env: PrivatePilotBindings &
+    TestNativeBindings &
+    ProductionRelayBindings &
+    NativeDiagnosticBindings,
   actor?: { guestId: string; connectionId: string },
   tableId?: string,
   now = Date.now(),
 ): SafeEventRuntimeContext {
+  const native = nativeDiagnosticPolicy(env);
   const policy = parsePrivatePilotPolicy(env.PRIVATE_PILOT_POLICY);
   const privateTransportAllowed =
     env.RELEASE_ENVIRONMENT !== "production" ||
@@ -215,6 +231,18 @@ export function eventDiagnosticContext(
   return {
     environment,
     profile,
+    ...(profile === "test-native-events"
+      ? {
+          diagnosticCollection: {
+            configured: !!native,
+            active: !!activeNativeDiagnosticPolicy(env, now),
+            recipientMatched:
+              !!actor && native?.connectionId === actor.connectionId,
+            notBefore: native?.notBefore ?? null,
+            expiresAt: native?.expiresAt ?? null,
+          },
+        }
+      : {}),
     ...(profile === PRODUCTION_RELAY_EVENTS_PROFILE
       ? { transportState: productionRelayReadiness(env).reason }
       : {}),

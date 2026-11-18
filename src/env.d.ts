@@ -45,6 +45,7 @@ declare global {
       EVENTS_RELAY_SIGNING_KEY_PKCS8?: string;
       PRIVATE_PILOT_POLICY?: string;
       TEST_NATIVE_EVENTS_RISK_ACCEPTANCE?: string;
+      TEST_NATIVE_EVENT_DIAGNOSTICS?: string;
     }
     interface GlobalProps {
       mainModule: typeof import("./index");
