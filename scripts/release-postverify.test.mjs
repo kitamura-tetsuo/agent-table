@@ -54,6 +54,7 @@ async function harness(candidate = config, peerConfig = peer) {
       "2026-11-11T12:00:00Z",
     ),
   };
+  let clock = 0;
   const httpFetch = async () =>
     Response.json(
       {
@@ -74,6 +75,10 @@ async function harness(candidate = config, peerConfig = peer) {
       approval,
       cloudflareRead: provider.read,
       httpFetch,
+      healthNow: () => clock,
+      waitForHealth: async (ms) => {
+        clock += ms;
+      },
     },
   };
 }
@@ -139,7 +144,7 @@ test("wrong public build, bad HTTP response or unavailable origin blocks postdep
     const { options } = await harness();
     await assert.rejects(
       verifyPublishedRelease({ ...options, httpFetch }),
-      /post-deploy-build-not-observed|post-deploy-health-unverified|post-deploy-health-oversized|post-deploy-origin-unreachable/,
+      /post-deploy-build-not-observed|post-deploy-health-unverified|post-deploy-health-invalid|post-deploy-health-oversized|post-deploy-origin-unreachable/,
     );
   }
 });
@@ -339,4 +344,377 @@ test("postverify refuses changed private activation bounds despite matching conf
     );
     assert.equal(requests, 0);
   }
+});
+
+function publicHealth(candidate = config, release = {}) {
+  return Response.json(
+    {
+      status: "ok",
+      release: {
+        environment: candidate.vars.RELEASE_ENVIRONMENT,
+        profile: candidate.vars.RELEASE_PROFILE,
+        buildSha: candidate.vars.RELEASE_BUILD_SHA,
+        ...release,
+      },
+    },
+    { headers: { "Cache-Control": "no-store" } },
+  );
+}
+
+const targetBase = `/client/v4/accounts/${config.account_id}/workers/scripts/${config.name}`;
+const initialVersion = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+
+test("a delayed release tuple converges without changing expected identity or leaking body values", async () => {
+  const { options, provider } = await harness();
+  const diagnostics = [];
+  const requests = [];
+  let healthCalls = 0;
+  let deploymentReads = 0;
+  const secret = "private-callback-or-body-value-MUST-NOT-BE-LOGGED";
+  const result = await verifyPublishedRelease({
+    ...options,
+    cloudflareRead: async (path) => {
+      if (path === `${targetBase}/deployments`) deploymentReads++;
+      return provider.read(path);
+    },
+    httpFetch: async (url, init) => {
+      requests.push({ url, method: init.method, redirect: init.redirect });
+      return ++healthCalls === 1
+        ? publicHealth(config, { profile: secret })
+        : publicHealth();
+    },
+    onHealthMismatch: (entry) => diagnostics.push(entry),
+  });
+  assert.equal(result.verified, true);
+  assert.equal(result.newVersionId, initialVersion);
+  assert.equal(healthCalls, 2);
+  assert.equal(deploymentReads, 2);
+  assert.deepEqual(diagnostics, [
+    { attempt: 1, elapsedMs: 0, mismatches: ["release.profile"] },
+  ]);
+  assert.equal(JSON.stringify(diagnostics).includes(secret), false);
+  assert.deepEqual(
+    requests,
+    Array(2).fill({
+      url: `${config.vars.PUBLIC_ORIGIN}/health`,
+      method: "GET",
+      redirect: "error",
+    }),
+  );
+});
+
+test("each public tuple component must converge to its original expected value", async () => {
+  for (const release of [
+    { environment: "production" },
+    { profile: "test-native-events" },
+    { buildSha: "b".repeat(40) },
+  ]) {
+    const { options } = await harness();
+    let calls = 0;
+    const result = await verifyPublishedRelease({
+      ...options,
+      httpFetch: async () =>
+        ++calls === 1 ? publicHealth(config, release) : publicHealth(),
+    });
+    assert.equal(result.verified, true);
+    assert.equal(calls, 2);
+    assert.equal(result.buildSha, config.vars.RELEASE_BUILD_SHA);
+    assert.equal(result.environment, "staging");
+    assert.equal(result.profile, "manual");
+  }
+});
+
+test("permanent tuple mismatch stops at the fixed 30 second deadline without another health GET", async () => {
+  const { options } = await harness();
+  let now = 0;
+  let calls = 0;
+  const waits = [];
+  await assert.rejects(
+    verifyPublishedRelease({
+      ...options,
+      healthNow: () => now,
+      waitForHealth: async (ms) => {
+        waits.push(ms);
+        now += ms;
+      },
+      httpFetch: async () => {
+        assert.ok(now < 30_000);
+        calls++;
+        return publicHealth(config, { buildSha: "b".repeat(40) });
+      },
+    }),
+    /post-deploy-build-not-observed/,
+  );
+  assert.equal(now, 30_000);
+  assert.equal(calls, 15);
+  assert.equal(
+    waits.reduce((a, b) => a + b, 0),
+    30_000,
+  );
+});
+
+test("a matching health response arriving at the deadline is not accepted", async () => {
+  const { options } = await harness();
+  let now = 0;
+  let calls = 0;
+  await assert.rejects(
+    verifyPublishedRelease({
+      ...options,
+      healthNow: () => now,
+      waitForHealth: async (ms) => {
+        now += ms;
+      },
+      httpFetch: async () => {
+        if (++calls === 1)
+          return publicHealth(config, { profile: "test-native-events" });
+        now = 30_000;
+        return publicHealth();
+      },
+    }),
+    /post-deploy-build-not-observed/,
+  );
+  assert.equal(calls, 2);
+});
+
+test("the real fixed deadline aborts a hung health request even when the transport has not returned", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const { options } = await harness();
+  let entered;
+  let requestSignal;
+  const started = new Promise((resolve) => {
+    entered = resolve;
+  });
+  const verification = verifyPublishedRelease({
+    ...options,
+    httpFetch: async (_url, init) => {
+      requestSignal = init.signal;
+      entered();
+      return new Promise((_, reject) => {
+        init.signal.addEventListener("abort", () => reject(Error("aborted")), {
+          once: true,
+        });
+      });
+    },
+  });
+  const rejected = assert.rejects(
+    verification,
+    /post-deploy-build-not-observed/,
+  );
+  await started;
+  t.mock.timers.tick(30_000);
+  await rejected;
+  assert.equal(requestSignal.aborted, true);
+});
+
+test("final provider verification also must finish inside the same deadline", async () => {
+  const { options, provider } = await harness();
+  let now = 0;
+  let calls = 0;
+  let finalRead = false;
+  await assert.rejects(
+    verifyPublishedRelease({
+      ...options,
+      healthNow: () => now,
+      waitForHealth: async (ms) => {
+        now += ms;
+      },
+      httpFetch: async () => {
+        if (++calls === 1)
+          return publicHealth(config, { profile: "test-native-events" });
+        finalRead = true;
+        return publicHealth();
+      },
+      cloudflareRead: async (path) => {
+        if (finalRead) now = 30_000;
+        return provider.read(path);
+      },
+    }),
+    /post-deploy-build-not-observed/,
+  );
+  assert.equal(calls, 2);
+});
+
+test("a healthy tuple cannot bless a different provider version or deployment after retry", async () => {
+  for (const changed of ["version", "deployment"]) {
+    const { options, provider } = await harness();
+    let calls = 0;
+    await assert.rejects(
+      verifyPublishedRelease({
+        ...options,
+        httpFetch: async () => {
+          if (++calls === 1)
+            return publicHealth(config, { profile: "test-native-events" });
+          const deployment = provider.routes.get(`${targetBase}/deployments`)
+            .deployments[0];
+          if (changed === "version") {
+            const next = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+            provider.routes.set(
+              `${targetBase}/versions/${next}`,
+              structuredClone(
+                provider.routes.get(`${targetBase}/versions/${initialVersion}`),
+              ),
+            );
+            deployment.versions[0].version_id = next;
+          } else deployment.id = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+          return publicHealth();
+        },
+      }),
+      /post-deploy-version-changed/,
+    );
+    assert.equal(calls, 2);
+  }
+});
+
+test("namespace drift during convergence is rejected by the original resource proof", async () => {
+  const { options, provider } = await harness();
+  let calls = 0;
+  await assert.rejects(
+    verifyPublishedRelease({
+      ...options,
+      httpFetch: async () => {
+        if (++calls === 1)
+          return publicHealth(config, { profile: "test-native-events" });
+        const next = "cccccccccccccccccccccccccccccccc";
+        provider.routes
+          .get(`${targetBase}/settings`)
+          .bindings.find((x) => x.name === "TABLES").namespace_id = next;
+        provider.routes
+          .get(`${targetBase}/versions/${initialVersion}`)
+          .resources.bindings.find((x) => x.name === "TABLES").namespace_id =
+          next;
+        provider.routes
+          .get(
+            `/client/v4/accounts/${config.account_id}/workers/durable_objects/namespaces?page=1&per_page=100`,
+          )
+          .result.find(
+            (x) => x.script === config.name && x.class === "TableDO",
+          ).id = next;
+        return publicHealth();
+      },
+    }),
+    /post-deploy-resource-identity-changed/,
+  );
+  assert.equal(calls, 2);
+});
+
+test("HTTP, authentication, caching, size, JSON and malformed envelope failures never enter retry", async () => {
+  const safeHeaders = { "Cache-Control": "no-store" };
+  for (const makeResponse of [
+    () => new Response("denied", { status: 401 }),
+    () => new Response("denied", { status: 403 }),
+    () => new Response("redirect", { status: 302 }),
+    () => new Response("not found", { status: 404 }),
+    () => Response.json({ status: "ok" }),
+    () => new Response("x".repeat(2048), { headers: safeHeaders }),
+    () =>
+      new Response("{}", {
+        headers: { ...safeHeaders, "Content-Length": "2048" },
+      }),
+    () => new Response("{", { headers: safeHeaders }),
+    () => Response.json(null, { headers: safeHeaders }),
+    () => Response.json({ status: "unauthorized" }, { headers: safeHeaders }),
+    () =>
+      Response.json(
+        { status: "ok", release: { buildSha: "not-a-sha" } },
+        { headers: safeHeaders },
+      ),
+    () => {
+      throw Error("private transport error MUST NOT BE REPORTED");
+    },
+  ]) {
+    const { options } = await harness();
+    let calls = 0;
+    let waits = 0;
+    const diagnostics = [];
+    await assert.rejects(
+      verifyPublishedRelease({
+        ...options,
+        httpFetch: async () => {
+          calls++;
+          return makeResponse();
+        },
+        waitForHealth: async () => {
+          waits++;
+        },
+        onHealthMismatch: (entry) => diagnostics.push(entry),
+      }),
+      /post-deploy-health-unverified|post-deploy-health-oversized|post-deploy-health-invalid|post-deploy-origin-unreachable/,
+    );
+    assert.equal(calls, 1);
+    assert.equal(waits, 0);
+    assert.deepEqual(diagnostics, []);
+  }
+});
+
+test("provider authentication failure does not reach health or retry", async () => {
+  const { options } = await harness();
+  let calls = 0;
+  await assert.rejects(
+    verifyPublishedRelease({
+      ...options,
+      cloudflareRead: async () => {
+        throw Error("provider access denied");
+      },
+      httpFetch: async () => {
+        calls++;
+        return publicHealth();
+      },
+    }),
+    /provider access denied/,
+  );
+  assert.equal(calls, 0);
+});
+
+test("a matching JSON prefix without EOF remains a failure when its request aborts", async (t) => {
+  const request = new AbortController();
+  t.mock.method(AbortSignal, "timeout", () => request.signal);
+  const { options } = await harness();
+  let pendingRead;
+  const pending = new Promise((resolve) => {
+    pendingRead = resolve;
+  });
+  let cancelled = 0;
+  let calls = 0;
+  let waits = 0;
+  const diagnostics = [];
+  const prefix = JSON.stringify({
+    status: "ok",
+    release: {
+      environment: config.vars.RELEASE_ENVIRONMENT,
+      profile: config.vars.RELEASE_PROFILE,
+      buildSha: config.vars.RELEASE_BUILD_SHA,
+    },
+  });
+  const body = new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode(prefix));
+    },
+    pull() {
+      pendingRead();
+    },
+    cancel() {
+      cancelled++;
+    },
+  });
+  const verification = verifyPublishedRelease({
+    ...options,
+    httpFetch: async () => {
+      calls++;
+      return new Response(body, {
+        headers: { "Cache-Control": "no-store" },
+      });
+    },
+    waitForHealth: async () => {
+      waits++;
+    },
+    onHealthMismatch: (entry) => diagnostics.push(entry),
+  });
+  const rejected = assert.rejects(verification, /post-deploy-health-invalid/);
+  await pending;
+  request.abort();
+  await rejected;
+  assert.equal(calls, 1);
+  assert.equal(waits, 0);
+  assert.equal(cancelled, 1);
+  assert.deepEqual(diagnostics, []);
 });
