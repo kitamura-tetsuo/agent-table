@@ -676,3 +676,150 @@ test("relay provider readback binds exact public config and secret type without 
     );
   }
 });
+
+test("observed namespace pagination metadata accepts a complete20item listing without total_pages", async () => {
+  const mock = makeProviderMock(config, peer);
+  const path = `/client/v4/accounts/${config.account_id}/workers/durable_objects/namespaces?page=1&per_page=100`;
+  const original = mock.routes.get(path);
+  const extra = Array.from({ length: 20 - original.result.length }, (_, i) => ({
+    id: (i + 1000).toString(16).padStart(32, "0"),
+    class: "UnrelatedDO",
+    name: `unrelated-${i}`,
+    script: `unrelated-${i}`,
+    use_sqlite: true,
+  }));
+  mock.routes.set(path, {
+    result: [...original.result, ...extra],
+    resultInfo: { page: 1, per_page: 100, count: 20, total_count: 20 },
+  });
+  const calls = [];
+  const observed = await readCloudflareDeployment(
+    config,
+    peer,
+    async (...args) => {
+      calls.push(args[0]);
+      return mock.read(...args);
+    },
+  );
+  verifyDeployedConfiguration(observed.targetState, config);
+  assert.equal(
+    calls.filter((p) => p.includes("durable_objects/namespaces")).length,
+    1,
+  );
+});
+
+test("namespace pagination reads every declared page and refuses a truncated final page", async () => {
+  const mock = makeProviderMock(config, peer);
+  const path = `/client/v4/accounts/${config.account_id}/workers/durable_objects/namespaces`;
+  const original = mock.routes.get(`${path}?page=1&per_page=100`).result;
+  const extra = Array.from({ length: 101 - original.length }, (_, i) => ({
+    id: (i + 1000).toString(16).padStart(32, "0"),
+    class: "UnrelatedDO",
+    name: `unrelated-${i}`,
+    script: `unrelated-${i}`,
+    use_sqlite: true,
+  }));
+  const all = [...extra, ...original];
+  mock.routes.set(`${path}?page=1&per_page=100`, {
+    result: all.slice(0, 100),
+    resultInfo: {
+      page: 1,
+      per_page: 100,
+      count: 100,
+      total_count: 101,
+      total_pages: 2,
+    },
+  });
+  mock.routes.set(`${path}?page=2&per_page=100`, {
+    result: all.slice(100),
+    resultInfo: {
+      page: 2,
+      per_page: 100,
+      count: 1,
+      total_count: 101,
+      total_pages: 2,
+    },
+  });
+  const observed = await readCloudflareDeployment(config, peer, mock.read);
+  verifyDeployedConfiguration(observed.targetState, config);
+  mock.routes.get(`${path}?page=2&per_page=100`).result = [];
+  mock.routes.get(`${path}?page=2&per_page=100`).resultInfo.count = 0;
+  await assert.rejects(
+    readCloudflareDeployment(config, peer, mock.read),
+    /provider-do-pagination-unverified:page-length/,
+  );
+});
+
+test("pagination failures identify a closed reason without echoing provider metadata or resources", async () => {
+  const path = `/client/v4/accounts/${config.account_id}/workers/durable_objects/namespaces?page=1&per_page=100`;
+  for (const [mutate, reason] of [
+    [
+      (x) => {
+        x.result = "NEVER_ECHO_PROVIDER_VALUE";
+      },
+      "result-array",
+    ],
+    [
+      (x) => {
+        delete x.resultInfo;
+      },
+      "page",
+    ],
+    [
+      (x) => {
+        x.resultInfo.page = "NEVER_ECHO_PROVIDER_VALUE";
+      },
+      "page",
+    ],
+    [
+      (x) => {
+        x.resultInfo.per_page = 20;
+      },
+      "per-page",
+    ],
+    [
+      (x) => {
+        x.resultInfo.count = 900;
+      },
+      "count",
+    ],
+    [
+      (x) => {
+        x.resultInfo.total_count = "NEVER_ECHO_PROVIDER_VALUE";
+      },
+      "total-count",
+    ],
+    [
+      (x) => {
+        x.resultInfo.total_count = 2001;
+      },
+      "page-limit",
+    ],
+    [
+      (x) => {
+        x.resultInfo.total_pages = 0;
+      },
+      "total-pages",
+    ],
+    [
+      (x) => {
+        x.resultInfo.total_count += 1;
+      },
+      "page-length",
+    ],
+  ]) {
+    const mock = makeProviderMock(config, peer);
+    mutate(mock.routes.get(path));
+    await assert.rejects(
+      readCloudflareDeployment(config, peer, mock.read),
+      (error) => {
+        assert.equal(
+          error.message,
+          `provider-do-pagination-unverified:${reason}`,
+        );
+        assert.doesNotMatch(error.message, /NEVER_ECHO_PROVIDER_VALUE/);
+        return true;
+      },
+    );
+  }
+});
