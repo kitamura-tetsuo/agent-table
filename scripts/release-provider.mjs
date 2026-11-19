@@ -590,24 +590,30 @@ async function readAllPages(reader, path, code) {
       perPage,
       Math.max(0, reportedTotal - (page - 1) * perPage),
     );
-    ensure(
-      Array.isArray(response?.result) &&
-        info?.page === page &&
-        info.per_page === perPage &&
-        info.count === count &&
-        Number.isSafeInteger(reportedTotal) &&
-        reportedTotal >= 0 &&
-        pages <= 20 &&
-        (info.total_pages === undefined || info.total_pages === pages) &&
-        (page === 1 ||
-          (pages === totalPages && reportedTotal === totalCount)) &&
-        count === expectedCount,
-      code,
+    // Closed reason labels only: never attach raw response values or resources.
+    const check = (value, reason) => ensure(value, `${code}:${reason}`);
+    check(Array.isArray(response?.result), "result-array");
+    check(info?.page === page, "page");
+    check(info.per_page === perPage, "per-page");
+    check(info.count === count, "count");
+    check(
+      Number.isSafeInteger(reportedTotal) && reportedTotal >= 0,
+      "total-count",
     );
+    check(pages <= 20, "page-limit");
+    check(
+      info.total_pages === undefined || info.total_pages === pages,
+      "total-pages",
+    );
+    check(
+      page === 1 || (pages === totalPages && reportedTotal === totalCount),
+      "listing-changed",
+    );
+    check(count === expectedCount, "page-length");
     totalPages = pages;
     totalCount = reportedTotal;
     items.push(...response.result);
   }
-  ensure(items.length === totalCount, code);
+  ensure(items.length === totalCount, `${code}:incomplete`);
   return items;
 }
