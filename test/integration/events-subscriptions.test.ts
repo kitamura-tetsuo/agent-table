@@ -97,7 +97,12 @@ async function grantFor(
     authorize.searchParams.set(key, value);
   const page = await dispatch(
     new Request(authorize, {
-      headers: { Cookie: cookie },
+      headers: {
+        Cookie: cookie,
+        ...(registrationSource
+          ? { "CF-Connecting-IP": registrationSource }
+          : {}),
+      },
     }),
   );
   expect(page.status).toBe(200);
@@ -120,6 +125,9 @@ async function grantFor(
         "Sec-Fetch-Site": "same-origin",
         "Content-Type": "application/x-www-form-urlencoded",
         Cookie: [cookie, ...csrfCookies].join("; "),
+        ...(registrationSource
+          ? { "CF-Connecting-IP": registrationSource }
+          : {}),
       },
       redirect: "manual",
       body: new URLSearchParams([
@@ -140,7 +148,12 @@ async function grantFor(
   const exchanged = await dispatch(
     new Request(`${ORIGIN}/oauth/token`, {
       method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        ...(registrationSource
+          ? { "CF-Connecting-IP": registrationSource }
+          : {}),
+      },
       body: new URLSearchParams({
         client_id: clientId,
         grant_type: "authorization_code",
@@ -4478,6 +4491,135 @@ async function scopedSignedRelayScenario(seedExisting = false, resume = false) {
   };
 }
 
+async function rawMetadataDiscovery(token: string, overlay: Env) {
+  const response = await dispatch(
+    new Request(RESOURCE, {
+      method: "POST",
+      headers: {
+        Host: new URL(RESOURCE).host,
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+        Accept: "application/json, text/event-stream",
+        "MCP-Protocol-Version": "2026-07-28",
+        "Mcp-Method": "server/discover",
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "server/discover",
+        params: {
+          _meta: {
+            "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+            "io.modelcontextprotocol/clientCapabilities": {},
+          },
+        },
+      }),
+    }),
+    overlay,
+  );
+  return {
+    status: response.status,
+    body:
+      response.status === 200
+        ? ((await response.json()) as {
+            result?: { capabilities?: Record<string, unknown> };
+          })
+        : null,
+  };
+}
+
+describe("private production metadata discovery authority", () => {
+  it("fails closed on missing scope, stale token, expired or paused policy and unavailable relay key", async () => {
+    const f = await scopedSignedRelayScenario();
+    const noScope = await newPrincipal("tables:read", "192.0.2.65");
+    const noScopeClient = await clientFor(noScope.token, f.overlay);
+    const clock = vi.spyOn(Date, "now");
+    const originalNow = Date.now();
+    try {
+      expect(
+        (await rawMetadataDiscovery(f.b.token, f.overlay)).body?.result
+          ?.capabilities?.events,
+      ).toEqual({});
+      expect(
+        (await rawMetadataDiscovery(noScope.token, f.overlay)).body?.result
+          ?.capabilities?.events,
+      ).toBeUndefined();
+      await expect(callEvent(noScopeClient, "events/list")).rejects.toThrow();
+      for (const overlay of [
+        { ...f.overlay, EVENTS_RELAY_SIGNING_KEY_PKCS8: undefined },
+        { ...f.overlay, EVENTS_RELAY_SIGNING_KEY_PKCS8: "not-a-signing-key" },
+        {
+          ...f.overlay,
+          EVENTS_RELAY_CONFIGURATION: JSON.stringify({
+            ...JSON.parse(f.overlay.EVENTS_RELAY_CONFIGURATION as string),
+            signingPublicKeySha256: "0".repeat(64),
+          }),
+        },
+        { ...f.overlay, ALLOW_OUTBOUND_NOTIFICATIONS: "false" },
+        {
+          ...f.overlay,
+          PRIVATE_PILOT_POLICY: JSON.stringify({
+            ...f.policy,
+            approvedAt: new Date(originalNow - 120000).toISOString(),
+            notBefore: new Date(originalNow - 60000).toISOString(),
+            expiresAt: new Date(originalNow - 1).toISOString(),
+          }),
+        },
+      ] as Env[]) {
+        const discovery = await rawMetadataDiscovery(f.b.token, overlay);
+        expect(discovery.body?.result?.capabilities?.events).toBeUndefined();
+        if (discovery.status !== 200) {
+          expect(discovery.status).toBe(503);
+          await expect(clientFor(f.b.token, overlay)).rejects.toThrow();
+          continue;
+        }
+        const client = await clientFor(f.b.token, overlay);
+        try {
+          await expect(callEvent(client, "events/list")).rejects.toThrow();
+          await expect(
+            callEvent(
+              client,
+              "events/subscribe",
+              subscriptionParams(f.tables[0]),
+            ),
+          ).rejects.toThrow();
+        } finally {
+          await client.close();
+        }
+      }
+      expect(f.calls).toHaveLength(0);
+      clock.mockReturnValue(originalNow + 901000);
+      expect((await rawMetadataDiscovery(f.b.token, f.overlay)).status).toBe(
+        401,
+      );
+      await expect(callEvent(f.bc, "events/list")).rejects.toThrow();
+      expect(f.calls).toHaveLength(0);
+    } finally {
+      clock.mockRestore();
+      await noScopeClient.close();
+      await f.close();
+    }
+  });
+
+  it("keeps staging discovery recipient-scoped", async () => {
+    const f = await scopedSignedRelayScenario(false, true);
+    try {
+      expect(
+        (await rawMetadataDiscovery(f.a.token, f.overlay)).body?.result
+          ?.capabilities?.events,
+      ).toEqual({});
+      expect(
+        (await rawMetadataDiscovery(f.b.token, f.overlay)).body?.result
+          ?.capabilities?.events,
+      ).toBeUndefined();
+      await expect(callEvent(f.bc, "events/list")).rejects.toThrow();
+      expect(f.calls).toHaveLength(0);
+    } finally {
+      await f.close();
+    }
+  });
+});
+
 describe("bounded production private signed relay", () => {
   it("full production stop preserves an unknown original attempt across reconstruction without new dispatch", async () => {
     const f = await scopedSignedRelayScenario();
@@ -4651,10 +4793,29 @@ describe("bounded production private signed relay", () => {
       expect((await discover(f.a.token)).result?.capabilities?.events).toEqual(
         {},
       );
-      for (const participant of [f.b, f.c, f.second])
-        expect(
-          (await discover(participant.token)).result?.capabilities?.events,
-        ).toBeUndefined();
+      const metadata = await callEvent(f.ac, "events/list");
+      for (const [participant, client] of [
+        [f.b, f.bc],
+        [f.c, f.cc],
+        [f.second, f.dc],
+      ] as const) {
+        const discovery = await discover(participant.token);
+        expect(discovery.result?.capabilities?.events).toEqual({});
+        const listed = await callEvent(client, "events/list");
+        expect(listed).toEqual(metadata);
+        const serialized = JSON.stringify({ discovery, listed });
+        for (const privateValue of [
+          f.a.guestId,
+          f.a.connectionId,
+          ...f.tables,
+          f.policy.approvalRef,
+          CALLBACK,
+          SECRET,
+          syntheticRelayKey,
+        ])
+          expect(serialized).not.toContain(privateValue);
+      }
+      expect(f.calls).toHaveLength(2); // Only the previously seeded challenges.
       const before = f.calls.length;
       for (const client of [f.bc, f.cc, f.dc])
         await expect(

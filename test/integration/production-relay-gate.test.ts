@@ -66,7 +66,7 @@ it("real Worker and TableDO entry points remain quarantined across two tables de
 });
 
 it.each(["production", "staging"])(
-  "scoped %s relay advertises only its exact recipient and cannot activate without relay proof",
+  "private %s metadata discovery preserves exact subscription authority and requires relay proof",
   async (environment) => {
     const [selected, other] = await Promise.all([
       inboxStreamFixture(env),
@@ -163,8 +163,9 @@ it.each(["production", "staging"])(
       };
       expect(reply.result?.capabilities).toBeDefined();
       if (
-        participant.id === selected.owner.id &&
-        participant.grant.connectionId === selected.owner.grant.connectionId
+        environment === "production" ||
+        (participant.id === selected.owner.id &&
+          participant.grant.connectionId === selected.owner.grant.connectionId)
       )
         expect(reply.result?.capabilities?.events).toEqual({});
       else expect(reply.result?.capabilities?.events).toBeUndefined();

@@ -35,6 +35,7 @@ import { authorizeGuestConnection, type ConnectionScope } from "../shared/auth";
 import { validTableId } from "../shared/invitations";
 import { CREATION_LIMITS, TABLE_LIMITS } from "../shared/limits";
 import {
+  activePrivatePilotPolicy,
   PRIVATE_PILOT_PROFILE,
   privatePilotConfiguration,
   privatePilotDiscoveryAllowed,
@@ -177,6 +178,23 @@ function eventError(reason: EventServiceFailure): ProtocolError {
   return new ProtocolError(-32001, "Subscription unavailable");
 }
 
+/** General event metadata is not authority to register a recipient or deliver.
+ * Production host discovery can use a different already-authorized account from
+ * the eventual subscription. Keep staging discovery recipient-scoped and keep
+ * every subscription/status/durable-effect guard on the exact recipient helper.
+ * Callers separately require fresh Events authority and the ready relay key.
+ */
+function privateMetadataDiscoveryAllowed(
+  env: Env,
+  actor: { guestId: string; connectionId: string },
+): boolean {
+  return (
+    privatePilotDiscoveryAllowed(env, actor) ||
+    (env.RELEASE_ENVIRONMENT === "production" &&
+      activePrivatePilotPolicy(env) !== null)
+  );
+}
+
 /**
  * A server is built for each authenticated request. This identity came from
  * validated OAuth properties, never from tool arguments or request headers.
@@ -190,7 +208,7 @@ function newServer(
 ) {
   const advertiseEvents =
     privateEvents &&
-    ((privatePilotDiscoveryAllowed(env, identity) &&
+    ((privateMetadataDiscoveryAllowed(env, identity) &&
       (!productionRelayProfileSelected(env) ||
         productionRelayAccessAllowed(env))) ||
       testNativeEventsAllowed(env) ||
@@ -228,8 +246,9 @@ function newServer(
     return checked.allowed ? checked.actor : null;
   };
 
-  // The bounded private profile exposes Events only to its fresh recipient;
-  // production additionally requires the selected signed-relay/key boundary.
+  // Private production exposes only generic event metadata to fresh scoped
+  // connections; subscription/effects still enforce the exact policy recipient.
+  // Staging keeps recipient-scoped discovery; both keep the transport boundary.
   server.server.setRequestHandler(
     "events/list",
     { params: z.unknown() },
@@ -243,7 +262,7 @@ function newServer(
       if (
         !actor ||
         (env.RELEASE_PROFILE === PRIVATE_PILOT_PROFILE &&
-          (!privatePilotDiscoveryAllowed(env, actor) ||
+          (!privateMetadataDiscoveryAllowed(env, actor) ||
             (productionRelayProfileSelected(env) &&
               !productionRelayAccessAllowed(env))))
       ) {
@@ -762,7 +781,7 @@ export async function handleMcp(
       )
     ).allowed;
   const privateEvents =
-    ((privatePilotDiscoveryAllowed(env, identity) &&
+    ((privateMetadataDiscoveryAllowed(env, identity) &&
       (!productionRelayProfileSelected(env) ||
         productionRelayAccessAllowed(env))) ||
       testNativeEventsAllowed(env) ||
