@@ -39,6 +39,47 @@ jobs:
       - name: Lint foreground relay launcher
         run: npx biome check scripts/relay-launcher.mjs scripts/relay-launcher.test.mjs scripts/relay-controller.mjs scripts/relay-control.mjs scripts/relay-controller.test.mjs scripts/egress-relay-application.mjs scripts/egress-relay-http.mjs scripts/release-relay-decision.mjs scripts/production-relay-release.test.mjs scripts/relay-readiness-diagnostics.mjs scripts/relay-readiness-diagnostics.test.mjs
       - run: node --test scripts/*.test.mjs
+      - name: Isolated Docker relay restart
+        id: restart78_fixture
+        timeout-minutes: 5
+        env:
+          NODE_RELAY_BASE: docker.io/library/node:24.22.1-bookworm-slim@sha256:be8204d4bd327363357f532187b752ff62759c31bedf98e9e18fc08c9cbd605c
+        run: |
+          set -euo pipefail
+          test -S /var/run/docker.sock
+          test -x /usr/bin/docker
+          test -x /usr/bin/flock
+          command -v openssl >/dev/null
+          docker version --format '{{.Server.Version}}'
+          timeout 75s docker pull "$NODE_RELAY_BASE"
+          timeout 75s docker build --network=none --pull=false \
+            --build-arg "NODE_IMAGE=$NODE_RELAY_BASE" \
+            -f deploy/relay/Dockerfile -t agent-table-restart78-ci .
+          image_id="$(docker image inspect --format '{{.Id}}' agent-table-restart78-ci)"
+          journal_dir="$RUNNER_TEMP/restart78-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$GITHUB_JOB"
+          mkdir -m 700 -- "$journal_dir"
+          echo "starting=true" >> "$GITHUB_OUTPUT"
+          AGENT_TABLE_RESTART78_MANIFEST="$journal_dir/manifest.json" \
+            timeout --kill-after=40s 120s node scripts/relay-steady-docker-fixture.mjs "$image_id"
+      - name: Verify and finish isolated relay fixture cleanup
+        if: always()
+        timeout-minutes: 1
+        env:
+          RESTART78_PRIMARY: ${{ steps.restart78_fixture.outcome }}
+          RESTART78_STARTED: ${{ steps.restart78_fixture.outputs.starting }}
+        run: |
+          set -euo pipefail
+          journal_dir="$RUNNER_TEMP/restart78-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$GITHUB_JOB"
+          echo "Primary Docker fixture step: $RESTART78_PRIMARY"
+          if [[ "$RESTART78_STARTED" != true && ! -e "$journal_dir" ]]; then
+            echo "Fixture resources were not started"
+            exit 0
+          fi
+          if [[ ! -f "$journal_dir/manifest.json" ]]; then
+            echo "::error::Fixture cleanup unverified: expected journal missing"
+            exit 1
+          fi
+          timeout 45s node scripts/relay-steady-docker-cleanup.mjs "$journal_dir/manifest.json"
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'

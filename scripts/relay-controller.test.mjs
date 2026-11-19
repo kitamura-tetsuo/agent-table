@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { EventEmitter, once } from "node:events";
 import {
   chmodSync,
@@ -15,18 +15,29 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
+import {
+  createServer as createHttpsServer,
+  request as httpsRequest,
+} from "node:https";
 import { connect, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { PassThrough } from "node:stream";
 import test from "node:test";
+import { createRelayApplication } from "./egress-relay-application.mjs";
+import { relayMessageSigningBytes } from "./egress-relay-ingress-prototype.mjs";
 import { openRelayAdmissionStore } from "./relay-admission-store.mjs";
 import { relayControl } from "./relay-control.mjs";
 import { runRelayController } from "./relay-controller.mjs";
 import { loadRelayLaunchConfiguration } from "./relay-launcher.mjs";
+import { attemptLocalSteadyRestart } from "./relay-steady-local-adapter.mjs";
+import {
+  inspectSteadyRestartLedger,
+  resumeAuthorizedSteadyRelay,
+} from "./relay-steady-restart.mjs";
 
-function fixture(t) {
+function fixture(t, environment = "test", publicKey) {
   const dir = mkdtempSync(join(tmpdir(), "relay-controller-"));
   chmodSync(dir, 0o700);
   t.after(() => rmSync(dir, { recursive: true, force: true }));
@@ -53,7 +64,7 @@ function fixture(t) {
   const config = {
     version: 1,
     startup: "paused",
-    environment: "test",
+    environment,
     serviceId: "synthetic-relay",
     databasePath: join(dir, "state.sqlite"),
     port: 0,
@@ -62,10 +73,14 @@ function fixture(t) {
     callers: [
       {
         callerId: "synthetic-worker-1",
-        publicKeySpki: Buffer.from(
-          "302a300506032b6570032100d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
-          "hex",
-        ).toString("base64"),
+        publicKeySpki:
+          publicKey
+            ?.export({ format: "der", type: "spki" })
+            .toString("base64") ??
+          Buffer.from(
+            "302a300506032b6570032100d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+            "hex",
+          ).toString("base64"),
         targets: [
           { origin: "https://callback.example.org", pathPrefix: "/events" },
         ],
@@ -355,4 +370,235 @@ test("SIGTERM during Unix listen does not leave a control listener or enabled la
   );
   assert.equal(server.listening, false);
   assert.equal(existsSync(f.socketPath), false);
+});
+
+test("steady restart candidate uses actual private controller and persistent ledger", async (t) => {
+  const keys = generateKeyPairSync("ed25519");
+  const f = fixture(t, "production", keys.publicKey);
+  const received = [];
+  const key = readFileSync(join(f.dir, "key")),
+    cert = readFileSync(join(f.dir, "cert"));
+  const receiver = createHttpsServer({ key, cert }, (req, res) => {
+    const bytes = [];
+    req.on("data", (chunk) => bytes.push(chunk));
+    req.on("end", () => {
+      received.push(Buffer.concat(bytes).toString("utf8"));
+      res.writeHead(204);
+      res.end();
+    });
+  });
+  receiver.listen(0, "127.0.0.1");
+  await once(receiver, "listening");
+  t.after(() => new Promise((done) => receiver.close(done)));
+  const localPost = (port, path, bytes, headers = {}) =>
+    new Promise((yes, no) => {
+      const req = httpsRequest(
+        {
+          hostname: "127.0.0.1",
+          port,
+          path,
+          method: "POST",
+          servername: "relay.example.org",
+          ca: cert,
+          agent: false,
+          headers,
+        },
+        (res) => {
+          const chunks = [];
+          res.on("data", (chunk) => chunks.push(chunk));
+          res.on("end", () =>
+            yes({
+              status: res.statusCode,
+              body: Buffer.concat(chunks).toString("utf8"),
+            }),
+          );
+          res.on("error", no);
+        },
+      );
+      req.on("error", no);
+      req.setTimeout(3000, () => req.destroy(Error("controlled-test-timeout")));
+      req.end(bytes);
+    });
+  // Module-only controlled HTTPS seam; the Docker CLI never supplies it.
+  f.createApplication = (options) =>
+    createRelayApplication(options, {
+      async messageTransport(destination, _targets, body) {
+        assert.equal(destination, "https://callback.example.org/events");
+        const observed = await localPost(
+          receiver.address().port,
+          "/events",
+          body,
+        );
+        return {
+          kind: "http",
+          status: observed.status,
+          retryAfterState: "absent",
+        };
+      },
+    });
+  function signedEvent(port, requestId, eventId, signingKey = keys.privateKey) {
+    const caller = "synthetic-worker-1";
+    const body = Buffer.from(
+      JSON.stringify({
+        version: 1,
+        kind: "message",
+        audience: "production:synthetic-relay",
+        requestId,
+        timestamp: Date.now(),
+        destination: "https://callback.example.org/events",
+        headers: {},
+        payload: Buffer.from(JSON.stringify({ eventId })).toString("base64"),
+      }),
+    );
+    return localPost(port, "/relay/v1/message", body, {
+      "content-type": "application/json",
+      "x-agent-table-caller": caller,
+      "x-agent-table-signature": sign(
+        null,
+        relayMessageSigningBytes(body, caller),
+        signingKey,
+      ).toString("base64"),
+    });
+  }
+  const ownerDirectory = join(f.dir, "owner");
+  mkdirSync(ownerDirectory, { mode: 0o700 });
+  writeFileSync(join(ownerDirectory, "inhibit"), "clear\n", { mode: 0o600 });
+  f.steadyOwnerDirectory = ownerDirectory;
+  let controller = await start(f);
+  t.after(async () => {
+    controller.signals.emit("SIGTERM");
+    await controller.done;
+  });
+  const initial = inspectSteadyRestartLedger(f.config.databasePath);
+  const firstGeneration = controller.receipt.generation;
+  assert.equal((await controller.command(1, "enable")).state, "enabled");
+  controller.signals.emit("SIGTERM");
+  assert.equal(await controller.done, true);
+  controller = await start(f);
+  assert.notEqual(controller.receipt.generation, firstGeneration);
+  const inspect = () => relayControl(f.socketPath, { action: "inspect" });
+  const a = {
+    mode: "steady",
+    environment: "production",
+    serviceId: f.config.serviceId,
+    imageDigest: "synthetic-fixture-image",
+    configurationSha256: controller.receipt.configurationSha256,
+    storeId: initial.storeId,
+  };
+  const observe = async () => ({
+    authorization: a,
+    operator: { inhibit: "clear" },
+    host: {
+      ...a,
+      ...(await inspect()),
+      ...inspectSteadyRestartLedger(f.config.databasePath),
+      // Test-only host attestations, not evidence of Docker/tunnel fencing.
+      priorTransportsStopped: true,
+      namespaceVerified: true,
+      tlsVerified: true,
+    },
+  });
+  const claimed = new Set();
+  const params = {
+    withOwnerLock: (fn) => fn(),
+    observe,
+    markGenerationAttempted: (id) => {
+      if (claimed.has(id)) return false;
+      claimed.add(id);
+      return true;
+    },
+    enable: (command) => relayControl(f.socketPath, command),
+    inspect,
+  };
+  const negatives = [
+    ({ operator }) => (operator.inhibit = "paused"),
+    ({ operator }) => (operator.inhibit = "quarantined"),
+    ({ host }) => (host.priorTransportsStopped = false),
+    ({ host }) => (host.storeId = "replacement"),
+    ({ host }) => (host.configurationSha256 = "different"),
+    ({ host }) => (host.activeAdmissions = 1),
+    ({ host }) => (host.unresolvedOutcomes = 1),
+  ];
+  for (const change of negatives) {
+    const bad = await observe();
+    change(bad);
+    assert.deepEqual(
+      await resumeAuthorizedSteadyRelay({
+        ...params,
+        observe: async () => bad,
+      }),
+      { state: "paused", enabled: false },
+    );
+  }
+  assert.equal((await inspect()).sequence, 0);
+  assert.equal(claimed.size, 0);
+  assert.equal(
+    (
+      await signedEvent(
+        controller.receipt.port,
+        "synthetic-paused-1",
+        "while-paused",
+      )
+    ).status,
+    503,
+  );
+  assert.deepEqual(received, []);
+  assert.deepEqual(rows(f.config.databasePath), []);
+  const adapter = {
+    ownerDirectory,
+    socketPath: f.socketPath,
+    databasePath: f.config.databasePath,
+    readAuthorizedBinding: () => a,
+    observeHostBoundary: (identity) => ({
+      ...a,
+      ...identity,
+      priorTransportsStopped: true,
+      namespaceVerified: true,
+      tlsVerified: true,
+    }),
+  };
+  assert.deepEqual(await attemptLocalSteadyRestart(adapter), {
+    state: "enabled",
+    enabled: true,
+  });
+  assert.equal((await inspect()).sequence, 1);
+  assert.equal((await inspect()).state, "enabled");
+  assert.deepEqual(received, [], "recovery did not replay the paused event");
+  const wrongKey = generateKeyPairSync("ed25519").privateKey;
+  const rejected = await signedEvent(
+    controller.receipt.port,
+    "synthetic-rejected-1",
+    "invalid-signature",
+    wrongKey,
+  );
+  assert.equal(rejected.status, 401);
+  const delivered = await signedEvent(
+    controller.receipt.port,
+    "synthetic-fresh-1",
+    "fresh-after-ready",
+  );
+  assert.equal(delivered.status, 200);
+  assert.equal(JSON.parse(delivered.body).outcome.status, 204);
+  assert.deepEqual(received.map(JSON.parse), [
+    { eventId: "fresh-after-ready" },
+  ]);
+  assert.equal(rows(f.config.databasePath).length, 1);
+  assert.equal((await attemptLocalSteadyRestart(adapter)).enabled, false);
+  assert.equal((await inspect()).sequence, 1);
+  assert.equal((await controller.command(2, "pause")).state, "paused");
+  assert.equal(
+    readFileSync(join(ownerDirectory, "inhibit"), "utf8"),
+    "paused\n",
+  );
+  controller.signals.emit("SIGTERM");
+  assert.equal(await controller.done, true);
+  controller = await start(f);
+  assert.equal((await attemptLocalSteadyRestart(adapter)).enabled, false);
+  assert.equal((await inspect()).state, "paused");
+  assert.equal((await inspect()).sequence, 0);
+  assert.equal(
+    (await controller.command(1, "enable")).code,
+    "steady-inhibited",
+  );
+  assert.deepEqual(inspectSteadyRestartLedger(f.config.databasePath), initial);
 });

@@ -1,0 +1,19 @@
+# Uninstalled example. Owner authority, absolute paths and numeric UID must be
+# explicitly configured and approved for the one enrolled production pair.
+[Unit]
+Description=Agent Table enrolled steady relay lifecycle owner
+After=docker.service
+Requires=docker.service
+ConditionPathExists=/REPLACE/owner-only/enrollment.json
+
+[Service]
+Type=simple
+User=REPLACE_WITH_MAPPED_OWNER
+WorkingDirectory=/REPLACE/approved/agent-table
+ExecStart=/REPLACE/pinned/node /REPLACE/approved/agent-table/scripts/relay-steady-host-supervisor.mjs --watch --enrollment /REPLACE/owner-only/enrollment.json
+Restart=no
+TimeoutStopSec=70
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target
