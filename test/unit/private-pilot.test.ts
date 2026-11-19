@@ -9,6 +9,7 @@ import {
   parsePrivatePilotPolicy,
   privatePilotConfiguration,
   privatePilotDiscoveryAllowed,
+  privatePilotEventAllowed,
   privatePilotRecipientAllowed,
 } from "../../src/shared/private-pilot";
 import { isRestoreQuarantined } from "../../src/shared/release-quarantine";
@@ -294,6 +295,56 @@ describe("private staging pilot policy", () => {
   ])("rejects an invalid or broadened policy %#", (patch) => {
     expect(
       parsePrivatePilotPolicy(JSON.stringify({ ...policy, ...patch })),
+    ).toBeNull();
+  });
+});
+
+describe("explicit private event scope", () => {
+  it("preserves omitted message-only policy and requires signed relay for resume opt-in", () => {
+    expect(
+      privatePilotEventAllowed(
+        parsePrivatePilotPolicy(JSON.stringify(policy)),
+        "table.message.created",
+      ),
+    ).toBe(true);
+    expect(
+      privatePilotEventAllowed(
+        parsePrivatePilotPolicy(JSON.stringify(policy)),
+        "table.resume.requested",
+      ),
+    ).toBe(false);
+    const selected = { ...policy, eventNames: ["table.resume.requested"] };
+    const parsed = parsePrivatePilotPolicy(JSON.stringify(selected));
+    expect(parsed).toEqual(selected);
+    expect(privatePilotEventAllowed(parsed, "table.message.created")).toBe(
+      false,
+    );
+    expect(privatePilotEventAllowed(parsed, "table.resume.requested")).toBe(
+      true,
+    );
+    expect(
+      privatePilotConfiguration({
+        ...bindings(),
+        PRIVATE_PILOT_POLICY: JSON.stringify(selected),
+      }),
+    ).toBeNull();
+    expect(
+      privatePilotConfiguration({
+        ...bindings(),
+        EVENTS_RELAY_CONFIGURATION: "selected-but-independently-validated",
+        PRIVATE_PILOT_POLICY: JSON.stringify(selected),
+      }),
+    ).not.toBeNull();
+  });
+  it.each([
+    [],
+    ["unknown"],
+    ["table.resume.requested", "table.resume.requested"],
+    null,
+    "table.resume.requested",
+  ])("rejects malformed event scope %j", (eventNames) => {
+    expect(
+      parsePrivatePilotPolicy(JSON.stringify({ ...policy, eventNames })),
     ).toBeNull();
   });
 });

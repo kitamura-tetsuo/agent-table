@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
+import { nativeDiagnosticPolicy } from "../src/shared/native-event-diagnostics.ts";
 import {
   makeFixture,
   makeGithubMock,
@@ -304,5 +305,96 @@ test("initial staging evidence collection needs no invented hosted success", () 
   assert.throws(
     () => validateRelease({ ...wrongConfig, secrets: wrongConfig.inventory }),
     /evidence-target-mismatch/,
+  );
+});
+
+function diagnosticFixture() {
+  const f = fixture();
+  const cfg = JSON.parse(f.configText);
+  cfg.vars.TEST_NATIVE_EVENT_DIAGNOSTICS = JSON.stringify({
+    schemaVersion: 1,
+    buildSha: f.buildSha,
+    approvalRef: "synthetic-native-diagnostic",
+    connectionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    notBefore: new Date(now - 1000).toISOString(),
+    expiresAt: new Date(now + 10 * 60_000).toISOString(),
+  });
+  f.configText = JSON.stringify(cfg);
+  f.evidence.configSha256 = hash(f.configText);
+  f.operations.configSha256 = hash(f.configText);
+  f.operations.testNativeEvents.diagnosticsSha256 = hash(
+    cfg.vars.TEST_NATIVE_EVENT_DIAGNOSTICS,
+  );
+  f.operations.testNativeEvents.diagnosticsDataAndStopPlanReviewed = true;
+  return f;
+}
+
+test("native observation requires exact bounded policy and separate data/stop attestation", async () => {
+  const f = diagnosticFixture(),
+    cfg = JSON.parse(f.configText),
+    peer = JSON.parse(f.peerText);
+  assert.equal(
+    validateRelease({ ...f, secrets: f.inventory, now }).preflightValid,
+    true,
+  );
+  const provider = makeProviderMock(cfg, peer);
+  const args = {
+    ...f,
+    cloudflareRead: provider.read,
+    githubRead: makeGithubMock().read,
+    now,
+  };
+  const approval = await authorizeRelease(args);
+  assert.equal(
+    approval.testNativeEvents.diagnosticsSha256,
+    hash(cfg.vars.TEST_NATIVE_EVENT_DIAGNOSTICS),
+  );
+  delete f.operations.testNativeEvents.diagnosticsDataAndStopPlanReviewed;
+  await assert.rejects(
+    authorizeRelease(args),
+    /native-event-diagnostics-not-approved/,
+  );
+  f.operations.testNativeEvents.diagnosticsDataAndStopPlanReviewed = true;
+  f.operations.testNativeEvents.diagnosticsSha256 = "0".repeat(64);
+  await assert.rejects(
+    authorizeRelease(args),
+    /native-event-diagnostics-not-approved/,
+  );
+});
+
+test("native observation preflight rejects excess window, expired policy and production reuse", () => {
+  for (const mutate of [
+    (p) => {
+      p.expiresAt = new Date(now + 16 * 60_000).toISOString();
+    },
+    (p) => {
+      p.connectionId = "not-a-connection";
+    },
+    (p) => {
+      p.body = "NEVER_ECHO_BODY";
+    },
+  ]) {
+    const f = diagnosticFixture(),
+      cfg = JSON.parse(f.configText),
+      p = JSON.parse(cfg.vars.TEST_NATIVE_EVENT_DIAGNOSTICS);
+    mutate(p);
+    cfg.vars.TEST_NATIVE_EVENT_DIAGNOSTICS = JSON.stringify(p);
+    f.configText = JSON.stringify(cfg);
+    f.evidence.configSha256 = hash(f.configText);
+    assert.throws(
+      () => validateRelease({ ...f, secrets: f.inventory, now }),
+      /invalid-native-event-diagnostics/,
+    );
+  }
+  const f = diagnosticFixture();
+  assert.throws(
+    () =>
+      validateRelease({ ...f, secrets: f.inventory, now: now + 10 * 60_000 }),
+    /expired-native-event-diagnostics/,
+  );
+  const cfg = JSON.parse(f.configText);
+  assert.equal(
+    nativeDiagnosticPolicy({ ...cfg.vars, RELEASE_ENVIRONMENT: "production" }),
+    null,
   );
 });

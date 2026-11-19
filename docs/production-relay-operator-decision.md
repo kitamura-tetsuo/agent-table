@@ -77,9 +77,14 @@ only. Production requires both global Events flags to remain false, exact
 recipient guest and connection IDs, one to three exact table IDs, a finite policy
 window of at most two hours, and callback targets matching the reviewed relay
 configuration. The actual signing key must match its configured public fingerprint.
-MCP discovery, subscription/status and durable dispatch enforce this scope;
-other authorized participants, connections and tables do not gain private Events
-or outbound eligibility. No native transport fallback or production test-native
+During an active production private window, fresh authenticated connections with
+current Events scope may discover only the approved generic event schemas, even
+when host-wide discovery uses a different account. Metadata discovery does not
+reveal the private recipient, table IDs, policy, callback or content and grants no
+subscription or outbound authority. Subscription/status and durable dispatch
+still enforce the exact recipient/connection/table scope; staging discovery stays
+recipient-scoped. Other participants, connections and tables gain no private
+subscription or outbound eligibility. No native transport fallback or production test-native
 risk waiver is permitted. A policy JSON or approval reference alone is not
 concrete owner/protected approval of a live operation.
 

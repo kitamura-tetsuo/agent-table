@@ -10,6 +10,7 @@ import {
 import {
   PRODUCTION_RELAY_EVENTS_PROFILE,
   productionRelayConfiguration,
+  productionRelayProfileSelected,
 } from "../src/shared/production-relay-events.ts";
 import {
   TEST_NATIVE_EVENTS_PROFILE,
@@ -286,7 +287,7 @@ export function verifyPrivatePilotDecision(record, vars, now) {
         ? decision.callbackDiscoveryReviewed === true &&
           decision.noOutboundReviewed === true
         : decision.callbackControlReviewed === true &&
-          (vars.RELEASE_ENVIRONMENT === "production"
+          (productionRelayProfileSelected(vars)
             ? decision.nativeFetchRiskAccepted === false
             : decision.nativeFetchRiskAccepted === true)) &&
       (policy.observationMode === undefined ||
@@ -337,6 +338,7 @@ export async function authorizeRelease({
     peerText,
     secrets: inventory,
     evidence,
+    now,
   });
   requireDecision(
     workflow?.repository === REPOSITORY &&
@@ -413,7 +415,8 @@ export async function authorizeRelease({
   });
   const productionRelay =
     profile === PRODUCTION_RELAY_EVENTS_PROFILE ||
-    (profile === PRIVATE_PILOT_PROFILE && environment === "production")
+    (profile === PRIVATE_PILOT_PROFILE &&
+      productionRelayProfileSelected(config.vars))
       ? verifyProductionRelayDecision(operations, config.vars)
       : undefined;
   const testNativeEvents =
@@ -655,5 +658,20 @@ export function verifyTestNativeEventsDecision(record, vars) {
       record.testNativeEvents.monitoringAndStopPlanReviewed === true,
     "test-native-events-risk-not-approved",
   );
-  return { risk: TEST_NATIVE_EVENTS_RISK, targetsSha256 };
+  const diagnostic = vars.TEST_NATIVE_EVENT_DIAGNOSTICS;
+  const diagnosticsSha256 =
+    diagnostic === undefined
+      ? undefined
+      : createHash("sha256").update(diagnostic).digest("hex");
+  requireDecision(
+    diagnostic === undefined ||
+      (record.testNativeEvents.diagnosticsSha256 === diagnosticsSha256 &&
+        record.testNativeEvents.diagnosticsDataAndStopPlanReviewed === true),
+    "native-event-diagnostics-not-approved",
+  );
+  return {
+    risk: TEST_NATIVE_EVENTS_RISK,
+    targetsSha256,
+    ...(diagnosticsSha256 ? { diagnosticsSha256 } : {}),
+  };
 }

@@ -16,8 +16,9 @@ export function productionRelayProfileSelected(
 ): boolean {
   return (
     env.RELEASE_PROFILE === PRODUCTION_RELAY_EVENTS_PROFILE ||
-    (env.RELEASE_ENVIRONMENT === "production" &&
-      env.RELEASE_PROFILE === PRIVATE_PILOT_PROFILE)
+    (env.RELEASE_PROFILE === PRIVATE_PILOT_PROFILE &&
+      (env.RELEASE_ENVIRONMENT === "production" ||
+        env.EVENTS_RELAY_CONFIGURATION !== undefined))
   );
 }
 
@@ -39,7 +40,7 @@ export interface ProductionRelayBindings {
 /** Non-secret configuration only. A parsed value NEVER grants delivery. */
 export interface ProductionRelayConfiguration {
   version: 1;
-  environment: "production";
+  environment: "production" | "staging";
   buildSha: string;
   origin: string;
   callerId: string;
@@ -58,7 +59,8 @@ export function productionRelayConfiguration(
   const privateRelay = env.RELEASE_PROFILE === PRIVATE_PILOT_PROFILE;
   const pilot = privateRelay ? privatePilotConfiguration(env) : null;
   if (
-    env.RELEASE_ENVIRONMENT !== "production" ||
+    !["production", "staging"].includes(env.RELEASE_ENVIRONMENT ?? "") ||
+    (env.RELEASE_ENVIRONMENT === "staging" && !privateRelay) ||
     (!privateRelay &&
       env.RELEASE_PROFILE !== PRODUCTION_RELAY_EVENTS_PROFILE) ||
     (privateRelay && pilot?.mode !== "a-only") ||
@@ -89,7 +91,7 @@ export function productionRelayConfiguration(
       Object.keys(config).sort().join(",") !==
         "audience,buildSha,callerId,environment,origin,signingPublicKeySha256,version" ||
       config.version !== 1 ||
-      config.environment !== "production" ||
+      config.environment !== env.RELEASE_ENVIRONMENT ||
       config.buildSha !== env.RELEASE_BUILD_SHA ||
       typeof config.signingPublicKeySha256 !== "string" ||
       !/^[a-f0-9]{64}$/.test(config.signingPublicKeySha256) ||
@@ -97,7 +99,11 @@ export function productionRelayConfiguration(
       typeof config.callerId !== "string" ||
       !/^[A-Za-z0-9_-]{16,128}$/.test(config.callerId) ||
       typeof config.audience !== "string" ||
-      !/^production:[a-z][a-z0-9-]{2,63}$/.test(config.audience)
+      !(
+        env.RELEASE_ENVIRONMENT === "staging"
+          ? /^test:[a-z][a-z0-9-]{2,63}$/
+          : /^production:[a-z][a-z0-9-]{2,63}$/
+      ).test(config.audience)
     )
       return null;
     const url = new URL(config.origin);

@@ -1,0 +1,46 @@
+name: agent-table-relay-staging
+services:
+  relay:
+    container_name: agent-table-signed-relay-staging
+    image: ${RELAY_IMAGE:?set exact built relay image digest}
+    user: "10001:10001"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: "no"
+    stop_grace_period: 30s
+    command: ["--config", "/config/relay.json", "--expected-config-sha256", "${RELAY_CONFIG_SHA256:?set exact config hash}", "--socket", "/run/agent-table-relay/control.sock"]
+    volumes:
+      - type: bind
+        source: ${RELAY_CONFIG_DIR:?set private absolute config directory}
+        target: /config
+        read_only: true
+      - type: bind
+        source: ${RELAY_STATE_DIR:?set staging-only persistent state directory}
+        target: /state
+    tmpfs:
+      - /run/agent-table-relay:rw,noexec,nosuid,nodev,mode=0700,uid=10001,gid=10001
+    healthcheck:
+      test: ["CMD", "node", "scripts/relay-control.mjs", "--socket", "/run/agent-table-relay/control.sock", "--inspect"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+  ingress:
+    container_name: agent-table-signed-relay-staging-ingress
+    image: ${CLOUDFLARED_IMAGE:?set verified cloudflared image digest}
+    user: "10001:10001"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: "no"
+    network_mode: service:relay
+    depends_on:
+      relay:
+        condition: service_healthy
+    command: ["tunnel", "--no-autoupdate", "--config", "/config/cloudflared.yml", "run"]
+    volumes:
+      - type: bind
+        source: ${INGRESS_CONFIG_DIR:?set private absolute ingress directory}
+        target: /config
+        read_only: true

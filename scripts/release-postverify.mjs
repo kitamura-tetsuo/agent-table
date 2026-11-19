@@ -7,8 +7,8 @@ import {
   privatePilotConfiguration,
 } from "../src/shared/private-pilot.ts";
 import {
-  PRODUCTION_RELAY_EVENTS_PROFILE,
   productionRelayConfiguration,
+  productionRelayProfileSelected,
 } from "../src/shared/production-relay-events.ts";
 import {
   TEST_NATIVE_EVENTS_PROFILE,
@@ -164,11 +164,7 @@ export async function verifyPublishedRelease({
       testNativeEventsAllowed(config.vars),
     "post-deploy-profile-unverified",
   );
-  if (
-    profile === PRODUCTION_RELAY_EVENTS_PROFILE ||
-    (profile === PRIVATE_PILOT_PROFILE &&
-      config.vars.RELEASE_ENVIRONMENT === "production")
-  ) {
+  if (productionRelayProfileSelected(config.vars)) {
     const relay = productionRelayConfiguration(config.vars);
     requirePost(
       relay &&
@@ -193,6 +189,12 @@ export async function verifyPublishedRelease({
   if (profile === TEST_NATIVE_EVENTS_PROFILE) {
     requirePost(
       approval.testNativeEvents?.risk === TEST_NATIVE_EVENTS_RISK &&
+        approval.testNativeEvents?.diagnosticsSha256 ===
+          (config.vars.TEST_NATIVE_EVENT_DIAGNOSTICS === undefined
+            ? undefined
+            : createHash("sha256")
+                .update(config.vars.TEST_NATIVE_EVENT_DIAGNOSTICS)
+                .digest("hex")) &&
         approval.testNativeEvents.targetsSha256 ===
           createHash("sha256")
             .update(config.vars.EVENTS_REVIEWED_CALLBACK_TARGETS)
@@ -306,9 +308,7 @@ export async function verifyPublishedRelease({
   }
   return {
     verified: true,
-    ...(profile === PRODUCTION_RELAY_EVENTS_PROFILE ||
-    (profile === PRIVATE_PILOT_PROFILE &&
-      config.vars.RELEASE_ENVIRONMENT === "production")
+    ...(productionRelayProfileSelected(config.vars)
       ? {
           verificationScope: "serving-configuration",
           configSha256: approval.configSha256,
