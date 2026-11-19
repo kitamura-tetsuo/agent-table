@@ -17,6 +17,8 @@ import {
   runRelayLauncher,
 } from "./relay-launcher.mjs";
 
+import { createSteadyOwnerState } from "./relay-steady-owner-state.mjs";
+
 const MAX = 65536;
 const refused = () => new Error("controller-refused");
 export async function runRelayController({
@@ -25,7 +27,13 @@ export async function runRelayController({
   signals = process,
   output = process.stdout,
   createControlServer = createServer,
+  createApplication,
+  steadyOwnerDirectory,
 }) {
+  const steady =
+    steadyOwnerDirectory === undefined
+      ? null
+      : createSteadyOwnerState(steadyOwnerDirectory, { controller: true });
   const parent = dirname(socketPath);
   const stat = lstatSync(parent);
   if (
@@ -113,6 +121,45 @@ export async function runRelayController({
         });
         return;
       }
+      if (steady && ["enable", "pause", "stop"].includes(command?.action)) {
+        // The private owner socket is the single supported operation path.
+        // Refuse malformed/stale commands before touching durable intent.
+        if (
+          Object.keys(command).sort().join(",") !==
+            "action,configurationSha256,generation,payload,sequence,version" ||
+          command.version !== 1 ||
+          command.payload !== null ||
+          command.generation !== latest?.generation ||
+          command.configurationSha256 !== latest.configurationSha256 ||
+          !Number.isSafeInteger(command.sequence) ||
+          command.sequence <= latest.sequence
+        ) {
+          fail();
+          return;
+        }
+        if (command.action === "enable" && steady.readInhibit() !== "clear") {
+          reply({ ok: false, state: latest.state, code: "steady-inhibited" });
+          return;
+        }
+        if (command.action !== "enable") {
+          try {
+            steady.recordInhibit(
+              command.action === "stop" ? "quarantined" : "paused",
+            );
+          } catch {
+            shutdown();
+            fail();
+            return;
+          }
+          // A competing already-forwarded enable may be committed; drain rather
+          // than report that the pause was performed or retry either command.
+          if (active) {
+            shutdown();
+            fail();
+            return;
+          }
+        }
+      }
       if (active) {
         reply({
           version: 1,
@@ -194,6 +241,7 @@ export async function runRelayController({
     input,
     output: launcherOutput,
     signals: launcherSignals,
+    createApplication,
   });
   // Observe termination before bootstrap as well; no unhandled background rejection.
   const settled = launched.then(
@@ -284,6 +332,7 @@ if (
       !(await runRelayController({
         configuration,
         socketPath: process.argv[7],
+        steadyOwnerDirectory: process.env.RELAY_STEADY_OWNER_DIR || undefined,
       }))
     )
       process.exitCode = 1;

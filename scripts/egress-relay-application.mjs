@@ -19,21 +19,25 @@ import {
   readUncertainRecovery,
 } from "./relay-uncertain-reconciliation.mjs";
 
-export function createRelayApplication({
-  databasePath,
-  environment,
-  serviceId,
-  callers,
-  key,
-  cert,
-  admission = {},
-  messageDelivery = false,
-  challengeVerification = false,
-}) {
+export function createRelayApplication(
+  {
+    databasePath,
+    environment,
+    serviceId,
+    callers,
+    key,
+    cert,
+    admission = {},
+    messageDelivery = false,
+    challengeVerification = false,
+  },
+  { messageTransport = sendPinnedStatusOnlyPrototype } = {},
+) {
   // Binding identity may not be overridden inside general quota configuration.
   if (
     typeof messageDelivery !== "boolean" ||
     typeof challengeVerification !== "boolean" ||
+    typeof messageTransport !== "function" ||
     Object.hasOwn(admission, "environment") ||
     Object.hasOwn(admission, "serviceId")
   )
@@ -56,9 +60,7 @@ export function createRelayApplication({
       ...(challengeVerification
         ? { verifyChallenge: createResultOnlyChallengeVerifier() }
         : {}),
-      ...(messageDelivery
-        ? { sendMessage: sendPinnedStatusOnlyPrototype }
-        : {}),
+      ...(messageDelivery ? { sendMessage: messageTransport } : {}),
     });
     const listener = createRelayHttpsServer({ key, cert, handler });
     return {

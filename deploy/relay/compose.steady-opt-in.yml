@@ -1,0 +1,6 @@
+# Optional controller guard only. A separately approved host supervisor owns
+# paired process recovery. Neither service silently changes restart policy.
+services:
+  relay:
+    environment:
+      RELAY_STEADY_OWNER_DIR: /state/steady-owner
