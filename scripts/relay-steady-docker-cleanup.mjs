@@ -132,6 +132,22 @@ function realDocker(args, timeout) {
     },
   );
 }
+// Docker's typed network inspect propagates daemon/version-specific missing
+// text. Use successful exact-ID list output as positive readback instead.
+function networkPresent(id, call) {
+  const output = call([
+    "network",
+    "ls",
+    "--no-trunc",
+    "--filter",
+    `id=${id}`,
+    "--format",
+    "{{.ID}}",
+  ]).trim();
+  if (output === "") return false;
+  if (output === id) return true;
+  throw refusal(); // A different/ambiguous output cannot prove absence.
+}
 function inspect(role, id, call) {
   const kind = role === "network" ? "network" : "container";
   try {
@@ -154,6 +170,7 @@ function inspect(role, id, call) {
         `Error response from daemon: No such ${kind}: ${id}`
     )
       return null;
+    if (role === "network" && !networkPresent(id, call)) return null;
     throw error;
   }
 }
@@ -191,7 +208,10 @@ export function cleanupFixtureJournal(
     try {
       const object = inspect(role, item.id, call);
       if (object !== null) {
-        if (!verify(role, object, item.id, journal.token)) throw refusal();
+        if (!verify(role, object, item.id, journal.token)) {
+          unresolved.push(`${role}:cleanup-identity-mismatch`);
+          continue;
+        }
         try {
           call(
             role === "network"
@@ -201,7 +221,14 @@ export function cleanupFixtureJournal(
         } catch {
           // An unknown removal may have taken effect. Verify once; no retry.
         }
-        if (inspect(role, item.id, call) !== null) throw refusal();
+        const present =
+          role === "network"
+            ? networkPresent(item.id, call)
+            : inspect(role, item.id, call) !== null;
+        if (present) {
+          unresolved.push(`${role}:cleanup-still-present`);
+          continue;
+        }
       }
       journal.resources[role] = { state: "removed", id: item.id };
       writeFixtureJournal(path, journal);

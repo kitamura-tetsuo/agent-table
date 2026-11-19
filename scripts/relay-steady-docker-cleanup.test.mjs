@@ -123,3 +123,102 @@ test("symlink journal and elapsed overall budget fail closed", (t) => {
   });
   assert.equal(result.cleanup, "incomplete");
 });
+
+const network = "c".repeat(64);
+const networkRecord = () =>
+  JSON.stringify([
+    {
+      Id: network,
+      Name: `at78-fixture-${token}`,
+      Labels: {
+        "agent-table.test-scope": "isolated-restart-78",
+        "agent-table.fixture-id": token,
+      },
+    },
+  ]);
+const exactNetworkList = [
+  "network",
+  "ls",
+  "--no-trunc",
+  "--filter",
+  `id=${network}`,
+  "--format",
+  "{{.ID}}",
+];
+
+test("network removal uses positive exact-ID absence, even when rm response is lost", (t) => {
+  const path = fixture(t, { network: { state: "known", id: network } });
+  let calls = 0;
+  const result = cleanupFixtureJournal(path, {
+    docker: (args) => {
+      if (++calls === 1) {
+        assert.deepEqual(args, ["inspect", "--type", "network", network]);
+        return networkRecord();
+      }
+      if (calls === 2) {
+        assert.deepEqual(args, ["network", "rm", network]);
+        throw Error("lost remove response");
+      }
+      assert.deepEqual(args, exactNetworkList);
+      return "";
+    },
+  });
+  assert.equal(calls, 3);
+  assert.equal(result.cleanup, "complete");
+  assert.deepEqual(readFixtureJournal(path).resources.network, {
+    state: "removed",
+    id: network,
+  });
+});
+
+test("network already absent uses list despite daemon-specific typed inspect text", (t) => {
+  const path = fixture(t, { network: { state: "known", id: network } });
+  let calls = 0;
+  const result = cleanupFixtureJournal(path, {
+    docker: (args) => {
+      if (++calls === 1) {
+        assert.deepEqual(args, ["inspect", "--type", "network", network]);
+        throw Object.assign(Error("not found"), {
+          status: 1,
+          stderr: `Error response from daemon: network ${network} not found\n`,
+        });
+      }
+      assert.deepEqual(args, exactNetworkList);
+      return "";
+    },
+  });
+  assert.equal(calls, 2);
+  assert.equal(result.cleanup, "complete");
+});
+
+test("a remaining network is distinct from unavailable or malformed readback", (t) => {
+  for (const [list, reason] of [
+    [() => network + "\n", "network:cleanup-still-present"],
+    [() => relay + "\n", "network:cleanup-unverified"],
+    [
+      () => {
+        throw Error("daemon unavailable");
+      },
+      "network:cleanup-unverified",
+    ],
+  ]) {
+    const path = fixture(t, { network: { state: "known", id: network } });
+    let removals = 0;
+    const result = cleanupFixtureJournal(path, {
+      docker: (args) => {
+        if (args[0] === "inspect") return networkRecord();
+        if (args[1] === "rm") {
+          removals++;
+          assert.equal(args[2], network);
+          return network;
+        }
+        assert.deepEqual(args, exactNetworkList);
+        return list();
+      },
+    });
+    assert.equal(removals, 1);
+    assert.equal(result.cleanup, "incomplete");
+    assert.deepEqual(result.unresolved, [reason]);
+    assert.equal(readFixtureJournal(path).resources.network.state, "known");
+  }
+});
