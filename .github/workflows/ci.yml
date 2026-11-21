@@ -45,7 +45,7 @@ jobs:
       - name: Lint foreground relay launcher
         run: npx biome check scripts/relay-launcher.mjs scripts/relay-launcher.test.mjs scripts/relay-controller.mjs scripts/relay-control.mjs scripts/relay-controller.test.mjs scripts/egress-relay-application.mjs scripts/egress-relay-http.mjs scripts/release-relay-decision.mjs scripts/production-relay-release.test.mjs scripts/relay-readiness-diagnostics.mjs scripts/relay-readiness-diagnostics.test.mjs
       - name: Lint dependency and runtime automation
-        run: npx biome check scripts/runtime-updates.mjs scripts/runtime-updates.test.mjs scripts/dependency-automerge.mjs scripts/dependency-automerge.test.mjs
+        run: npx biome check scripts/runtime-updates.mjs scripts/runtime-updates.test.mjs scripts/dependency-automerge.mjs scripts/dependency-automerge.test.mjs scripts/wait-for-validation.mjs scripts/wait-for-validation.test.mjs
       - run: node --test scripts/*.test.mjs
       - name: Isolated Docker relay restart
         id: restart78_fixture

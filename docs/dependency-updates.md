@@ -69,9 +69,9 @@ Workerd integration/recovery tests, isolated Docker relay restart, SDK/live-stre
 probes, Wrangler dry runs, and browser E2E tests. The additional runtime check
 rejects mismatched Node/npm/image manifests before installing project packages.
 
-`Merge validated dependency updates` is triggered only after Validation completes.
-Its privileged code is checked out from `main`. It reads candidate manifests via
-the GitHub API; it never checks out or installs candidate code with its write token.
+`Merge validated dependency updates` waits for a successful Validation run before
+considering a merge. Its privileged code is checked out from `main`. It reads
+candidate manifests via the GitHub API; it never checks out or installs candidate code with its write token.
 It verifies the repository, authentic bot identity, current PR head and base,
 completed Validation steps, other checks, and review state. It permits only:
 
@@ -90,6 +90,17 @@ explicitly dispatches Validation on `main`, because pushes made with
 `GITHUB_TOKEN` do not start ordinary push workflows. The runtime updater likewise
 dispatches Validation on its branch, so it does not depend on approval of a
 workflow-created PR's automatic workflow run.
+
+Token-dispatched runs cannot be relied on to emit a subsequent `workflow_run`
+callback. Each initiating workflow therefore obtains the exact CI run ID from
+GitHub and explicitly dispatches its continuation on `main`: the runtime updater
+dispatches the merge gate, and the merge gate dispatches relay publication.
+Each continuation receives that run ID and expected commit SHA, waits at most
+25 minutes, and independently checks the CI identity and result before acting.
+Failed, cancelled, mismatched, or expired validation does not permit a merge or
+publication. The Validation job keeps read-only permissions and remains the
+single `verify` job used by release authorization. Ordinary PR/push completion
+events still use `workflow_run`.
 
 ## Delivery and live rollout
 
@@ -135,7 +146,9 @@ node --test scripts/runtime-updates.test.mjs scripts/dependency-automerge.test.m
 
 To pause checks, disable **Runtime updates** and set Dependabot's group schedule
 or update configuration as appropriate. To stop merging while keeping update PRs,
-disable **Merge validated dependency updates**. Failed groups stay available for
+disable **Merge validated dependency updates**. To retry a continuation, use its
+**Run workflow** button on `main` with the exact successful `validation_run_id` and
+`expected_sha`; the same verification rules still apply. Failed groups stay available for
 inspection; fix the incompatibility in that PR and rerun validation. If a manual
 edit introduces source/configuration changes outside the allowlist, merge it
 through normal review after validation.
@@ -146,4 +159,5 @@ through normal review after validation.
 - [Dependabot configuration options](https://docs.github.com/en/code-security/reference/supply-chain-security/dependabot-options-reference)
 - [Security grouping restrictions](https://docs.github.com/en/code-security/reference/supply-chain-security/troubleshoot-dependabot/dependabot-errors#failed-to-group-dependencies-security-updates)
 - [GITHUB_TOKEN workflow triggering](https://docs.github.com/en/actions/concepts/security/github_token)
+- [Workflow dispatch run IDs](https://github.blog/changelog/2026-02-19-workflow-dispatch-api-now-returns-run-ids/)
 - [Cloudflare compatibility dates](https://developers.cloudflare.com/workers/configuration/compatibility-dates/)
