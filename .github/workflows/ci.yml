@@ -15,10 +15,16 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version-file: .node-version
           cache: npm
+      - name: Check runtime pins
+        run: node scripts/runtime-updates.mjs --check-runtime
+      - name: Use the pinned npm release
+        run: npm install --global --ignore-scripts "npm@$(node scripts/runtime-updates.mjs --print npm)"
       - run: npm ci
       - name: Typecheck
         run: npm run typecheck
@@ -38,12 +44,12 @@ jobs:
         run: npx biome check scripts/autonomous-pilot.mjs scripts/autonomous-pilot.test.mjs
       - name: Lint foreground relay launcher
         run: npx biome check scripts/relay-launcher.mjs scripts/relay-launcher.test.mjs scripts/relay-controller.mjs scripts/relay-control.mjs scripts/relay-controller.test.mjs scripts/egress-relay-application.mjs scripts/egress-relay-http.mjs scripts/release-relay-decision.mjs scripts/production-relay-release.test.mjs scripts/relay-readiness-diagnostics.mjs scripts/relay-readiness-diagnostics.test.mjs
+      - name: Lint dependency and runtime automation
+        run: npx biome check scripts/runtime-updates.mjs scripts/runtime-updates.test.mjs scripts/dependency-automerge.mjs scripts/dependency-automerge.test.mjs
       - run: node --test scripts/*.test.mjs
       - name: Isolated Docker relay restart
         id: restart78_fixture
         timeout-minutes: 5
-        env:
-          NODE_RELAY_BASE: docker.io/library/node:24.22.1-bookworm-slim@sha256:be8204d4bd327363357f532187b752ff62759c31bedf98e9e18fc08c9cbd605c
         run: |
           set -euo pipefail
           test -S /var/run/docker.sock
@@ -51,6 +57,7 @@ jobs:
           test -x /usr/bin/flock
           command -v openssl >/dev/null
           docker version --format '{{.Server.Version}}'
+          NODE_RELAY_BASE="$(node scripts/runtime-updates.mjs --print image)"
           timeout 75s docker pull "$NODE_RELAY_BASE"
           timeout 75s docker build --network=none --pull=false \
             --build-arg "NODE_IMAGE=$NODE_RELAY_BASE" \
@@ -82,8 +89,9 @@ jobs:
           timeout 45s node scripts/relay-steady-docker-cleanup.mjs "$journal_dir/manifest.json"
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
-      - run: python -m pip install --disable-pip-version-check pytest==8.4.2 loguru==0.7.3
+          python-version-file: .python-version
+          check-latest: true
+      - run: python -m pip install --disable-pip-version-check -r requirements-ci.txt
       - run: python -m pytest -q test/unit/test_egress_experiments.py
       - name: Application unit tests
         run: npm test

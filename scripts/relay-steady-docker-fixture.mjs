@@ -24,6 +24,7 @@ import {
 } from "./relay-steady-docker-cleanup.mjs";
 import { validIncarnation } from "./relay-steady-incarnation.mjs";
 import { inspectSteadyRestartLedger } from "./relay-steady-restart.mjs";
+import { readPinnedNodeVersion } from "./runtime-updates.mjs";
 
 const [image] = process.argv.slice(2);
 assert.equal(
@@ -265,7 +266,10 @@ try {
     ),
   );
   docker("start", relay);
-  assert.equal(docker("exec", relay, "node", "--version"), "v24.22.1");
+  assert.equal(
+    docker("exec", relay, "node", "--version"),
+    `v${readPinnedNodeVersion()}`,
+  );
   for (let i = 0; !inspectSteadyRestartLedgerIfReady() && i < 40; i++)
     await timeout(150);
   function inspectSteadyRestartLedgerIfReady() {

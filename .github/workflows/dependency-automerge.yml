@@ -1,0 +1,43 @@
+name: Merge validated dependency updates
+
+on:
+  workflow_run:
+    workflows: [Validation]
+    types: [completed]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agent-table-dependency-automerge
+  cancel-in-progress: false
+
+jobs:
+  merge:
+    if: >-
+      github.repository == 'kitamura-tetsuo/agent-table' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      (github.event.workflow_run.event == 'pull_request' ||
+       (github.event.workflow_run.event == 'workflow_dispatch' &&
+        github.event.workflow_run.head_branch == 'automation/runtime-updates'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      pull-requests: write
+      checks: read
+      actions: write
+      statuses: read
+    steps:
+      # Privileged code always comes from main; candidate files are data only.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .node-version
+      - name: Merge only the fully validated dependency or runtime head
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/dependency-automerge.mjs

@@ -47,9 +47,14 @@ Agent Table does not decide whether the participants have reached an agreement, 
 
 ## Getting started
 
-Use Node **24.22.1** and npm **11.9.0** with a clean checkout:
+Use the exact Node version in `.node-version` and the npm version in
+`package.json` (`packageManager`) with a clean checkout.
+[Dependency and runtime updates](docs/dependency-updates.md) are grouped, tested,
+and merged automatically; the runtime pins stay synchronized with the relay image:
 
 ```sh
+node scripts/runtime-updates.mjs --check-runtime
+npm install --global --ignore-scripts "npm@$(node scripts/runtime-updates.mjs --print npm)"
 npm ci
 npm run typecheck
 npm run lint

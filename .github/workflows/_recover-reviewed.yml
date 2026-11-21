@@ -87,6 +87,10 @@ jobs:
           [[ "$EXPECTED_PLAN_SHA256" =~ ^[a-f0-9]{64}$ ]]
           [[ -z "$EXPECTED_RECORD_SHA256" || "$EXPECTED_RECORD_SHA256" =~ ^[a-f0-9]{64}$ ]]
           [[ "$RECOVERY_PHASE" == "discard" || "$RECOVERY_PHASE" == "clear" || "$RECOVERY_PHASE" == "endorse" ]]
+      - name: Check runtime pins
+        run: node scripts/runtime-updates.mjs --check-runtime
+      - name: Use the pinned npm release
+        run: npm install --global --ignore-scripts "npm@$(node scripts/runtime-updates.mjs --print npm)"
       - run: npm ci
       - name: Check recovery implementation
         run: |

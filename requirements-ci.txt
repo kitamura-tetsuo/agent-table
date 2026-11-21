@@ -1,0 +1,3 @@
+# Python dependencies for the isolated CI experiments.
+pytest==8.4.2
+loguru==0.7.3

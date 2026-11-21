@@ -18,6 +18,7 @@ import {
 } from "./relay-launcher.mjs";
 
 import { createSteadyOwnerState } from "./relay-steady-owner-state.mjs";
+import { assertPinnedNodeRuntime } from "./runtime-updates.mjs";
 
 const MAX = 65536;
 const refused = () => new Error("controller-refused");
@@ -323,7 +324,7 @@ if (
       process.argv[6] !== "--socket"
     )
       throw refused();
-    if (process.versions.node !== "24.22.1") throw refused();
+    assertPinnedNodeRuntime();
     const configuration = loadRelayLaunchConfiguration(
       process.argv[3],
       process.argv[5],

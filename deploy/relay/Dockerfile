@@ -1,4 +1,4 @@
-# Supply an independently verified Node24.22.1 image digest; no floating default.
+# Supply the exact image from node-image.txt; no floating default.
 ARG NODE_IMAGE
 FROM ${NODE_IMAGE}
 WORKDIR /app
