@@ -408,7 +408,7 @@ async function requireReviews(api, number) {
   );
 }
 
-async function requireChecks(api, run, pr, kind) {
+async function requireChecks(api, run, pr) {
   const head = pr.head.sha;
   const [jobs, runs, checks, status] = await Promise.all([
     api(`${PREFIX}/actions/runs/${run.id}/jobs?filter=latest&per_page=100`),
@@ -430,16 +430,13 @@ async function requireChecks(api, run, pr, kind) {
       ),
     "validation-jobs-incomplete",
   );
-  const candidates = runs.workflow_runs?.filter(
+  // Only real PR workflows satisfy the protected branch's required checks.
+  const relevant = runs.workflow_runs?.filter(
     (candidate) =>
       candidate.head_sha === head &&
       candidate.path === WORKFLOW &&
       candidate.head_branch === pr.head.ref &&
-      ["pull_request", "workflow_dispatch"].includes(candidate.event),
-  );
-  const relevant = candidates?.filter(
-    (candidate) =>
-      kind !== "runtime" || candidate.event === "workflow_dispatch",
+      candidate.event === "pull_request",
   );
   requireCondition(relevant?.length > 0, "validation-run-not-found");
   relevant.sort((a, b) => b.id - a.id);
@@ -449,33 +446,12 @@ async function requireChecks(api, run, pr, kind) {
       relevant[0].conclusion === "success",
     "validation-run-superseded",
   );
-  // GITHUB_TOKEN can leave a duplicate PR-triggered run awaiting approval.
-  // The explicit dispatch is authoritative only for this exact runtime head.
-  const approvalBlockedSuites = new Set(
-    kind === "runtime"
-      ? candidates
-          .filter(
-            (candidate) =>
-              candidate.event === "pull_request" &&
-              (candidate.conclusion === "action_required" ||
-                (candidate.status === "waiting" &&
-                  candidate.conclusion === null)),
-          )
-          .map((candidate) => candidate.check_suite_id)
-          .filter(Number.isSafeInteger)
-      : [],
-  );
   requireCondition(
     checks.total_count === checks.check_runs?.length &&
       checks.check_runs.every(
         (check) =>
-          (check.status === "completed" &&
-            ["success", "neutral", "skipped"].includes(check.conclusion)) ||
-          (check.name === "verify" &&
-            check.app?.slug === "github-actions" &&
-            approvalBlockedSuites.has(check.check_suite?.id) &&
-            (check.conclusion === "action_required" ||
-              check.conclusion === null)),
+          check.status === "completed" &&
+          ["success", "neutral", "skipped"].includes(check.conclusion),
       ),
     "checks-not-successful",
   );
@@ -604,12 +580,7 @@ export async function runAutoMerge({ event, repository, api }) {
       run.run_attempt === announced.run_attempt,
     "validation-run-mismatch",
   );
-  if (
-    !(
-      run.event === "pull_request" ||
-      (run.event === "workflow_dispatch" && run.head_branch === RUNTIME_BRANCH)
-    )
-  )
+  if (run.event !== "pull_request")
     return { status: "skipped", reason: "not-update-validation" };
   // GitHub can omit workflow_run.pull_requests, including after a merge.
   const associated = await api(
@@ -643,11 +614,7 @@ export async function runAutoMerge({ event, repository, api }) {
     )
   )
     return { status: "skipped", reason: "manual-review-requested" };
-  requireCondition(
-    (kind === "dependabot" && run.event === "pull_request") ||
-      (kind === "runtime" && run.event === "workflow_dispatch"),
-    "update-kind-event-mismatch",
-  );
+  requireCondition(run.event === "pull_request", "update-kind-event-mismatch");
   const main = (await api(`${PREFIX}/git/ref/heads/main`)).object?.sha;
   requireCondition(SHA.test(main), "invalid-main-sha");
   if (pr.merged) {
@@ -674,7 +641,7 @@ export async function runAutoMerge({ event, repository, api }) {
   }
   requireCandidate(pr, run.head_sha, main);
   const association = run.pull_requests?.find((item) => item.number === number);
-  if (kind === "dependabot" && association)
+  if (association)
     requireCondition(
       association.base?.sha === main && association.head?.sha === pr.head.sha,
       "tested-base-changed",
@@ -687,7 +654,7 @@ export async function runAutoMerge({ event, repository, api }) {
       comparison.merge_base_commit?.sha === main,
     "candidate-needs-rebase",
   );
-  await requireChecks(api, run, pr, kind);
+  await requireChecks(api, run, pr);
   await requireReviews(api, number);
   const files = await api(`${PREFIX}/pulls/${number}/files?per_page=100`);
   requireCondition(

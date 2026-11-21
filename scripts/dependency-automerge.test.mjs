@@ -119,7 +119,7 @@ function fixture(kind = "dependabot") {
       repository: { full_name: REPOSITORY },
       head_repository: { full_name: REPOSITORY },
       path: WORKFLOW,
-      event: kind === "runtime" ? "workflow_dispatch" : "pull_request",
+      event: "pull_request",
       head_branch: branch,
       head_sha: HEAD,
       status: "completed",
@@ -548,72 +548,84 @@ test("a missing workflow_run PR association falls back to exact-head API evidenc
   assert.equal((await f.invoke()).status, "merged");
 });
 
-test("a runtime dispatch can complete while its duplicate PR run awaits approval", async () => {
+test("successful dispatch CI cannot authorize a runtime merge", async () => {
+  const f = fixture("runtime");
+  f.state.run.event = "workflow_dispatch";
+  const result = await f.invoke();
+  assert.equal(result.status, "skipped");
+  assert.equal(result.reason, "not-update-validation");
+  assert.deepEqual(writes(f.calls), []);
+});
+
+test("latest runtime evidence is the actual PR run, not a later dispatch", async () => {
   const f = fixture("runtime");
   f.state.runs.workflow_runs.push({
     ...f.state.run,
     id: 790,
-    event: "pull_request",
-    status: "waiting",
-    conclusion: null,
-    check_suite_id: 999,
-  });
-  f.state.checks.total_count++;
-  f.state.checks.check_runs.push({
-    name: "verify",
-    app: { slug: "github-actions" },
-    status: "pending",
-    conclusion: null,
-    check_suite: { id: 999 },
+    event: "workflow_dispatch",
   });
   assert.equal((await f.invoke()).status, "merged");
 });
 
-test("the approval exception cannot hide another workflow's pending checks", () =>
+test("approval-held checks never receive an exception for runtime updates", async () => {
+  for (const [status, conclusion] of [
+    ["pending", null],
+    ["completed", "action_required"],
+    ["completed", "failure"],
+  ]) {
+    await blocked(
+      ({ state }) => {
+        state.runs.workflow_runs.push({
+          ...state.run,
+          id: 788,
+          status: "completed",
+          conclusion: "action_required",
+          check_suite_id: 999,
+        });
+        state.checks.total_count++;
+        state.checks.check_runs.push({
+          name: "verify",
+          app: { slug: "github-actions" },
+          status,
+          conclusion,
+          check_suite: { id: 999 },
+        });
+      },
+      /checks-not-successful/,
+      "runtime",
+    );
+  }
+});
+
+test("a newer approval-held PR run supersedes successful runtime validation", () =>
   blocked(
     ({ state }) => {
       state.runs.workflow_runs.push({
         ...state.run,
         id: 790,
-        event: "pull_request",
-        status: "waiting",
-        conclusion: null,
-        check_suite_id: 999,
-      });
-      state.checks.total_count++;
-      state.checks.check_runs.push({
-        name: "verify",
-        app: { slug: "github-actions" },
-        status: "pending",
-        conclusion: null,
-        check_suite: { id: 1000 },
+        status: "completed",
+        conclusion: "action_required",
       });
     },
-    /checks-not-successful/,
+    /validation-run-superseded/,
     "runtime",
   ));
 
-test("a failed duplicate PR check is not an approval exception", () =>
+test("runtime PR validation must target the current main base", () =>
   blocked(
     ({ state }) => {
-      state.runs.workflow_runs.push({
-        ...state.run,
-        id: 790,
-        event: "pull_request",
-        status: "waiting",
-        conclusion: null,
-        check_suite_id: 999,
-      });
-      state.checks.total_count++;
-      state.checks.check_runs.push({
-        name: "verify",
-        app: { slug: "github-actions" },
-        status: "completed",
-        conclusion: "failure",
-        check_suite: { id: 999 },
-      });
+      state.run.pull_requests[0].base.sha = OTHER;
     },
-    /checks-not-successful/,
+    /tested-base-changed/,
+    "runtime",
+  ));
+
+test("runtime updates still require a clean protected-branch merge state", () =>
+  blocked(
+    ({ state }) => {
+      state.pr.mergeable_state = "blocked";
+    },
+    /pull-request-not-mergeable-at-tested-sha/,
     "runtime",
   ));
 

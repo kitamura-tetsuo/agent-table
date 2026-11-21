@@ -15,7 +15,7 @@ function run(overrides = {}) {
     path: ".github/workflows/ci.yml",
     head_sha: HEAD,
     head_branch: "automation/runtime-updates",
-    event: "workflow_dispatch",
+    event: "pull_request",
     status: "completed",
     conclusion: "success",
     ...overrides,
@@ -52,7 +52,7 @@ function fixture(results = [run()]) {
   };
 }
 
-test("returns the exact successful runtime or Dependabot run", async () => {
+test("returns the exact successful runtime or Dependabot pull_request run", async () => {
   for (const candidate of [
     run(),
     run({
@@ -147,7 +147,7 @@ test("update target rejects unrelated branch and event combinations", async () =
     { head_branch: "main" },
     { head_branch: "automation/unrelated" },
     { event: "push" },
-    { event: "pull_request" },
+    { event: "workflow_dispatch" },
     { event: "pull_request", head_branch: "dependabot/" },
     { event: "pull_request", head_branch: "dependabot/fake branch" },
     {
