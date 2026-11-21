@@ -1,0 +1,77 @@
+name: Runtime updates
+
+on:
+  schedule:
+    # Monday 06:45 JST, after the grouped dependency check.
+    - cron: '45 21 * * 0'
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/runtime-updates.yml
+      - scripts/runtime-updates.mjs
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agent-table-runtime-updates
+  cancel-in-progress: false
+
+jobs:
+  update:
+    if: github.repository == 'kitamura-tetsuo/agent-table' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .node-version
+      - name: Resolve compatible Node, npm, and Docker image updates together
+        run: node scripts/runtime-updates.mjs --update
+      - name: Validate the proposed runtime pins
+        run: node scripts/runtime-updates.mjs --check
+      - name: Create or refresh one runtime update PR
+        id: pr
+        uses: peter-evans/create-pull-request@22a9089034f40e5a961c8808d113e2c98fb63676 # v7
+        with:
+          token: ${{ github.token }}
+          branch: automation/runtime-updates
+          base: main
+          author: github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>
+          commit-message: "chore(runtime): update Node, npm, and relay base image"
+          title: "chore(runtime): update Node, npm, and relay base image"
+          body: |
+            Updates the supported Node and npm release lines and the digest-pinned
+            Debian relay base image together. New Node/npm releases wait three days.
+
+            Validation is explicitly dispatched for this branch. Automatic merge
+            requires the current head to pass the complete Validation workflow and
+            contain only the permitted runtime version changes.
+
+            The main validation and relay image publication run after merging.
+            Cloudflare rollout follows the existing reviewed release process.
+          add-paths: |
+            .node-version
+            package.json
+            package-lock.json
+            deploy/relay/node-image.txt
+      - name: Dispatch validation without waiting for bot-PR workflow approval
+        if: steps.pr.outputs.pull-request-number && steps.pr.outputs.pull-request-operation != 'closed'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_HEAD_SHA: ${{ steps.pr.outputs.pull-request-head-sha }}
+        run: |
+          set -euo pipefail
+          current_sha="$(gh api "repos/$GH_REPO/git/ref/heads/automation/runtime-updates" --jq .object.sha)"
+          [[ "$current_sha" == "$PR_HEAD_SHA" ]]
+          gh workflow run ci.yml --repo "$GH_REPO" --ref automation/runtime-updates

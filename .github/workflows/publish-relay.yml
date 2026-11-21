@@ -1,0 +1,108 @@
+name: Publish validated relay image
+
+on:
+  workflow_run:
+    workflows: [Validation]
+    branches: [main]
+    types: [completed]
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: agent-table-relay-publication
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: >-
+      github.repository == 'kitamura-tetsuo/agent-table' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      (github.event.workflow_run.event == 'push' ||
+       github.event.workflow_run.event == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+      packages: write
+    steps:
+      - name: Verify successful validation of the current main commit
+        id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VALIDATION_RUN_ID: ${{ github.event.workflow_run.id }}
+          VALIDATION_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$VALIDATION_SHA" =~ ^[a-f0-9]{40}$ ]]
+          run="$(gh api "repos/$GH_REPO/actions/runs/$VALIDATION_RUN_ID")"
+          jq -e --arg sha "$VALIDATION_SHA" --arg repo "$GH_REPO" '
+            .path == ".github/workflows/ci.yml" and
+            .head_sha == $sha and .head_branch == "main" and
+            .head_repository.full_name == $repo and
+            .status == "completed" and .conclusion == "success" and
+            (.event == "push" or .event == "workflow_dispatch")
+          ' <<< "$run" >/dev/null
+          gh api "repos/$GH_REPO/actions/runs/$VALIDATION_RUN_ID/jobs?filter=latest&per_page=100" |
+            jq -e '.total_count == 1 and .jobs[0].name == "verify" and .jobs[0].conclusion == "success"' >/dev/null
+          current_sha="$(gh api "repos/$GH_REPO/git/ref/heads/main" --jq .object.sha)"
+          if [[ "$current_sha" != "$VALIDATION_SHA" ]]; then
+            echo 'A newer main commit exists; its validation will publish the next image.' >> "$GITHUB_STEP_SUMMARY"
+            echo 'current=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo 'current=true' >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        if: steps.source.outputs.current == 'true'
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        if: steps.source.outputs.current == 'true'
+        with:
+          node-version-file: .node-version
+      - name: Build the same digest-pinned relay runtime that passed validation
+        if: steps.source.outputs.current == 'true'
+        env:
+          VALIDATION_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          node scripts/runtime-updates.mjs --check-runtime
+          base_image="$(node scripts/runtime-updates.mjs --print image)"
+          image="ghcr.io/kitamura-tetsuo/agent-table-relay:sha-$VALIDATION_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          docker pull "$base_image"
+          docker build --network=none --pull=false \
+            --build-arg "NODE_IMAGE=$base_image" \
+            --label org.opencontainers.image.source=https://github.com/kitamura-tetsuo/agent-table \
+            --label "org.opencontainers.image.revision=$VALIDATION_SHA" \
+            -f deploy/relay/Dockerfile -t "$image" .
+          actual_node="$(docker run --rm --network=none --entrypoint node "$image" --version)"
+          [[ "$actual_node" == "v$(node scripts/runtime-updates.mjs --print node)" ]]
+      - name: Publish a uniquely tagged relay image
+        if: steps.source.outputs.current == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VALIDATION_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          current_sha="$(gh api "repos/$GH_REPO/git/ref/heads/main" --jq .object.sha)"
+          [[ "$current_sha" == "$VALIDATION_SHA" ]]
+          image="ghcr.io/kitamura-tetsuo/agent-table-relay:sha-$VALIDATION_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          trap 'docker logout ghcr.io >/dev/null 2>&1 || true' EXIT
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          # A rerun gets a new tag; deployments use the immutable digest below.
+          docker push "$image"
+          digest="$(docker image inspect --format '{{index .RepoDigests 0}}' "$image")"
+          [[ "$digest" =~ ^ghcr.io/kitamura-tetsuo/agent-table-relay@sha256:[a-f0-9]{64}$ ]]
+          {
+            printf '## Validated relay image\n\n'
+            printf 'Source: `%s`\n\n' "$VALIDATION_SHA"
+            printf 'Image: `%s`\n\n' "$image"
+            printf 'Digest: `%s`\n\n' "$digest"
+            printf 'Use the digest with the existing reviewed relay release procedure.\n'
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -71,6 +71,10 @@ jobs:
             [[ "$TARGET_ENVIRONMENT" == "staging" ]]
             [[ "$BOOTSTRAP_STAGING" == "false" ]]
           fi
+      - name: Check runtime pins
+        run: node scripts/runtime-updates.mjs --check-runtime
+      - name: Use the pinned npm release
+        run: npm install --global --ignore-scripts "npm@$(node scripts/runtime-updates.mjs --print npm)"
       - run: npm ci
       - name: Recheck application and isolated Workerd gates
         run: |

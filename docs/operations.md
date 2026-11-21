@@ -18,7 +18,9 @@ The committed `wrangler.jsonc` binds `TABLES` to `TableDO` and `GUESTS` to `Gues
 
 The application schema has a separate per-object `__agent_table_schema` version row, initialized by the classes using a local SQLite transaction. `schema/001_initial.ts` is version 1; current numbered migrations extend through `schema/015_conversation_sessions.ts` (application schema 15). Object eviction preserves the schema version; a newer unsupported version aborts reconstruction instead of resetting storage.
 
-Exact direct dependency pins (also recorded in `package-lock.json`):
+Foundation dependency snapshot (2026-11-15). Current exact versions are recorded
+in `package.json`, `package-lock.json`, and `.node-version`; see
+[automatic dependency and runtime updates](dependency-updates.md).
 
 | Component | Version |
 | --- | --- |
