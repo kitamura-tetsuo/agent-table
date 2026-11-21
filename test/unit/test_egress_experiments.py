@@ -5,6 +5,7 @@ import signal
 import stat
 import subprocess
 import sys
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -436,8 +437,30 @@ def test_probe_rejects_inconsistent_or_untrusted_result_envelopes(status, body):
 
 
 
-@pytest.mark.parametrize("cli_output", ["4.158.0\n", "wrangler 4.158.0\n"])
-def test_local_provenance_records_pinned_checkout_and_cli(cli_output):
+@pytest.fixture
+def synthetic_provenance_checkout(tmp_path, monkeypatch):
+    """Keep mocked CLI identity tests independent of installed dependency versions."""
+    files = {
+        "package.json": json.dumps({"devDependencies": {"wrangler": "9.8.7"}}),
+        "package-lock.json": json.dumps({
+            "packages": {"node_modules/wrangler": {"version": "9.8.7"}}
+        }),
+        "src/notifications/egress.ts": "// Synthetic sender fixture.\n",
+        "test/egress/probe-worker.ts": "// Synthetic probe fixture.\n",
+        "test/egress/wrangler.jsonc": "{}\n",
+    }
+    for name, content in files.items():
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content)
+    monkeypatch.chdir(tmp_path)
+    return tmp_path
+
+
+@pytest.mark.parametrize("cli_output", ["9.8.7\n", "wrangler 9.8.7\n"])
+def test_local_provenance_records_pinned_checkout_and_cli(
+    cli_output, synthetic_provenance_checkout
+):
     """Evidence must identify a clean revision and the actual local probe inputs."""
     full_sha = "a" * 40
 
@@ -458,7 +481,7 @@ def test_local_provenance_records_pinned_checkout_and_cli(cli_output):
 
     assert result["localGitHeadSha"] == full_sha
     assert result["checkoutClean"] is True
-    assert result["wranglerCliVersion"] == "4.158.0"
+    assert result["wranglerCliVersion"] == "9.8.7"
     for name in ("senderSha256", "probeSha256", "probeConfigSha256"):
         assert len(result[name]) == 64
 
@@ -466,6 +489,7 @@ def test_local_provenance_records_pinned_checkout_and_cli(cli_output):
 def test_local_provenance_accepts_installed_non_tty_wrangler_cli():
     """Exercise the actual pinned Wrangler process through the captured-stdout boundary."""
     actual_run = subprocess.run
+    pinned_version = json.loads(Path("package.json").read_text())["devDependencies"]["wrangler"]
 
     def fake_run(command, **kwargs):
         if command[0] == "npx":
@@ -480,7 +504,7 @@ def test_local_provenance_accepts_installed_non_tty_wrangler_cli():
     with patch("scripts.egress_experiments.subprocess.run", side_effect=fake_run):
         provenance = capture_local_provenance()
 
-    assert provenance["wranglerCliVersion"] == "4.158.0"
+    assert provenance["wranglerCliVersion"] == pinned_version
 
 
 @pytest.mark.parametrize(
@@ -488,13 +512,13 @@ def test_local_provenance_accepts_installed_non_tty_wrangler_cli():
     [
         ("", 0, "version cannot be verified"),
         ("version: unknown", 0, "version cannot be verified"),
-        ("4.158.0\nunexpected", 0, "version cannot be verified"),
-        ("4.158.1", 0, "does not match the pinned dependency"),
-        ("4.158.0", 1, "Could not establish local experiment provenance"),
+        ("9.8.7\nunexpected", 0, "version cannot be verified"),
+        ("9.8.8", 0, "does not match the pinned dependency"),
+        ("9.8.7", 1, "Could not establish local experiment provenance"),
     ],
 )
 def test_local_provenance_rejects_invalid_cli_identity(
-    cli_output, cli_returncode, expected_error
+    cli_output, cli_returncode, expected_error, synthetic_provenance_checkout
 ):
     def fake_run(command, **kwargs):
         output = {
@@ -510,6 +534,28 @@ def test_local_provenance_rejects_invalid_cli_identity(
 
     with patch("scripts.egress_experiments.subprocess.run", side_effect=fake_run):
         with pytest.raises(RuntimeError, match=expected_error):
+            capture_local_provenance()
+
+
+@pytest.mark.parametrize("changed_manifest", ["package.json", "package-lock.json"])
+def test_local_provenance_rejects_a_mismatched_manifest_or_lock(
+    changed_manifest, synthetic_provenance_checkout
+):
+    """Neither a correct manifest nor a correct lock can excuse the other mismatch."""
+    path = synthetic_provenance_checkout / changed_manifest
+    path.write_text(path.read_text().replace("9.8.7", "9.8.8"))
+
+    def fake_run(command, **kwargs):
+        output = {
+            ("git", "rev-parse", "--show-toplevel"): os.getcwd(),
+            ("git", "rev-parse", "--verify", "HEAD"): "a" * 40,
+            ("git", "status", "--porcelain", "--untracked-files=normal"): "",
+            ("npx", "--no-install", "wrangler", "--version"): "9.8.7\n",
+        }
+        return MagicMock(returncode=0, stdout=output[tuple(command)])
+
+    with patch("scripts.egress_experiments.subprocess.run", side_effect=fake_run):
+        with pytest.raises(RuntimeError, match="does not match the pinned dependency"):
             capture_local_provenance()
 
 
