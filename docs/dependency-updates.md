@@ -85,22 +85,33 @@ completed Validation steps, other checks, and review state. It permits only:
 threads, requested changes, stale validation, failed/pending checks, conflicts,
 and unexpected edits block merging. Repository branch rules remain effective.
 
-The merge request includes the expected head SHA. After merging, the workflow
-explicitly dispatches Validation on `main`, because pushes made with
-`GITHUB_TOKEN` do not start ordinary push workflows. The runtime updater likewise
-dispatches Validation on its branch, so it does not depend on approval of a
-workflow-created PR's automatic workflow run.
+The merge request includes the expected head SHA. Both dependency and runtime
+updates must pass the actual `pull_request` Validation run. A
+`workflow_dispatch` run on a PR branch cannot satisfy GitHub's required PR checks,
+even when it succeeds at the same commit. Pending, failed, or approval-blocked
+checks are never treated as successful.
 
-Token-dispatched runs cannot be relied on to emit a subsequent `workflow_run`
-callback. Each initiating workflow therefore obtains the exact CI run ID from
-GitHub and explicitly dispatches its continuation on `main`: the runtime updater
-dispatches the merge gate, and the merge gate dispatches relay publication.
-Each continuation receives that run ID and expected commit SHA, waits at most
-25 minutes, and independently checks the CI identity and result before acting.
-Failed, cancelled, mismatched, or expired validation does not permit a merge or
-publication. The Validation job keeps read-only permissions and remains the
-single `verify` job used by release authorization. Ordinary PR/push completion
-events still use `workflow_run`.
+The runtime updater creates its PR with `GITHUB_TOKEN`. GitHub holds the resulting
+PR workflow for approval, and that token cannot approve its own workflow-created
+runs. When `RUNTIME_WORKFLOW_TOKEN` is configured, a trusted-main coordinator first
+checks the exact runtime bot, repository, PR head, current main base, and allowed
+version-only changes. It uses the separate token only to approve that exact
+Validation run. The candidate's code is never run with this credential. Without
+this secret, the update workflow records the pending PR and CI links in its
+summary; a maintainer selects **Approve workflows to run** on the PR, and the
+normal successful-Validation continuation handles merging.
+
+After merging, the workflow explicitly dispatches Validation on `main`, because
+pushes made with `GITHUB_TOKEN` do not start ordinary push workflows. Token-initiated
+runs cannot be relied on to emit a subsequent `workflow_run` callback. Each
+initiating workflow therefore passes the exact CI run ID and expected commit SHA
+to its trusted continuation on `main`: the runtime coordinator dispatches the
+merge gate after PR CI has started, and the merge gate dispatches relay publication
+after starting main CI. Continuations wait at most 25 minutes and independently
+check the CI identity and result before acting. Failed, cancelled, mismatched, or
+expired validation does not permit a merge or publication. Validation keeps
+read-only permissions and remains the single `verify` job used by release
+authorization. Ordinary PR/push completion events still use `workflow_run`.
 
 ## Delivery and live rollout
 
@@ -126,14 +137,39 @@ relay images; it does not replace that release authority.
 
 ## Repository settings and operations
 
-No new personal access token or installed update service is required. Dependabot
-runs when `.github/dependabot.yml` is present on the default branch. The runtime
-workflow uses the repository's short-lived `GITHUB_TOKEN` with only the declared
-permissions. GitHub **Settings → Actions → General → Workflow permissions →
-Allow GitHub Actions to create and approve pull requests** must be enabled for
-runtime PR creation. This automation does not submit approval reviews, change
-branch protection, or require the repository's native **Allow auto-merge** option.
-GHCR publication uses the workflow's `packages: write` permission.
+Dependabot needs no extra token or installed update service; it runs when
+`.github/dependabot.yml` is present on the default branch. Runtime PR creation uses
+the repository's short-lived `GITHUB_TOKEN` with the declared permissions. GitHub
+**Settings → Actions → General → Workflow permissions → Allow GitHub Actions to
+create and approve pull requests** must be enabled. This setting permits PR
+creation; it does not remove the separate workflow-run approval requirement.
+
+For unattended runtime updates, add the repository Actions secret
+**`RUNTIME_WORKFLOW_TOKEN`**:
+
+1. Create a fine-grained personal access token in GitHub **Settings → Developer
+   settings → Personal access tokens → Fine-grained tokens**. Select the
+   `kitamura-tetsuo` resource owner and only the `agent-table` repository.
+2. Grant **Repository permissions → Actions: Read and write**. Metadata read is
+   included automatically. No Contents, Pull requests, or Administration write
+   permission is needed by this approval-only credential. Set an expiration and
+   rotate the secret before it expires.
+3. In this repository, open **Settings → Secrets and variables → Actions → New
+   repository secret**, name it `RUNTIME_WORKFLOW_TOKEN`, and save the token there.
+   Never commit the token or paste it into a PR, issue, or chat.
+4. Run **Runtime updates → Run workflow** on `main` to resume an existing pending
+   runtime PR or check for new versions. The next scheduled run also picks it up.
+
+An externally managed GitHub App installation token with Actions write can also
+supply this secret if it is refreshed before use; the built-in `GITHUB_TOKEN`
+cannot substitute for it. If no secret is configured, maintainers must approve
+the PR's workflow once per new runtime head. A rejected or expired approval token
+fails the workflow rather than silently treating CI as passed. The update can be
+retried after replacing the secret.
+
+This automation does not submit PR approval reviews, change branch protection,
+or require GitHub's native **Allow auto-merge** option. GHCR publication uses the
+workflow's `packages: write` permission.
 
 Useful local commands:
 
@@ -141,7 +177,7 @@ Useful local commands:
 node scripts/runtime-updates.mjs --check
 node scripts/runtime-updates.mjs --check-runtime
 node scripts/runtime-updates.mjs --update
-node --test scripts/runtime-updates.test.mjs scripts/dependency-automerge.test.mjs
+node --test scripts/runtime-updates.test.mjs scripts/runtime-validation.test.mjs scripts/dependency-automerge.test.mjs scripts/wait-for-validation.test.mjs
 ```
 
 To pause checks, disable **Runtime updates** and set Dependabot's group schedule
@@ -159,5 +195,8 @@ through normal review after validation.
 - [Dependabot configuration options](https://docs.github.com/en/code-security/reference/supply-chain-security/dependabot-options-reference)
 - [Security grouping restrictions](https://docs.github.com/en/code-security/reference/supply-chain-security/troubleshoot-dependabot/dependabot-errors#failed-to-group-dependencies-security-updates)
 - [GITHUB_TOKEN workflow triggering](https://docs.github.com/en/actions/concepts/security/github_token)
+- [Required PR check events](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks#checks-from-some-workflow-jobs-are-not-evaluated)
+- [Workflow approval token requirements](https://github.github.com/gh-aw/reference/safe-outputs-pull-requests/#approve-workflow-run-approve-workflow-run)
+- [Workflow approval API](https://docs.github.com/en/rest/actions/workflow-runs#approve-a-workflow-run-for-a-fork-pull-request)
 - [Workflow dispatch run IDs](https://github.blog/changelog/2026-02-19-workflow-dispatch-api-now-returns-run-ids/)
 - [Cloudflare compatibility dates](https://developers.cloudflare.com/workers/configuration/compatibility-dates/)

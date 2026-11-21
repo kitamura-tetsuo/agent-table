@@ -20,14 +20,14 @@ function requireSource(run, target) {
     run.event === "pull_request" &&
     typeof run.head_branch === "string" &&
     /^dependabot\/[^\s]+$/.test(run.head_branch);
-  const runtimeDispatch =
-    run.event === "workflow_dispatch" && run.head_branch === RUNTIME_BRANCH;
+  const runtimePullRequest =
+    run.event === "pull_request" && run.head_branch === RUNTIME_BRANCH;
   const mainValidation =
     ["push", "workflow_dispatch"].includes(run.event) &&
     run.head_branch === "main";
   requireCondition(
     target === "update"
-      ? dependencyPullRequest || runtimeDispatch
+      ? dependencyPullRequest || runtimePullRequest
       : mainValidation,
     "validation-run-source-mismatch",
   );

@@ -10,6 +10,7 @@ on:
     paths:
       - .github/workflows/runtime-updates.yml
       - scripts/runtime-updates.mjs
+      - scripts/runtime-validation.mjs
 
 permissions:
   contents: read
@@ -53,9 +54,10 @@ jobs:
             Updates the supported Node and npm release lines and the digest-pinned
             Debian relay base image together. New Node/npm releases wait three days.
 
-            Validation is explicitly dispatched for this branch. Automatic merge
-            requires the current head to pass the complete Validation workflow and
-            contain only the permitted runtime version changes.
+            Automatic merge requires this PR to pass the complete Validation
+            workflow and contain only the permitted runtime version changes.
+            If CI is awaiting approval, select Approve workflows to run in this PR.
+            Configure RUNTIME_WORKFLOW_TOKEN for unattended workflow approval.
 
             The main validation and relay image publication run after merging.
             Cloudflare rollout follows the existing reviewed release process.
@@ -64,21 +66,11 @@ jobs:
             package.json
             package-lock.json
             deploy/relay/node-image.txt
-      - name: Dispatch validation and its merge continuation
+      - name: Start the actual PR validation and its merge continuation
         if: steps.pr.outputs.pull-request-number && steps.pr.outputs.pull-request-operation != 'closed'
         env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          PR_HEAD_SHA: ${{ steps.pr.outputs.pull-request-head-sha }}
-        run: |
-          set -euo pipefail
-          current_sha="$(gh api "repos/$GH_REPO/git/ref/heads/automation/runtime-updates" --jq .object.sha)"
-          [[ "$current_sha" == "$PR_HEAD_SHA" ]]
-          [[ "$PR_HEAD_SHA" =~ ^[a-f0-9]{40}$ ]]
-          run_id="$(gh api --method POST "repos/$GH_REPO/actions/workflows/ci.yml/dispatches" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            -f ref=automation/runtime-updates -F return_run_details=true --jq .workflow_run_id)"
-          [[ "$run_id" =~ ^[1-9][0-9]*$ ]]
-          # Token-dispatched CI cannot be relied on to emit workflow_run callbacks.
-          gh api --method POST "repos/$GH_REPO/actions/workflows/dependency-automerge.yml/dispatches" \
-            -f ref=main -f "inputs[validation_run_id]=$run_id" -f "inputs[expected_sha]=$PR_HEAD_SHA"
+          GITHUB_TOKEN: ${{ github.token }}
+          RUNTIME_WORKFLOW_TOKEN: ${{ secrets.RUNTIME_WORKFLOW_TOKEN }}
+          RUNTIME_PR_NUMBER: ${{ steps.pr.outputs.pull-request-number }}
+          RUNTIME_PR_HEAD_SHA: ${{ steps.pr.outputs.pull-request-head-sha }}
+        run: node scripts/runtime-validation.mjs
