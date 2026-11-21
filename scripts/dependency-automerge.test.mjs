@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   githubClient,
   normalizeActionVersions,
+  resolveValidationEvent,
   runAutoMerge,
   validateChanges,
 } from "./dependency-automerge.mjs";
@@ -14,6 +15,7 @@ const HEAD = "2".repeat(40);
 const MERGED = "3".repeat(40);
 const OTHER = "4".repeat(40);
 const WORKFLOW = ".github/workflows/ci.yml";
+const MAIN_RUN = 1001;
 const STEPS = [
   "Typecheck",
   "Lint",
@@ -164,6 +166,16 @@ function fixture(kind = "dependabot") {
   };
   state.runs = { workflow_runs: [state.run] };
   state.mainRuns = { workflow_runs: [] };
+  state.mainValidation = {
+    ...state.run,
+    id: MAIN_RUN,
+    head_sha: MERGED,
+    head_branch: "main",
+    event: "workflow_dispatch",
+    status: "queued",
+    conclusion: null,
+  };
+  state.dispatchResponse = { workflow_run_id: MAIN_RUN };
   state.associated = [structuredClone(state.pr)];
   const event = {
     repository: { full_name: REPOSITORY },
@@ -175,6 +187,11 @@ function fixture(kind = "dependabot") {
     calls.push({ path, ...options });
     let result;
     if (path === `${PREFIX}/actions/runs/789`) result = state.run;
+    else if (
+      path.startsWith(`${PREFIX}/actions/runs/`) &&
+      !path.includes("/jobs?")
+    )
+      result = state.mainValidation;
     else if (path === `${PREFIX}/pulls/123`) {
       prReads++;
       result = prReads > 1 && state.freshPr ? state.freshPr : state.pr;
@@ -222,7 +239,13 @@ function fixture(kind = "dependabot") {
         state.pr.merge_commit_sha = MERGED;
         state.main = MERGED;
       }
-    } else if (path === `${PREFIX}/actions/workflows/ci.yml/dispatches`)
+    } else if (path === `${PREFIX}/actions/workflows/ci.yml/dispatches`) {
+      result = state.dispatchResponse;
+      if (result?.workflow_run_id === MAIN_RUN)
+        state.mainRuns.workflow_runs = [structuredClone(state.mainValidation)];
+    } else if (
+      path === `${PREFIX}/actions/workflows/publish-relay.yml/dispatches`
+    )
       result = null;
     else if (path === `${PREFIX}/commits/${HEAD}/pulls?per_page=100`)
       result = state.associated;
@@ -233,6 +256,7 @@ function fixture(kind = "dependabot") {
     state,
     event,
     calls,
+    api,
     invoke: () => runAutoMerge({ event, repository: REPOSITORY, api }),
   };
 }
@@ -261,9 +285,19 @@ test("one grouped update merges npm majors, Python and action pins only after al
     {
       path: `${PREFIX}/actions/workflows/ci.yml/dispatches`,
       method: "POST",
-      body: { ref: "main" },
+      body: { ref: "main", return_run_details: true },
+    },
+    {
+      path: `${PREFIX}/actions/workflows/publish-relay.yml/dispatches`,
+      method: "POST",
+      body: {
+        ref: "main",
+        inputs: { validation_run_id: String(MAIN_RUN), expected_sha: MERGED },
+      },
     },
   ]);
+  assert.equal(result.mainValidationDispatched, true);
+  assert.equal(result.publicationDispatched, true);
 });
 
 test("runtime bot validates matching Node, npm, Docker and lockfile pins", async () => {
@@ -583,37 +617,49 @@ test("a failed duplicate PR check is not an approval exception", () =>
     "runtime",
   ));
 
-test("replaying an already merged update recovers a missing main dispatch without merging twice", async () => {
+test("replaying an already merged update recovers missing main validation and publication", async () => {
   const f = fixture();
-  await f.invoke();
-  const firstCallCount = f.calls.length;
+  f.state.pr.merged = true;
+  f.state.pr.state = "closed";
+  f.state.pr.merge_commit_sha = MERGED;
+  f.state.main = MERGED;
   const result = await f.invoke();
   assert.equal(result.status, "already-merged");
-  assert.deepEqual(writes(f.calls.slice(firstCallCount)), [
+  assert.deepEqual(writes(f.calls), [
     {
       path: `${PREFIX}/actions/workflows/ci.yml/dispatches`,
       method: "POST",
-      body: { ref: "main" },
+      body: { ref: "main", return_run_details: true },
+    },
+    {
+      path: `${PREFIX}/actions/workflows/publish-relay.yml/dispatches`,
+      method: "POST",
+      body: {
+        ref: "main",
+        inputs: { validation_run_id: String(MAIN_RUN), expected_sha: MERGED },
+      },
     },
   ]);
 });
 
-test("replaying a merged update does not duplicate an existing main validation", async () => {
+test("replaying reuses existing main validation and explicitly recovers publication", async () => {
   const f = fixture();
   await f.invoke();
-  f.state.mainRuns.workflow_runs.push({
-    ...f.state.run,
-    head_sha: MERGED,
-    head_branch: "main",
-    event: "workflow_dispatch",
-    status: "queued",
-    conclusion: null,
-  });
   const firstCallCount = f.calls.length;
   const result = await f.invoke();
   assert.equal(result.status, "already-merged");
   assert.equal(result.mainValidationDispatched, false);
-  assert.deepEqual(writes(f.calls.slice(firstCallCount)), []);
+  assert.equal(result.publicationDispatched, true);
+  assert.deepEqual(writes(f.calls.slice(firstCallCount)), [
+    {
+      path: `${PREFIX}/actions/workflows/publish-relay.yml/dispatches`,
+      method: "POST",
+      body: {
+        ref: "main",
+        inputs: { validation_run_id: String(MAIN_RUN), expected_sha: MERGED },
+      },
+    },
+  ]);
 });
 
 test("dependency updates cannot replace stable versions with a prerelease", () =>
@@ -622,3 +668,129 @@ test("dependency updates cannot replace stable versions with a prerelease", () =
     pkg.dependencies["@modelcontextprotocol/client"] = "9.0.0-beta.1";
     state.after["package.json"] = JSON.stringify(pkg);
   }, /stable-to-prerelease-update/));
+
+test("a missing or malformed returned CI run ID prevents publication", async () => {
+  for (const response of [
+    null,
+    {},
+    { workflow_run_id: 0 },
+    { workflow_run_id: "1001" },
+    { workflow_run_id: Number.MAX_SAFE_INTEGER + 1 },
+  ]) {
+    const f = fixture();
+    f.state.dispatchResponse = response;
+    await assert.rejects(f.invoke, /main-validation-run-id-missing/);
+    assert.equal(
+      writes(f.calls).some(({ path }) => path.includes("publish-relay")),
+      false,
+    );
+  }
+});
+
+test("returned CI run IDs are independently checked against main and the CI workflow", async () => {
+  for (const change of [
+    (run) => {
+      run.id = 1002;
+    },
+    (run) => {
+      run.head_sha = OTHER;
+    },
+    (run) => {
+      run.path = ".github/workflows/runtime-updates.yml";
+    },
+    (run) => {
+      run.head_branch = "other";
+    },
+    (run) => {
+      run.head_repository.full_name = "attacker/agent-table";
+    },
+  ]) {
+    const f = fixture();
+    f.state.mainValidation = structuredClone(f.state.mainValidation);
+    change(f.state.mainValidation);
+    await assert.rejects(f.invoke, /main-validation-dispatch-mismatch/);
+    assert.equal(
+      writes(f.calls).some(({ path }) => path.includes("publish-relay")),
+      false,
+    );
+  }
+});
+
+test("existing successful CI is reused but publication is always explicitly dispatched", async () => {
+  const f = fixture();
+  f.state.mainValidation.status = "completed";
+  f.state.mainValidation.conclusion = "success";
+  f.state.mainRuns.workflow_runs = [structuredClone(f.state.mainValidation)];
+  const result = await f.invoke();
+  assert.equal(result.mainValidationDispatched, false);
+  assert.equal(result.publicationDispatched, true);
+  assert.equal(
+    writes(f.calls).some(({ path }) => path.endsWith("/ci.yml/dispatches")),
+    false,
+  );
+  assert.equal(
+    writes(f.calls).at(-1).body.inputs.validation_run_id,
+    String(MAIN_RUN),
+  );
+});
+
+test("a dispatched merger awaits exact validation and retains the unchanged merge gate", async () => {
+  const f = fixture("runtime");
+  const event = await resolveValidationEvent({
+    event: { repository: { full_name: REPOSITORY } },
+    eventName: "workflow_dispatch",
+    ref: "refs/heads/main",
+    runId: "789",
+    expectedHead: HEAD,
+    api: f.api,
+  });
+  assert.equal(event.workflow_run.id, 789);
+  assert.equal(
+    (await runAutoMerge({ event, repository: REPOSITORY, api: f.api })).status,
+    "merged",
+  );
+});
+
+test("merger dispatch rejects unsafe refs, IDs and SHA inputs before waiting", async () => {
+  const valid = {
+    eventName: "workflow_dispatch",
+    ref: "refs/heads/main",
+    runId: "789",
+    expectedHead: HEAD,
+  };
+  for (const changes of [
+    { ref: "refs/heads/other" },
+    { runId: "789;echo bad" },
+    { runId: "0" },
+    { runId: "9007199254740992" },
+    { expectedHead: "not-a-sha" },
+  ]) {
+    let waited = false;
+    await assert.rejects(
+      () =>
+        resolveValidationEvent({
+          ...valid,
+          ...changes,
+          wait: async () => {
+            waited = true;
+          },
+        }),
+      /merge-dispatch-not-main|invalid-validation/,
+    );
+    assert.equal(waited, false);
+  }
+});
+
+test("ordinary workflow_run input preserves its original envelope", async () => {
+  const f = fixture();
+  let waited = false;
+  const event = await resolveValidationEvent({
+    event: f.event,
+    eventName: "workflow_run",
+    wait: async () => {
+      waited = true;
+    },
+  });
+  assert.equal(event, f.event);
+  assert.equal(waited, false);
+});

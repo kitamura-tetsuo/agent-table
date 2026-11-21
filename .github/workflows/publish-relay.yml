@@ -5,6 +5,16 @@ on:
     workflows: [Validation]
     branches: [main]
     types: [completed]
+  workflow_dispatch:
+    inputs:
+      validation_run_id:
+        description: Exact main Validation run to await
+        required: true
+        type: string
+      expected_sha:
+        description: Expected main commit validated by that run
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -18,48 +28,66 @@ jobs:
   publish:
     if: >-
       github.repository == 'kitamura-tetsuo/agent-table' &&
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.head_branch == 'main' &&
-      (github.event.workflow_run.event == 'push' ||
-       github.event.workflow_run.event == 'workflow_dispatch')
+      ((github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
+       (github.event_name == 'workflow_run' &&
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.head_branch == 'main' &&
+        (github.event.workflow_run.event == 'push' ||
+         github.event.workflow_run.event == 'workflow_dispatch')))
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 35
     permissions:
       contents: read
       actions: read
       packages: write
     steps:
-      - name: Verify successful validation of the current main commit
+      - name: Await and verify successful validation of the current main commit
         id: source
+        timeout-minutes: 26
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          VALIDATION_RUN_ID: ${{ github.event.workflow_run.id }}
-          VALIDATION_SHA: ${{ github.event.workflow_run.head_sha }}
+          VALIDATION_RUN_ID: ${{ github.event.workflow_run.id || inputs.validation_run_id }}
+          VALIDATION_SHA: ${{ github.event.workflow_run.head_sha || inputs.expected_sha }}
         run: |
           set -euo pipefail
+          [[ "$VALIDATION_RUN_ID" =~ ^[1-9][0-9]*$ ]]
           [[ "$VALIDATION_SHA" =~ ^[a-f0-9]{40}$ ]]
-          run="$(gh api "repos/$GH_REPO/actions/runs/$VALIDATION_RUN_ID")"
-          jq -e --arg sha "$VALIDATION_SHA" --arg repo "$GH_REPO" '
-            .path == ".github/workflows/ci.yml" and
-            .head_sha == $sha and .head_branch == "main" and
-            .head_repository.full_name == $repo and
-            .status == "completed" and .conclusion == "success" and
-            (.event == "push" or .event == "workflow_dispatch")
-          ' <<< "$run" >/dev/null
+          validation_deadline=$((SECONDS + 1500))
+          while :; do
+            current_sha="$(gh api "repos/$GH_REPO/git/ref/heads/main" --jq .object.sha)"
+            if [[ "$current_sha" != "$VALIDATION_SHA" ]]; then
+              echo 'A newer main commit exists; its validation will publish the next image.' >> "$GITHUB_STEP_SUMMARY"
+              echo 'current=false' >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            run="$(gh api "repos/$GH_REPO/actions/runs/$VALIDATION_RUN_ID")"
+            jq -e --argjson id "$VALIDATION_RUN_ID" --arg sha "$VALIDATION_SHA" --arg repo "$GH_REPO" '
+              .id == $id and .path == ".github/workflows/ci.yml" and
+              .head_sha == $sha and .head_branch == "main" and
+              .repository.full_name == $repo and .head_repository.full_name == $repo and
+              (.event == "push" or .event == "workflow_dispatch")
+            ' <<< "$run" >/dev/null
+            if [[ "$(jq -r .status <<< "$run")" == completed ]]; then
+              jq -e '.conclusion == "success"' <<< "$run" >/dev/null
+              break
+            fi
+            jq -e '.status as $status | ["requested", "queued", "pending", "waiting", "in_progress"] | index($status) != null' <<< "$run" >/dev/null
+            if (( SECONDS >= validation_deadline )); then
+              echo '::error::Timed out waiting for the exact main Validation run'
+              exit 1
+            fi
+            echo "Waiting for Validation run $VALIDATION_RUN_ID on $VALIDATION_SHA"
+            sleep 15
+          done
           gh api "repos/$GH_REPO/actions/runs/$VALIDATION_RUN_ID/jobs?filter=latest&per_page=100" |
-            jq -e '.total_count == 1 and .jobs[0].name == "verify" and .jobs[0].conclusion == "success"' >/dev/null
-          current_sha="$(gh api "repos/$GH_REPO/git/ref/heads/main" --jq .object.sha)"
-          if [[ "$current_sha" != "$VALIDATION_SHA" ]]; then
-            echo 'A newer main commit exists; its validation will publish the next image.' >> "$GITHUB_STEP_SUMMARY"
-            echo 'current=false' >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
+            jq -e '.total_count == 1 and .jobs[0].name == "verify" and .jobs[0].status == "completed" and .jobs[0].conclusion == "success"' >/dev/null
+          echo "sha=$VALIDATION_SHA" >> "$GITHUB_OUTPUT"
           echo 'current=true' >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: steps.source.outputs.current == 'true'
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
+          ref: ${{ steps.source.outputs.sha }}
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         if: steps.source.outputs.current == 'true'
@@ -68,7 +96,7 @@ jobs:
       - name: Build the same digest-pinned relay runtime that passed validation
         if: steps.source.outputs.current == 'true'
         env:
-          VALIDATION_SHA: ${{ github.event.workflow_run.head_sha }}
+          VALIDATION_SHA: ${{ steps.source.outputs.sha }}
         run: |
           set -euo pipefail
           node scripts/runtime-updates.mjs --check-runtime
@@ -87,7 +115,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          VALIDATION_SHA: ${{ github.event.workflow_run.head_sha }}
+          VALIDATION_SHA: ${{ steps.source.outputs.sha }}
         run: |
           set -euo pipefail
           current_sha="$(gh api "repos/$GH_REPO/git/ref/heads/main" --jq .object.sha)"

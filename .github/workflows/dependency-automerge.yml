@@ -4,6 +4,16 @@ on:
   workflow_run:
     workflows: [Validation]
     types: [completed]
+  workflow_dispatch:
+    inputs:
+      validation_run_id:
+        description: Exact Validation workflow run ID to await
+        required: true
+        type: string
+      expected_sha:
+        description: Exact dependency or runtime update head SHA
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -16,12 +26,14 @@ jobs:
   merge:
     if: >-
       github.repository == 'kitamura-tetsuo/agent-table' &&
-      github.event.workflow_run.conclusion == 'success' &&
-      (github.event.workflow_run.event == 'pull_request' ||
-       (github.event.workflow_run.event == 'workflow_dispatch' &&
-        github.event.workflow_run.head_branch == 'automation/runtime-updates'))
+      ((github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
+       (github.event_name == 'workflow_run' &&
+        github.event.workflow_run.conclusion == 'success' &&
+        (github.event.workflow_run.event == 'pull_request' ||
+         (github.event.workflow_run.event == 'workflow_dispatch' &&
+          github.event.workflow_run.head_branch == 'automation/runtime-updates'))))
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 30
     permissions:
       contents: write
       pull-requests: write
@@ -40,4 +52,6 @@ jobs:
       - name: Merge only the fully validated dependency or runtime head
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          VALIDATION_RUN_ID: ${{ inputs.validation_run_id }}
+          EXPECTED_VALIDATION_SHA: ${{ inputs.expected_sha }}
         run: node scripts/dependency-automerge.mjs

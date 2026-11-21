@@ -1,6 +1,7 @@
 import { appendFileSync, readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { isDeepStrictEqual } from "node:util";
+import { waitForValidation } from "./wait-for-validation.mjs";
 
 const REPOSITORY = "kitamura-tetsuo/agent-table";
 const PREFIX = `/repos/${REPOSITORY}`;
@@ -500,16 +501,79 @@ async function ensureMainValidation(api) {
   );
   requireCondition(Array.isArray(existing), "main-validation-runs-missing");
   existing.sort((a, b) => b.id - a.id);
-  if (
+  const reuse =
     existing[0] &&
-    (existing[0].status !== "completed" || existing[0].conclusion === "success")
-  )
-    return false;
-  await api(`${PREFIX}/actions/workflows/ci.yml/dispatches`, {
+    (existing[0].status !== "completed" ||
+      existing[0].conclusion === "success");
+  let runId;
+  if (reuse) runId = existing[0].id;
+  else {
+    const dispatch = await api(
+      `${PREFIX}/actions/workflows/ci.yml/dispatches`,
+      {
+        method: "POST",
+        body: { ref: "main", return_run_details: true },
+      },
+    );
+    runId = dispatch?.workflow_run_id;
+  }
+  requireCondition(
+    Number.isSafeInteger(runId) && runId > 0,
+    "main-validation-run-id-missing",
+  );
+  const validation = await api(`${PREFIX}/actions/runs/${runId}`);
+  requireCondition(
+    validation.id === runId &&
+      validation.repository?.full_name === REPOSITORY &&
+      validation.head_repository?.full_name === REPOSITORY &&
+      validation.path === WORKFLOW &&
+      validation.head_sha === head &&
+      validation.head_branch === "main" &&
+      validation.event === "workflow_dispatch",
+    "main-validation-dispatch-mismatch",
+  );
+  const current = (await api(`${PREFIX}/git/ref/heads/main`)).object?.sha;
+  requireCondition(
+    current === head,
+    "main-changed-before-publication-dispatch",
+  );
+  // A GITHUB_TOKEN-dispatched run may not emit a usable workflow_run callback.
+  // Explicitly continue publication, including recovery of an existing CI run.
+  await api(`${PREFIX}/actions/workflows/publish-relay.yml/dispatches`, {
     method: "POST",
-    body: { ref: "main" },
+    body: {
+      ref: "main",
+      inputs: { validation_run_id: String(runId), expected_sha: head },
+    },
   });
-  return true;
+  return !reuse;
+}
+
+export async function resolveValidationEvent({
+  event,
+  eventName,
+  ref,
+  runId,
+  expectedHead,
+  api,
+  wait = waitForValidation,
+}) {
+  if (eventName !== "workflow_dispatch") return event;
+  requireCondition(ref === "refs/heads/main", "merge-dispatch-not-main");
+  requireCondition(
+    typeof runId === "string" &&
+      /^[1-9]\d*$/.test(runId) &&
+      Number.isSafeInteger(Number(runId)),
+    "invalid-validation-run-id",
+  );
+  requireCondition(SHA.test(expectedHead), "invalid-validation-head");
+  const run = await wait({
+    api,
+    runId: Number(runId),
+    expectedHead,
+    target: "update",
+  });
+  return { repository: run.repository, workflow_run: run };
 }
 
 export async function runAutoMerge({ event, repository, api }) {
@@ -605,6 +669,7 @@ export async function runAutoMerge({ event, repository, api }) {
       number,
       mergeSha: pr.merge_commit_sha,
       mainValidationDispatched: dispatched,
+      publicationDispatched: true,
     };
   }
   requireCandidate(pr, run.head_sha, main);
@@ -675,6 +740,7 @@ export async function runAutoMerge({ event, repository, api }) {
     head: pr.head.sha,
     mergeSha: merged.sha,
     mainValidationDispatched: dispatched,
+    publicationDispatched: true,
   };
 }
 
@@ -683,10 +749,19 @@ if (
   import.meta.url === pathToFileURL(process.argv[1]).href
 ) {
   try {
-    const result = await runAutoMerge({
+    const api = githubClient(process.env.GITHUB_TOKEN);
+    const event = await resolveValidationEvent({
       event: JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, "utf8")),
+      eventName: process.env.GITHUB_EVENT_NAME,
+      ref: process.env.GITHUB_REF,
+      runId: process.env.VALIDATION_RUN_ID,
+      expectedHead: process.env.EXPECTED_VALIDATION_SHA,
+      api,
+    });
+    const result = await runAutoMerge({
+      event,
       repository: process.env.GITHUB_REPOSITORY,
-      api: githubClient(process.env.GITHUB_TOKEN),
+      api,
     });
     const text = JSON.stringify(result);
     process.stdout.write(`${text}\n`);
