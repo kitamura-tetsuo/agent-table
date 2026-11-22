@@ -33,15 +33,15 @@
   },
   "devDependencies": {
     "@biomejs/biome": "2.6.8",
-    "@cloudflare/vitest-plugin": "1.8.4",
-    "@cloudflare/workers-types": "5.20261118.1",
+    "@cloudflare/vitest-plugin": "1.8.5",
+    "@cloudflare/workers-types": "5.20261119.1",
     "@playwright/test": "1.65.1",
     "@types/node": "24.19.2",
     "esbuild": "0.28.2",
     "miniflare": "5.20261104.0-beta",
     "typescript": "7.0.2",
-    "vitest": "5.1.0",
-    "workerd": "1.20261118.1",
-    "wrangler": "4.164.0"
+    "vitest": "5.1.1",
+    "workerd": "1.20261119.1",
+    "wrangler": "4.165.0"
   }
 }
